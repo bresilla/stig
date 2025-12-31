@@ -28,6 +28,8 @@ pub const Args = struct {
     config_file: ?[]const u8,
     show_help: bool,
     show_version: bool,
+    watch_mode: bool,
+    serve_mode: bool,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Args) void {
@@ -58,12 +60,19 @@ pub const ArgParser = struct {
         var config_file: ?[]const u8 = null;
         var show_help = false;
         var show_version = false;
+        var watch_mode = false;
+        var serve_mode = false;
 
         while (args_iter.next()) |arg| {
             if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
                 show_help = true;
             } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--version")) {
                 show_version = true;
+            } else if (std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--watch")) {
+                watch_mode = true;
+            } else if (std.mem.eql(u8, arg, "--serve")) {
+                watch_mode = true;
+                serve_mode = true;
             } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
                 output_file = args_iter.next();
                 if (output_file == null) {
@@ -110,6 +119,8 @@ pub const ArgParser = struct {
             .config_file = config_file,
             .show_help = show_help,
             .show_version = show_version,
+            .watch_mode = watch_mode,
+            .serve_mode = serve_mode,
             .allocator = self.allocator,
         };
     }
@@ -148,6 +159,8 @@ pub const ArgParser = struct {
             \\    -f, --format <FMT>     Output format: markdown, mdbook (default: markdown)
             \\    --title <TITLE>        Book title (for mdbook format)
             \\    -c, --config <FILE>    Config file path (default: stinger.toml)
+            \\    -w, --watch            Watch for file changes and regenerate
+            \\    --serve                Watch mode + spawn mdbook serve for live preview
             \\    -h, --help             Show this help message
             \\    -v, --version          Show version information
             \\
@@ -171,6 +184,8 @@ pub const ArgParser = struct {
             \\    stinger src/*.h -f mdbook -o docs/     # Generate mdbook structure
             \\    stinger src/*.h -f mdbook --title "My API"  # With custom title
             \\    stinger -c myconfig.toml               # Use custom config file
+            \\    stinger src/*.h -f mdbook -o docs/ --watch  # Watch mode
+            \\    stinger src/*.h -f mdbook -o docs/ --serve  # Watch + live preview
             \\
             \\MDBOOK PREPROCESSOR:
             \\    Add to book.toml:

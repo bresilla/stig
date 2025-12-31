@@ -10,6 +10,7 @@ const cli = @import("cli.zig");
 const config_mod = @import("config.zig");
 const types = @import("model/types.zig");
 const preprocessor = @import("preprocessor.zig");
+const Watcher = @import("watch.zig").Watcher;
 
 pub fn main() !void {
     // Get allocator
@@ -107,6 +108,33 @@ pub fn main() !void {
     if (input_files.len == 0) {
         std.debug.print("Error: No input files specified\n\n", .{});
         arg_parser.printHelp();
+        return;
+    }
+
+    // Watch mode
+    if (args.watch_mode) {
+        if (args.output_format != .mdbook) {
+            std.debug.print("Error: Watch mode requires mdbook format (-f mdbook)\n", .{});
+            return;
+        }
+        const output_dir = args.output_file orelse config.output_dir;
+        if (output_dir.len == 0) {
+            std.debug.print("Error: Watch mode requires output directory (-o <dir>)\n", .{});
+            return;
+        }
+
+        var watcher = Watcher.init(
+            allocator,
+            input_files,
+            output_dir,
+            args.book_title orelse config.title,
+            args.serve_mode,
+        );
+        defer watcher.deinit();
+
+        watcher.run() catch |err| {
+            std.debug.print("Watch error: {}\n", .{err});
+        };
         return;
     }
 
