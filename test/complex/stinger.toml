@@ -1,0 +1,12 @@
+title = "Spatial Geometry Library"
+output = "docs"
+format = "mdbook"
+
+[stinger]
+inputs = ["include/spatial/*.hpp"]
+generate_intro = true
+grouping = "by_header"
+
+[book]
+authors = ["Stinger Test Suite"]
+language = "en"
