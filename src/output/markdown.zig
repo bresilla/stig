@@ -121,6 +121,43 @@ pub const MarkdownGenerator = struct {
                 try self.writeString(dep);
                 try self.writeString("\n\n");
             }
+
+            // Notes
+            if (doc.notes.len > 0) {
+                for (doc.notes) |note| {
+                    try self.writeString("> **Note:** ");
+                    try self.writeString(note);
+                    try self.writeString("\n\n");
+                }
+            }
+
+            // Warnings
+            if (doc.warnings.len > 0) {
+                for (doc.warnings) |warning| {
+                    try self.writeString("> **Warning:** ");
+                    try self.writeString(warning);
+                    try self.writeString("\n\n");
+                }
+            }
+
+            // See also
+            if (doc.see_also.len > 0) {
+                try self.writeString("**See also:** ");
+                for (doc.see_also, 0..) |ref, i| {
+                    if (i > 0) try self.writeString(", ");
+                    try self.writeString("`");
+                    try self.writeString(ref);
+                    try self.writeString("`");
+                }
+                try self.writeString("\n\n");
+            }
+
+            // Since version
+            if (doc.since) |since| {
+                try self.writeString("**Since:** ");
+                try self.writeString(since);
+                try self.writeString("\n\n");
+            }
         }
 
         try self.writeString("---\n\n");

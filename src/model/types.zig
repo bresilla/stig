@@ -19,18 +19,28 @@ pub const DocString = struct {
     raw: []const u8,
     /// Brief description (first line or @brief)
     brief: ?[]const u8 = null,
+    /// Detailed description (text after brief, before tags)
+    details: ?[]const u8 = null,
     /// Parameter documentation
     params: []const ParamDoc = &[_]ParamDoc{},
     /// Return value documentation
     returns: ?[]const u8 = null,
     /// Example code blocks
     examples: []const []const u8 = &[_][]const u8{},
-    /// Additional notes
+    /// Additional notes (@note)
     notes: []const []const u8 = &[_][]const u8{},
-    /// Deprecation notice
+    /// Warning messages (@warning)
+    warnings: []const []const u8 = &[_][]const u8{},
+    /// Deprecation notice (@deprecated)
     deprecated: ?[]const u8 = null,
-    /// See-also references
+    /// See-also references (@see, @sa)
     see_also: []const []const u8 = &[_][]const u8{},
+    /// Since version (@since)
+    since: ?[]const u8 = null,
+    /// Author information (@author)
+    author: ?[]const u8 = null,
+    /// Version information (@version)
+    version: ?[]const u8 = null,
 };
 
 /// Function parameter

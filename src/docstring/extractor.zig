@@ -100,17 +100,22 @@ pub const DocstringExtractor = struct {
         // Extract brief
         doc.brief = self.extractBrief(raw);
 
-        // Parse @param tags
+        // Parse all Doxygen tags
         var params: std.ArrayList(types.ParamDoc) = .empty;
+        var notes: std.ArrayList([]const u8) = .empty;
+        var warnings: std.ArrayList([]const u8) = .empty;
+        var see_also: std.ArrayList([]const u8) = .empty;
+        var examples: std.ArrayList([]const u8) = .empty;
+
         var lines = std.mem.splitScalar(u8, raw, '\n');
         while (lines.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \t\r*");
+
+            // @param <name> <description>
             if (std.mem.startsWith(u8, trimmed, "@param ")) {
                 const rest = trimmed[7..];
-                // Find parameter name (first word)
                 var parts = std.mem.splitScalar(u8, rest, ' ');
                 if (parts.next()) |param_name| {
-                    // Rest is description
                     const desc_start = 7 + param_name.len + 1;
                     if (desc_start < trimmed.len) {
                         try params.append(self.allocator, types.ParamDoc{
@@ -119,18 +124,67 @@ pub const DocstringExtractor = struct {
                         });
                     }
                 }
-            } else if (std.mem.startsWith(u8, trimmed, "@return ") or
+            }
+            // @return / @returns
+            else if (std.mem.startsWith(u8, trimmed, "@return ") or
                 std.mem.startsWith(u8, trimmed, "@returns "))
             {
                 const prefix_len: usize = if (std.mem.startsWith(u8, trimmed, "@returns ")) 9 else 8;
                 doc.returns = trimmed[prefix_len..];
-            } else if (std.mem.startsWith(u8, trimmed, "@deprecated ")) {
+            }
+            // @deprecated
+            else if (std.mem.startsWith(u8, trimmed, "@deprecated ")) {
                 doc.deprecated = trimmed[12..];
+            } else if (std.mem.eql(u8, trimmed, "@deprecated")) {
+                doc.deprecated = "This is deprecated.";
+            }
+            // @note
+            else if (std.mem.startsWith(u8, trimmed, "@note ")) {
+                try notes.append(self.allocator, trimmed[6..]);
+            }
+            // @warning
+            else if (std.mem.startsWith(u8, trimmed, "@warning ")) {
+                try warnings.append(self.allocator, trimmed[9..]);
+            }
+            // @see / @sa (see also)
+            else if (std.mem.startsWith(u8, trimmed, "@see ")) {
+                try see_also.append(self.allocator, trimmed[5..]);
+            } else if (std.mem.startsWith(u8, trimmed, "@sa ")) {
+                try see_also.append(self.allocator, trimmed[4..]);
+            }
+            // @example
+            else if (std.mem.startsWith(u8, trimmed, "@example ")) {
+                try examples.append(self.allocator, trimmed[9..]);
+            }
+            // @since
+            else if (std.mem.startsWith(u8, trimmed, "@since ")) {
+                doc.since = trimmed[7..];
+            }
+            // @author
+            else if (std.mem.startsWith(u8, trimmed, "@author ")) {
+                doc.author = trimmed[8..];
+            }
+            // @version
+            else if (std.mem.startsWith(u8, trimmed, "@version ")) {
+                doc.version = trimmed[9..];
             }
         }
 
+        // Convert ArrayLists to slices
         if (params.items.len > 0) {
             doc.params = try params.toOwnedSlice(self.allocator);
+        }
+        if (notes.items.len > 0) {
+            doc.notes = try notes.toOwnedSlice(self.allocator);
+        }
+        if (warnings.items.len > 0) {
+            doc.warnings = try warnings.toOwnedSlice(self.allocator);
+        }
+        if (see_also.items.len > 0) {
+            doc.see_also = try see_also.toOwnedSlice(self.allocator);
+        }
+        if (examples.items.len > 0) {
+            doc.examples = try examples.toOwnedSlice(self.allocator);
         }
 
         return doc;
@@ -295,4 +349,110 @@ test "skip doxygen tags in brief extraction" {
 
     // Brief should be null since all lines are tags
     try std.testing.expect(doc.brief == null);
+}
+
+test "parse note tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Does something.
+        \\* @note This is important.
+        \\* @note Another note.
+    );
+    defer std.testing.allocator.free(doc.notes);
+
+    try std.testing.expectEqualStrings("Does something.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 2), doc.notes.len);
+    try std.testing.expectEqualStrings("This is important.", doc.notes[0]);
+    try std.testing.expectEqualStrings("Another note.", doc.notes[1]);
+}
+
+test "parse warning tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Dangerous function.
+        \\* @warning May cause data loss.
+    );
+    defer std.testing.allocator.free(doc.warnings);
+
+    try std.testing.expectEqualStrings("Dangerous function.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 1), doc.warnings.len);
+    try std.testing.expectEqualStrings("May cause data loss.", doc.warnings[0]);
+}
+
+test "parse see also tags" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Gets a value.
+        \\* @see set_value
+        \\* @sa other_function
+    );
+    defer std.testing.allocator.free(doc.see_also);
+
+    try std.testing.expectEqual(@as(usize, 2), doc.see_also.len);
+    try std.testing.expectEqualStrings("set_value", doc.see_also[0]);
+    try std.testing.expectEqualStrings("other_function", doc.see_also[1]);
+}
+
+test "parse since tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* New feature.
+        \\* @since 2.0.0
+    );
+
+    try std.testing.expectEqualStrings("New feature.", doc.brief.?);
+    try std.testing.expectEqualStrings("2.0.0", doc.since.?);
+}
+
+test "parse author tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Core function.
+        \\* @author John Doe
+    );
+
+    try std.testing.expectEqualStrings("Core function.", doc.brief.?);
+    try std.testing.expectEqualStrings("John Doe", doc.author.?);
+}
+
+test "parse version tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Library info.
+        \\* @version 1.2.3
+    );
+
+    try std.testing.expectEqualStrings("Library info.", doc.brief.?);
+    try std.testing.expectEqualStrings("1.2.3", doc.version.?);
+}
+
+test "parse all doxygen tags together" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* @brief Comprehensive function.
+        \\* @param x Input value
+        \\* @return Computed result
+        \\* @note Handle with care.
+        \\* @warning May throw.
+        \\* @see related_func
+        \\* @since 1.0.0
+        \\* @author Jane Smith
+        \\* @deprecated Use new_func instead.
+    );
+    defer {
+        std.testing.allocator.free(doc.params);
+        std.testing.allocator.free(doc.notes);
+        std.testing.allocator.free(doc.warnings);
+        std.testing.allocator.free(doc.see_also);
+    }
+
+    try std.testing.expectEqualStrings("Comprehensive function.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 1), doc.params.len);
+    try std.testing.expectEqualStrings("Computed result", doc.returns.?);
+    try std.testing.expectEqual(@as(usize, 1), doc.notes.len);
+    try std.testing.expectEqual(@as(usize, 1), doc.warnings.len);
+    try std.testing.expectEqual(@as(usize, 1), doc.see_also.len);
+    try std.testing.expectEqualStrings("1.0.0", doc.since.?);
+    try std.testing.expectEqualStrings("Jane Smith", doc.author.?);
+    try std.testing.expectEqualStrings("Use new_func instead.", doc.deprecated.?);
 }
