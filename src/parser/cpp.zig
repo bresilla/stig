@@ -445,28 +445,66 @@ pub const CppParser = struct {
 
     /// Extracts a single parameter
     fn extractParameter(self: *Self, node: ts.Node) ?types.Parameter {
-        var name: ?[]const u8 = null;
-        var param_type: ?[]const u8 = null;
+        // Get the full text of the parameter declaration
+        const full_text = self.getNodeText(node);
 
+        // Try to find the parameter name - it's usually the last identifier
+        // For "const Point2<T>& a" we want name="a", type="const Point2<T>&"
+        var name: ?[]const u8 = null;
+        var last_identifier_end: usize = 0;
+
+        // Walk children to find identifiers (skip type_identifier which is part of type)
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {
                 const child_kind = child.kind();
-                if (std.mem.eql(u8, child_kind, "type_identifier") or
-                    std.mem.eql(u8, child_kind, "primitive_type"))
-                {
-                    param_type = self.getNodeText(child);
-                } else if (std.mem.eql(u8, child_kind, "identifier")) {
+                // Look for the parameter name in various declarator types
+                if (std.mem.eql(u8, child_kind, "identifier")) {
                     name = self.getNodeText(child);
+                    last_identifier_end = child.endByte();
+                } else if (std.mem.eql(u8, child_kind, "reference_declarator") or
+                    std.mem.eql(u8, child_kind, "pointer_declarator"))
+                {
+                    // The name is inside the declarator
+                    if (self.findIdentifierInNode(child)) |id| {
+                        name = id;
+                        last_identifier_end = child.endByte();
+                    }
                 }
+            }
+        }
+
+        // Extract type by removing the parameter name from the end
+        var param_type: []const u8 = full_text;
+        if (name) |n| {
+            // Find where the name starts in the full text and take everything before it
+            if (std.mem.lastIndexOf(u8, full_text, n)) |name_start| {
+                param_type = std.mem.trimRight(u8, full_text[0..name_start], " \t&*");
             }
         }
 
         return types.Parameter{
             .name = name orelse "unnamed",
-            .type_str = param_type orelse "unknown",
+            .type_str = if (param_type.len > 0) param_type else "unknown",
             .doc = null,
         };
+    }
+
+    /// Recursively finds an identifier node within a node
+    fn findIdentifierInNode(self: *Self, node: ts.Node) ?[]const u8 {
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                if (std.mem.eql(u8, child.kind(), "identifier")) {
+                    return self.getNodeText(child);
+                }
+                // Recurse into child nodes
+                if (self.findIdentifierInNode(child)) |id| {
+                    return id;
+                }
+            }
+        }
+        return null;
     }
 
     /// Extracts struct
