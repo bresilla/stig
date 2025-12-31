@@ -105,7 +105,12 @@ pub const CppParser = struct {
     ) !void {
         const node_kind = node.kind();
 
-        if (std.mem.eql(u8, node_kind, "function_definition") or
+        if (std.mem.eql(u8, node_kind, "template_declaration")) {
+            // Template declaration - extract docstring at this level and pass to child
+            const template_doc = self.findPrecedingDocstring(node);
+            try self.extractTemplateContents(node, functions, structs, enums, classes, filename, current_namespace, template_doc);
+            return; // Don't recurse normally for template nodes
+        } else if (std.mem.eql(u8, node_kind, "function_definition") or
             std.mem.eql(u8, node_kind, "declaration"))
         {
             if (try self.extractFunctionPrototype(node, filename, current_namespace)) |func| {
@@ -201,6 +206,48 @@ pub const CppParser = struct {
         };
     }
 
+    /// Extracts contents from a template_declaration node
+    /// The docstring is found at the template level and passed down
+    fn extractTemplateContents(
+        self: *Self,
+        node: ts.Node,
+        functions: *std.ArrayList(types.Function),
+        structs: *std.ArrayList(types.Struct),
+        enums: *std.ArrayList(types.Enum),
+        classes: *std.ArrayList(types.Class),
+        filename: []const u8,
+        namespace: ?[]const u8,
+        template_doc: ?types.DocString,
+    ) !void {
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "function_definition") or
+                    std.mem.eql(u8, child_kind, "declaration"))
+                {
+                    // Extract function and override its docstring with template-level doc
+                    if (try self.extractFunctionPrototypeWithDoc(child, filename, namespace, template_doc)) |func| {
+                        try functions.append(self.allocator, func);
+                    }
+                } else if (std.mem.eql(u8, child_kind, "class_specifier")) {
+                    if (try self.extractClassWithDoc(child, filename, namespace, template_doc)) |class| {
+                        try classes.append(self.allocator, class);
+                    }
+                } else if (std.mem.eql(u8, child_kind, "struct_specifier")) {
+                    if (try self.extractStructWithDoc(child, filename, namespace, template_doc)) |s| {
+                        try structs.append(self.allocator, s);
+                    }
+                } else if (std.mem.eql(u8, child_kind, "template_declaration")) {
+                    // Nested template - recurse with the outer docstring if inner has none
+                    const inner_doc = self.findPrecedingDocstring(child) orelse template_doc;
+                    try self.extractTemplateContents(child, functions, structs, enums, classes, filename, namespace, inner_doc);
+                }
+            }
+        }
+    }
+
     /// Extracts a class definition
     fn extractClass(self: *Self, node: ts.Node, filename: []const u8, namespace: ?[]const u8) !?types.Class {
         var name: ?[]const u8 = null;
@@ -243,6 +290,18 @@ pub const CppParser = struct {
                 .column = start.column + 1,
             },
         };
+    }
+
+    /// Extracts a class definition with an optional docstring override (for templates)
+    fn extractClassWithDoc(self: *Self, node: ts.Node, filename: []const u8, namespace: ?[]const u8, doc_override: ?types.DocString) !?types.Class {
+        if (try self.extractClass(node, filename, namespace)) |class| {
+            var result = class;
+            if (result.doc == null and doc_override != null) {
+                result.doc = doc_override;
+            }
+            return result;
+        }
+        return null;
     }
 
     /// Extracts class body
@@ -427,6 +486,19 @@ pub const CppParser = struct {
         };
     }
 
+    /// Extracts function prototype with an optional docstring override (for templates)
+    fn extractFunctionPrototypeWithDoc(self: *Self, node: ts.Node, filename: []const u8, namespace: ?[]const u8, doc_override: ?types.DocString) !?types.Function {
+        if (try self.extractFunctionPrototype(node, filename, namespace)) |func| {
+            // Use override doc if provided and function has no doc of its own
+            var result = func;
+            if (result.doc == null and doc_override != null) {
+                result.doc = doc_override;
+            }
+            return result;
+        }
+        return null;
+    }
+
     /// Extracts parameters
     fn extractParameters(self: *Self, node: ts.Node) !std.ArrayList(types.Parameter) {
         var params: std.ArrayList(types.Parameter) = .empty;
@@ -551,6 +623,18 @@ pub const CppParser = struct {
                 .column = start.column + 1,
             },
         };
+    }
+
+    /// Extracts a struct with an optional docstring override (for templates)
+    fn extractStructWithDoc(self: *Self, node: ts.Node, filename: []const u8, namespace: ?[]const u8, doc_override: ?types.DocString) !?types.Struct {
+        if (try self.extractStruct(node, filename, namespace)) |s| {
+            var result = s;
+            if (result.doc == null and doc_override != null) {
+                result.doc = doc_override;
+            }
+            return result;
+        }
+        return null;
     }
 
     /// Extracts a struct field

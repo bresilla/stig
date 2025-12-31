@@ -115,6 +115,19 @@ pub const MarkdownGenerator = struct {
         try self.buffer.appendSlice(self.allocator, s);
     }
 
+    /// Writes a string with HTML entities escaped (< > &)
+    /// Used for type strings that appear outside code blocks
+    fn writeEscaped(self: *Self, s: []const u8) !void {
+        for (s) |c| {
+            switch (c) {
+                '<' => try self.buffer.appendSlice(self.allocator, "&lt;"),
+                '>' => try self.buffer.appendSlice(self.allocator, "&gt;"),
+                '&' => try self.buffer.appendSlice(self.allocator, "&amp;"),
+                else => try self.buffer.append(self.allocator, c),
+            }
+        }
+    }
+
     /// Extracts the base type name from a type string
     /// e.g., "const struct Point *" -> "Point"
     /// e.g., "const struct Point* a" -> "Point" (handles param name in type)
@@ -152,6 +165,7 @@ pub const MarkdownGenerator = struct {
     }
 
     /// Writes a type with optional cross-reference link
+    /// Uses HTML escaping for angle brackets (template types like Vec2<T>)
     fn writeTypeWithLink(self: *Self, type_str: []const u8) !void {
         if (self.symbol_table) |table| {
             // Extract base type for lookup
@@ -165,23 +179,23 @@ pub const MarkdownGenerator = struct {
                 // Write the type with the base type as a link
                 // e.g., "const Point *" becomes "const [Point](#point) *"
                 if (std.mem.indexOf(u8, type_str, base_type)) |start| {
-                    // Write prefix (e.g., "const ")
+                    // Write prefix (e.g., "const ") - escaped for HTML
                     if (start > 0) {
-                        try self.writeString(type_str[0..start]);
+                        try self.writeEscaped(type_str[0..start]);
                     }
-                    // Write linked type
+                    // Write linked type (link text is already safe)
                     try self.writeString(link.text);
-                    // Write suffix (e.g., " *")
+                    // Write suffix (e.g., " *" or "<T>") - escaped for HTML
                     const end = start + base_type.len;
                     if (end < type_str.len) {
-                        try self.writeString(type_str[end..]);
+                        try self.writeEscaped(type_str[end..]);
                     }
                     return;
                 }
             }
         }
-        // No cross-reference - write plain type
-        try self.writeString(type_str);
+        // No cross-reference - write plain type with HTML escaping
+        try self.writeEscaped(type_str);
     }
 
     /// Writes a symbol reference with optional cross-reference link (for @see tags)

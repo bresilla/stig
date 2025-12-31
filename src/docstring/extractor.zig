@@ -172,8 +172,10 @@ pub const DocstringExtractor = struct {
         }
 
         if (details_start) |start| {
-            if (details_end > start) {
-                const details = std.mem.trim(u8, raw[start..details_end], " \t\n\r*");
+            // Clamp details_end to raw.len to avoid out-of-bounds
+            const safe_end = @min(details_end, raw.len);
+            if (safe_end > start) {
+                const details = std.mem.trim(u8, raw[start..safe_end], " \t\n\r*");
                 if (details.len > 0) {
                     return details;
                 }
