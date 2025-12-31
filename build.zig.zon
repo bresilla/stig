@@ -1,0 +1,22 @@
+.{
+    .name = .stinger,
+    .version = "0.1.0",
+    .fingerprint = 0x749d9d446176df3b,
+    .minimum_zig_version = "0.14.0",
+    .dependencies = .{
+        .tree_sitter = .{
+            .url = "git+https://github.com/tree-sitter/zig-tree-sitter#03733bad4b6bfd1c642f61ff13bedb2ae4ff8b29",
+            .hash = "tree_sitter-0.25.0-8heIf7iZAQDu5oiKLKffYhdvWpEuxc5OhsySDlkFLxFT",
+        },
+        .tree_sitter_c = .{
+            .url = "git+https://github.com/tree-sitter/tree-sitter-c#586dd62ad4d3532895ea80a8382d21307b4733bd",
+            .hash = "tree_sitter_c-0.24.1-ns1YLwdjQACIi5BEwewiqu6a6Zcl91RWoSWbz0KmxUOj",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "test",
+    },
+}

@@ -1,0 +1,11 @@
+build
+.xmake
+compile_commands.json
+
+# Zig
+zig-out/
+zig-cache/
+.zig-cache/
+
+# Generated docs
+docs/book/
