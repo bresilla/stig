@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("../model/types.zig");
+const IncludeProcessor = @import("includes.zig").IncludeProcessor;
 
 /// Docstring format detection
 pub const DocFormat = enum {
@@ -16,11 +17,17 @@ pub const DocFormat = enum {
 /// Extracts and parses docstrings from comment text
 pub const DocstringExtractor = struct {
     allocator: std.mem.Allocator,
+    base_path: []const u8 = "",
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{ .allocator = allocator };
+    }
+
+    /// Sets the base path for resolving include directives
+    pub fn setBasePath(self: *Self, path: []const u8) void {
+        self.base_path = path;
     }
 
     /// Detects the docstring format from raw comment text
@@ -48,13 +55,22 @@ pub const DocstringExtractor = struct {
     }
 
     /// Parses a raw docstring into structured form
+    /// Note: If include directives are processed, the returned DocString.raw
+    /// will be newly allocated and should be freed by the caller when done.
     pub fn parse(self: *Self, raw: []const u8) !types.DocString {
-        const format = self.detectFormat(raw);
+        // Process include directives first
+        var include_processor = IncludeProcessor.init(self.allocator, self.base_path);
+        const processed = try include_processor.process(raw);
+        // Note: We do NOT free 'processed' here - it becomes owned by DocString.raw
+        // The caller is responsible for freeing DocString.raw if it was allocated
+        // (i.e., if processed.ptr != raw.ptr)
+
+        const format = self.detectFormat(processed);
 
         return switch (format) {
-            .doxygen => try self.parseDoxygen(raw),
-            .markdown => try self.parseMarkdown(raw),
-            else => types.DocString{ .raw = raw, .brief = self.extractBrief(raw) },
+            .doxygen => try self.parseDoxygen(processed),
+            .markdown => try self.parseMarkdown(processed),
+            else => types.DocString{ .raw = processed, .brief = self.extractBrief(processed) },
         };
     }
 
@@ -93,12 +109,89 @@ pub const DocstringExtractor = struct {
         return null;
     }
 
+    /// Extracts the details section (text between brief and parameter/return tags)
+    /// Handles both @brief style and plain text briefs
+    fn extractDetails(self: *Self, raw: []const u8) ?[]const u8 {
+        _ = self;
+
+        var lines = std.mem.splitScalar(u8, raw, '\n');
+        var found_brief = false;
+        var details_start: ?usize = null;
+        var details_end: usize = 0;
+        var current_pos: usize = 0;
+
+        // Tags that end the details section
+        const end_tags = [_][]const u8{ "@param", "@return", "@returns", "@deprecated", "@note", "@warning", "@see", "@sa", "@since", "@author", "@version", "@example" };
+
+        while (lines.next()) |line| {
+            const line_start = current_pos;
+            current_pos += line.len + 1; // +1 for newline
+
+            const trimmed = std.mem.trim(u8, line, " \t\r*");
+
+            // Skip empty lines at the start or between brief and details
+            if (trimmed.len == 0) {
+                if (found_brief and details_start != null) {
+                    // Empty line in details section - include it
+                    details_end = current_pos;
+                }
+                continue;
+            }
+
+            // Check if this is a @brief tag (part of brief, not details)
+            if (std.mem.startsWith(u8, trimmed, "@brief ")) {
+                found_brief = true;
+                continue;
+            }
+
+            // Check if this is an end tag (param, return, etc.)
+            var is_end_tag = false;
+            for (end_tags) |tag| {
+                if (std.mem.startsWith(u8, trimmed, tag)) {
+                    is_end_tag = true;
+                    break;
+                }
+            }
+
+            if (is_end_tag) {
+                // Stop collecting details
+                break;
+            }
+
+            if (!found_brief) {
+                // This is the brief line (plain text, not @brief) - skip it
+                found_brief = true;
+                continue;
+            }
+
+            // This is a details line
+            if (details_start == null) {
+                details_start = line_start;
+            }
+            details_end = current_pos;
+        }
+
+        if (details_start) |start| {
+            if (details_end > start) {
+                const details = std.mem.trim(u8, raw[start..details_end], " \t\n\r*");
+                if (details.len > 0) {
+                    return details;
+                }
+            }
+        }
+
+        return null;
+    }
+
     /// Parses Doxygen-style docstrings
     fn parseDoxygen(self: *Self, raw: []const u8) !types.DocString {
         var doc = types.DocString{ .raw = raw };
 
         // Extract brief
         doc.brief = self.extractBrief(raw);
+
+        // Extract details (text between brief and first @ tag, excluding brief line)
+        doc.details = self.extractDetails(raw);
 
         // Parse all Doxygen tags
         var params: std.ArrayList(types.ParamDoc) = .empty;
@@ -455,4 +548,43 @@ test "parse all doxygen tags together" {
     try std.testing.expectEqualStrings("1.0.0", doc.since.?);
     try std.testing.expectEqualStrings("Jane Smith", doc.author.?);
     try std.testing.expectEqualStrings("Use new_func instead.", doc.deprecated.?);
+}
+
+test "extract details section" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Brief description.
+        \\*
+        \\* This is the details section.
+        \\* It can span multiple lines.
+        \\*
+        \\* @param x Input value
+    );
+    defer std.testing.allocator.free(doc.params);
+
+    try std.testing.expectEqualStrings("Brief description.", doc.brief.?);
+    try std.testing.expect(doc.details != null);
+    // Details should contain the multi-line content
+    try std.testing.expect(std.mem.indexOf(u8, doc.details.?, "This is the details section") != null);
+}
+
+test "extract details with code block" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Brief description.
+        \\*
+        \\* Example:
+        \\* ```c
+        \\* int x = 42;
+        \\* ```
+        \\*
+        \\* @param x Input value
+    );
+    defer std.testing.allocator.free(doc.params);
+
+    try std.testing.expectEqualStrings("Brief description.", doc.brief.?);
+    try std.testing.expect(doc.details != null);
+    // Details should contain the code block
+    try std.testing.expect(std.mem.indexOf(u8, doc.details.?, "```c") != null);
+    try std.testing.expect(std.mem.indexOf(u8, doc.details.?, "int x = 42") != null);
 }

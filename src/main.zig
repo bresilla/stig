@@ -173,6 +173,11 @@ pub fn main() !void {
             continue;
         };
 
+        // Set base path for include directives (directory containing the source file)
+        const base_path = std.fs.path.dirname(input_file) orelse ".";
+        c_parser.setBasePath(base_path);
+        cpp_parser.setBasePath(base_path);
+
         // Choose parser based on file extension
         const is_cpp = isCppFile(input_file);
         const module = if (is_cpp)

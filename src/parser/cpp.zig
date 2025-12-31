@@ -34,6 +34,11 @@ pub const CppParser = struct {
         self.language.destroy();
     }
 
+    /// Sets the base path for resolving include directives in docstrings
+    pub fn setBasePath(self: *Self, path: []const u8) void {
+        self.docstring_extractor.setBasePath(path);
+    }
+
     /// Parses C++ source code and extracts documentation
     pub fn parse(self: *Self, source: []const u8, filename: []const u8) !types.Module {
         self.source = source;

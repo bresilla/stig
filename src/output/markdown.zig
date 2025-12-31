@@ -244,6 +244,37 @@ pub const MarkdownGenerator = struct {
                 try self.writeString("\n\n");
             }
 
+            // Details section (includes inline examples, code blocks, etc.)
+            if (doc.details) |details| {
+                // Clean up the details - remove leading asterisks from each line
+                var cleaned_lines: std.ArrayList(u8) = .empty;
+                defer cleaned_lines.deinit(self.allocator);
+
+                var lines_iter = std.mem.splitScalar(u8, details, '\n');
+                var first = true;
+                while (lines_iter.next()) |line| {
+                    if (!first) {
+                        try cleaned_lines.append(self.allocator, '\n');
+                    }
+                    first = false;
+
+                    var content = std.mem.trim(u8, line, " \t\r");
+                    // Strip leading asterisk if present
+                    if (std.mem.startsWith(u8, content, "* ")) {
+                        content = content[2..];
+                    } else if (std.mem.startsWith(u8, content, "*")) {
+                        content = content[1..];
+                        content = std.mem.trimLeft(u8, content, " ");
+                    }
+                    try cleaned_lines.appendSlice(self.allocator, content);
+                }
+
+                if (cleaned_lines.items.len > 0) {
+                    try self.writeString(cleaned_lines.items);
+                    try self.writeString("\n\n");
+                }
+            }
+
             if (doc.params.len > 0) {
                 try self.writeString("**Parameters:**\n");
                 for (doc.params) |param| {
@@ -297,6 +328,31 @@ pub const MarkdownGenerator = struct {
                     try self.writeString("> **Warning:** ");
                     try self.writeString(warning);
                     try self.writeString("\n\n");
+                }
+            }
+
+            // Examples
+            if (doc.examples.len > 0) {
+                try self.writeString("**Examples:**\n\n");
+                for (doc.examples) |example| {
+                    // Check if it's a file reference or inline code
+                    if (std.mem.indexOf(u8, example, "\n") == null and
+                        (std.mem.endsWith(u8, example, ".c") or
+                            std.mem.endsWith(u8, example, ".h") or
+                            std.mem.endsWith(u8, example, ".cpp") or
+                            std.mem.endsWith(u8, example, ".hpp") or
+                            std.mem.indexOf(u8, example, ":") != null))
+                    {
+                        // File reference - output as include directive for mdbook
+                        try self.writeString("```c\n{{#include ");
+                        try self.writeString(example);
+                        try self.writeString("}}\n```\n\n");
+                    } else {
+                        // Inline code
+                        try self.writeString("```c\n");
+                        try self.writeString(example);
+                        try self.writeString("\n```\n\n");
+                    }
                 }
             }
 
