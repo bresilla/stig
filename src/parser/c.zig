@@ -2,6 +2,7 @@ const std = @import("std");
 const ts = @import("tree-sitter");
 const ts_c = @import("tree-sitter-c");
 const types = @import("../model/types.zig");
+const DocstringExtractor = @import("../docstring/extractor.zig").DocstringExtractor;
 
 /// C language parser using tree-sitter
 pub const CParser = struct {
@@ -9,6 +10,7 @@ pub const CParser = struct {
     language: *ts.Language,
     allocator: std.mem.Allocator,
     source: []const u8 = "",
+    docstring_extractor: DocstringExtractor,
 
     const Self = @This();
 
@@ -22,6 +24,7 @@ pub const CParser = struct {
             .parser = parser,
             .language = language,
             .allocator = allocator,
+            .docstring_extractor = DocstringExtractor.init(allocator),
         };
     }
 
@@ -110,6 +113,106 @@ pub const CParser = struct {
         }
     }
 
+    /// Finds the docstring comment preceding a node
+    /// Looks for /** */ or consecutive /// comments immediately before the declaration
+    fn findPrecedingDocstring(self: *Self, node: ts.Node) ?types.DocString {
+        // Get the previous sibling
+        const prev = node.prevSibling() orelse return null;
+        const prev_kind = prev.kind();
+
+        // Check if it's a comment
+        if (std.mem.eql(u8, prev_kind, "comment")) {
+            const comment_text = self.getNodeText(prev);
+
+            // Check if it's a doc comment (/** or ///)
+            if (std.mem.startsWith(u8, comment_text, "/**") or
+                std.mem.startsWith(u8, comment_text, "///"))
+            {
+                // Check if there's no blank line between comment and declaration
+                const comment_end_line = prev.endPoint().row;
+                const decl_start_line = node.startPoint().row;
+
+                // Allow at most 1 line gap (for the newline after comment)
+                if (decl_start_line <= comment_end_line + 1) {
+                    return self.parseDocComment(prev);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// Collects consecutive /// comments into a single docstring
+    fn collectTripleSlashComments(self: *Self, start_node: ts.Node) ?types.DocString {
+        var comments: std.ArrayList([]const u8) = .empty;
+        defer comments.deinit(self.allocator);
+
+        var current = start_node;
+
+        // Walk backwards collecting /// comments
+        while (true) {
+            const text = self.getNodeText(current);
+            if (std.mem.startsWith(u8, text, "///")) {
+                // Strip /// prefix and leading space
+                var content = text[3..];
+                if (content.len > 0 and content[0] == ' ') {
+                    content = content[1..];
+                }
+                comments.insert(self.allocator, 0, content) catch break;
+
+                // Check previous sibling
+                if (current.prevSibling()) |prev| {
+                    if (std.mem.eql(u8, prev.kind(), "comment")) {
+                        const prev_text = self.getNodeText(prev);
+                        if (std.mem.startsWith(u8, prev_text, "///")) {
+                            // Check they're on consecutive lines
+                            if (current.startPoint().row == prev.endPoint().row + 1) {
+                                current = prev;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            break;
+        }
+
+        if (comments.items.len == 0) return null;
+
+        // Join all comments with newlines
+        var total_len: usize = 0;
+        for (comments.items) |c| {
+            total_len += c.len + 1; // +1 for newline
+        }
+
+        // For now, just use the raw text and parse it
+        const raw = self.getNodeText(start_node);
+        return self.parseRawDocstring(raw);
+    }
+
+    /// Parses a comment node into a DocString
+    fn parseDocComment(self: *Self, comment_node: ts.Node) ?types.DocString {
+        const text = self.getNodeText(comment_node);
+
+        if (std.mem.startsWith(u8, text, "///")) {
+            return self.collectTripleSlashComments(comment_node);
+        } else if (std.mem.startsWith(u8, text, "/**")) {
+            return self.parseRawDocstring(text);
+        }
+
+        return null;
+    }
+
+    /// Parses raw docstring text into structured DocString
+    fn parseRawDocstring(self: *Self, raw: []const u8) ?types.DocString {
+        const stripped = self.docstring_extractor.stripDelimiters(raw);
+        if (stripped.len == 0) return null;
+
+        // Parse the docstring
+        const doc = self.docstring_extractor.parse(stripped) catch return null;
+        return doc;
+    }
+
     /// Extracts a function definition
     fn extractFunction(self: *Self, node: ts.Node, filename: []const u8) !?types.Function {
         // Get return type
@@ -133,11 +236,15 @@ pub const CParser = struct {
         const func_name = self.extractFunctionName(declarator) orelse return null;
         const params = try self.extractParameters(declarator);
 
+        // Find docstring
+        const doc = self.findPrecedingDocstring(node);
+
         const start = node.startPoint();
         return types.Function{
             .name = func_name,
             .return_type = return_type,
             .params = params,
+            .doc = doc,
             .location = types.SourceLocation{
                 .file = filename,
                 .line = start.row + 1,
@@ -176,11 +283,15 @@ pub const CParser = struct {
             const func_name = self.extractFunctionName(fd) orelse return null;
             const params = try self.extractParameters(fd);
 
+            // Find docstring
+            const doc = self.findPrecedingDocstring(node);
+
             const start = node.startPoint();
             return types.Function{
                 .name = func_name,
                 .return_type = return_type,
                 .params = params,
+                .doc = doc,
                 .location = types.SourceLocation{
                     .file = filename,
                     .line = start.row + 1,
@@ -313,7 +424,7 @@ pub const CParser = struct {
 
         if (name.len == 0) return null;
 
-        // Get fields
+        // Get fields with their trailing comments
         var fields: std.ArrayList(types.StructField) = .empty;
         const body = node.childByFieldName("body");
         if (body) |field_list| {
@@ -329,10 +440,21 @@ pub const CParser = struct {
             }
         }
 
+        // Find docstring for the struct
+        // Need to look at parent's previous sibling since struct_specifier is inside declaration
+        var doc: ?types.DocString = null;
+        if (node.parent()) |parent| {
+            doc = self.findPrecedingDocstring(parent);
+        }
+        if (doc == null) {
+            doc = self.findPrecedingDocstring(node);
+        }
+
         const start = node.startPoint();
         return types.Struct{
             .name = name,
             .fields = try fields.toOwnedSlice(self.allocator),
+            .doc = doc,
             .location = types.SourceLocation{
                 .file = filename,
                 .line = start.row + 1,
@@ -341,10 +463,11 @@ pub const CParser = struct {
         };
     }
 
-    /// Extracts a struct field
+    /// Extracts a struct field with optional trailing comment
     fn extractField(self: *Self, node: ts.Node) ?types.StructField {
         var type_str: []const u8 = "";
         var name: []const u8 = "";
+        var doc: ?[]const u8 = null;
 
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
@@ -357,6 +480,32 @@ pub const CParser = struct {
                     type_str = self.getNodeText(child);
                 } else if (std.mem.eql(u8, child_kind, "field_identifier")) {
                     name = self.getNodeText(child);
+                } else if (std.mem.eql(u8, child_kind, "comment")) {
+                    // Trailing comment on same line
+                    const comment_text = self.getNodeText(child);
+                    if (std.mem.startsWith(u8, comment_text, "///<") or
+                        std.mem.startsWith(u8, comment_text, "/**<"))
+                    {
+                        // Doxygen trailing comment
+                        doc = self.stripTrailingCommentDelimiters(comment_text);
+                    } else if (std.mem.startsWith(u8, comment_text, "///") or
+                        std.mem.startsWith(u8, comment_text, "/**"))
+                    {
+                        doc = self.stripTrailingCommentDelimiters(comment_text);
+                    }
+                }
+            }
+        }
+
+        // Also check next sibling for trailing comment
+        if (doc == null) {
+            if (node.nextSibling()) |next| {
+                if (std.mem.eql(u8, next.kind(), "comment")) {
+                    // Check if on same line
+                    if (next.startPoint().row == node.endPoint().row) {
+                        const comment_text = self.getNodeText(next);
+                        doc = self.stripTrailingCommentDelimiters(comment_text);
+                    }
                 }
             }
         }
@@ -365,9 +514,36 @@ pub const CParser = struct {
             return types.StructField{
                 .name = name,
                 .type_str = type_str,
+                .doc = doc,
             };
         }
         return null;
+    }
+
+    /// Strips delimiters from trailing comments (///<, /**<, etc.)
+    fn stripTrailingCommentDelimiters(self: *Self, text: []const u8) []const u8 {
+        _ = self;
+        var result = text;
+
+        // Strip leading delimiters
+        if (std.mem.startsWith(u8, result, "///<")) {
+            result = result[4..];
+        } else if (std.mem.startsWith(u8, result, "/**<")) {
+            result = result[4..];
+        } else if (std.mem.startsWith(u8, result, "///")) {
+            result = result[3..];
+        } else if (std.mem.startsWith(u8, result, "/**")) {
+            result = result[3..];
+        } else if (std.mem.startsWith(u8, result, "//")) {
+            result = result[2..];
+        }
+
+        // Strip trailing */
+        if (std.mem.endsWith(u8, result, "*/")) {
+            result = result[0 .. result.len - 2];
+        }
+
+        return std.mem.trim(u8, result, " \t");
     }
 
     /// Extracts an enum definition
@@ -402,10 +578,20 @@ pub const CParser = struct {
             }
         }
 
+        // Find docstring
+        var doc: ?types.DocString = null;
+        if (node.parent()) |parent| {
+            doc = self.findPrecedingDocstring(parent);
+        }
+        if (doc == null) {
+            doc = self.findPrecedingDocstring(node);
+        }
+
         const start = node.startPoint();
         return types.Enum{
             .name = name,
             .values = try values.toOwnedSlice(self.allocator),
+            .doc = doc,
             .location = types.SourceLocation{
                 .file = filename,
                 .line = start.row + 1,
@@ -414,10 +600,11 @@ pub const CParser = struct {
         };
     }
 
-    /// Extracts an enum value
+    /// Extracts an enum value with optional trailing comment
     fn extractEnumValue(self: *Self, node: ts.Node) !?types.EnumValue {
         var name: []const u8 = "";
         var value: ?i64 = null;
+        var doc: ?[]const u8 = null;
 
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
@@ -428,6 +615,21 @@ pub const CParser = struct {
                 } else if (std.mem.eql(u8, child_kind, "number_literal")) {
                     const num_text = self.getNodeText(child);
                     value = std.fmt.parseInt(i64, num_text, 0) catch null;
+                } else if (std.mem.eql(u8, child_kind, "comment")) {
+                    const comment_text = self.getNodeText(child);
+                    doc = self.stripTrailingCommentDelimiters(comment_text);
+                }
+            }
+        }
+
+        // Check next sibling for trailing comment
+        if (doc == null) {
+            if (node.nextSibling()) |next| {
+                if (std.mem.eql(u8, next.kind(), "comment")) {
+                    if (next.startPoint().row == node.endPoint().row) {
+                        const comment_text = self.getNodeText(next);
+                        doc = self.stripTrailingCommentDelimiters(comment_text);
+                    }
                 }
             }
         }
@@ -436,6 +638,7 @@ pub const CParser = struct {
             return types.EnumValue{
                 .name = name,
                 .value = value,
+                .doc = doc,
             };
         }
         return null;
@@ -471,10 +674,14 @@ pub const CParser = struct {
         }
 
         if (name.len > 0 and underlying.len > 0) {
+            // Find docstring
+            const doc = self.findPrecedingDocstring(node);
+
             const start = node.startPoint();
             return types.Typedef{
                 .name = name,
                 .underlying = underlying,
+                .doc = doc,
                 .location = types.SourceLocation{
                     .file = filename,
                     .line = start.row + 1,
@@ -548,4 +755,19 @@ test "parse enum" {
     try std.testing.expectEqualStrings("Color", module.enums[0].name);
     try std.testing.expectEqual(@as(usize, 3), module.enums[0].values.len);
     try std.testing.expectEqual(@as(?i64, 0), module.enums[0].values[0].value);
+}
+
+test "parse function with docstring" {
+    var parser = try CParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\/** Adds two numbers */
+        \\int add(int a, int b);
+    ;
+    const module = try parser.parse(source, "test.h");
+    defer std.testing.allocator.free(module.functions);
+
+    try std.testing.expectEqual(@as(usize, 1), module.functions.len);
+    try std.testing.expect(module.functions[0].doc != null);
 }

@@ -24,25 +24,27 @@ pub fn main() !void {
 
     // Test parsing a simple C snippet
     const source =
-        \\/// Adds two integers together.
-        \\/// @param a First operand
-        \\/// @param b Second operand
-        \\/// @return Sum of a and b
+        \\/** 
+        \\ * Adds two integers together.
+        \\ * @param a First operand
+        \\ * @param b Second operand
+        \\ * @return Sum of a and b
+        \\ */
         \\int add(int a, int b) {
         \\    return a + b;
         \\}
         \\
-        \\/// A simple 2D point structure.
+        \\/** A simple 2D point structure. */
         \\struct Point {
-        \\    int x; ///< X coordinate
-        \\    int y; ///< Y coordinate
+        \\    int x; /**< X coordinate */
+        \\    int y; /**< Y coordinate */
         \\};
         \\
-        \\/// Color enumeration.
+        \\/** Color enumeration. */
         \\enum Color {
-        \\    RED = 0,
-        \\    GREEN = 1,
-        \\    BLUE = 2
+        \\    RED = 0,   /**< Red color */
+        \\    GREEN = 1, /**< Green color */
+        \\    BLUE = 2   /**< Blue color */
         \\};
     ;
 
@@ -59,14 +61,28 @@ pub fn main() !void {
             try stdout.print("{s} {s}", .{ param.type_str, param.name });
         }
         try stdout.print(") at line {d}\n", .{func.location.line});
+        if (func.doc) |doc| {
+            if (doc.brief) |brief| {
+                try stdout.print("      Doc: {s}\n", .{brief});
+            }
+        }
     }
 
     // Print structs
     try stdout.print("\nStructures ({d}):\n", .{module.structs.len});
     for (module.structs) |s| {
         try stdout.print("  - struct {s} at line {d}\n", .{ s.name, s.location.line });
+        if (s.doc) |doc| {
+            if (doc.brief) |brief| {
+                try stdout.print("      Doc: {s}\n", .{brief});
+            }
+        }
         for (s.fields) |field| {
-            try stdout.print("      {s} {s}\n", .{ field.type_str, field.name });
+            try stdout.print("      {s} {s}", .{ field.type_str, field.name });
+            if (field.doc) |doc| {
+                try stdout.print(" - {s}", .{doc});
+            }
+            try stdout.print("\n", .{});
         }
     }
 
@@ -74,12 +90,21 @@ pub fn main() !void {
     try stdout.print("\nEnumerations ({d}):\n", .{module.enums.len});
     for (module.enums) |e| {
         try stdout.print("  - enum {s} at line {d}\n", .{ e.name, e.location.line });
+        if (e.doc) |doc| {
+            if (doc.brief) |brief| {
+                try stdout.print("      Doc: {s}\n", .{brief});
+            }
+        }
         for (e.values) |val| {
             if (val.value) |v| {
-                try stdout.print("      {s} = {d}\n", .{ val.name, v });
+                try stdout.print("      {s} = {d}", .{ val.name, v });
             } else {
-                try stdout.print("      {s}\n", .{val.name});
+                try stdout.print("      {s}", .{val.name});
             }
+            if (val.doc) |doc| {
+                try stdout.print(" - {s}", .{doc});
+            }
+            try stdout.print("\n", .{});
         }
     }
 }
