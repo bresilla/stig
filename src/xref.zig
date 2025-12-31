@@ -5,6 +5,7 @@ const types = @import("model/types.zig");
 pub const SymbolKind = enum {
     function,
     struct_type,
+    class_type,
     enum_type,
     typedef,
     macro,
@@ -37,23 +38,55 @@ pub const SymbolTable = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        // Free allocated anchors
+        // Free allocated anchors - but only once per unique anchor
+        // Since short names share anchors with full names, we need to track what we've freed
+        // Use pointer address as key since anchors are slices pointing to same memory
+        var freed_ptrs = std.AutoHashMap(usize, void).init(self.allocator);
+        defer freed_ptrs.deinit();
+
         var iter = self.symbols.valueIterator();
         while (iter.next()) |info| {
-            self.allocator.free(info.anchor);
+            const ptr_addr = @intFromPtr(info.anchor.ptr);
+            const gop = freed_ptrs.getOrPut(ptr_addr) catch continue;
+            if (!gop.found_existing) {
+                self.allocator.free(info.anchor);
+            }
         }
         self.symbols.deinit();
     }
 
     /// Registers a symbol in the table
+    /// Also registers the short name (without namespace) for easier lookup
     pub fn register(self: *Self, name: []const u8, kind: SymbolKind, source_file: []const u8) !void {
         const anchor = try self.generateAnchor(name);
-        try self.symbols.put(name, SymbolInfo{
+        const info = SymbolInfo{
             .kind = kind,
             .source_file = source_file,
             .anchor = anchor,
             .name = name,
-        });
+        };
+
+        // Register with full name
+        try self.symbols.put(name, info);
+
+        // Also register with short name (without namespace) if different
+        const short_name = self.extractShortName(name);
+        if (!std.mem.eql(u8, short_name, name)) {
+            // Only register short name if not already taken
+            if (!self.symbols.contains(short_name)) {
+                try self.symbols.put(short_name, info);
+            }
+        }
+    }
+
+    /// Extracts the short name from a fully qualified name
+    /// e.g., "spatial::Point2" -> "Point2"
+    fn extractShortName(self: *Self, name: []const u8) []const u8 {
+        _ = self;
+        if (std.mem.lastIndexOf(u8, name, "::")) |idx| {
+            return name[idx + 2 ..];
+        }
+        return name;
     }
 
     /// Looks up a symbol by name
@@ -97,6 +130,11 @@ pub const SymbolTable = struct {
             // Register typedefs
             for (module.typedefs) |td| {
                 try self.register(td.name, .typedef, module.name);
+            }
+
+            // Register classes (C++)
+            for (module.classes) |class| {
+                try self.register(class.name, .class_type, module.name);
             }
         }
     }

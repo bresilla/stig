@@ -102,6 +102,14 @@ pub const MarkdownGenerator = struct {
             }
         }
 
+        // Classes section (C++)
+        if (module.classes.len > 0) {
+            try self.writeString("## Classes\n\n");
+            for (module.classes) |class| {
+                try self.writeClass(class);
+            }
+        }
+
         return self.buffer.items;
     }
 
@@ -131,6 +139,9 @@ pub const MarkdownGenerator = struct {
     /// Extracts the base type name from a type string
     /// e.g., "const struct Point *" -> "Point"
     /// e.g., "const struct Point* a" -> "Point" (handles param name in type)
+    /// e.g., "const Point2<T>" -> "Point2" (handles C++ templates)
+    /// e.g., "spatial::Point2<T>" -> "Point2" (handles C++ namespaces)
+    /// e.g., "std::vector<Point2<T>>" -> "vector" (handles nested templates)
     pub fn extractBaseType(type_str: []const u8) []const u8 {
         var result = type_str;
 
@@ -148,17 +159,23 @@ pub const MarkdownGenerator = struct {
             result = result[6..];
         }
 
-        // Find the end of the type name (before * or space)
-        // This handles cases like "Point* a" where param name is included
+        // Find the end of the type name (before * & space or <)
+        // This handles cases like "Point* a" and "Point2<T>"
         var end: usize = 0;
         for (result, 0..) |c, i| {
-            if (c == '*' or c == '&' or c == ' ') {
+            if (c == '*' or c == '&' or c == ' ' or c == '<') {
                 break;
             }
             end = i + 1;
         }
         if (end > 0) {
             result = result[0..end];
+        }
+
+        // Strip namespace prefix (e.g., "std::vector" -> "vector", "spatial::Point2" -> "Point2")
+        // Find the last :: and take everything after it
+        if (std.mem.lastIndexOf(u8, result, "::")) |idx| {
+            result = result[idx + 2 ..];
         }
 
         return result;
@@ -231,14 +248,52 @@ pub const MarkdownGenerator = struct {
                 return .{ .text = link_buf, .needs_free = true };
             },
             .mdbook => {
-                // mdbook: use relative path links
-                // For now, use simple anchor links within the same section
-                const link_len = 1 + symbol_name.len + 2 + 1 + info.anchor.len + 1;
-                const link_buf = try self.allocator.alloc(u8, link_len);
-                _ = std.fmt.bufPrint(link_buf, "[{s}](#{s})", .{ symbol_name, info.anchor }) catch unreachable;
+                // mdbook: use relative path links between sections
+                // Types are in ../types/<file>.md, functions in ../functions/<file>.md
+                const target_section = switch (info.kind) {
+                    .struct_type, .class_type, .enum_type, .typedef => "types",
+                    .function => "functions",
+                    .macro => "macros",
+                };
+
+                // Get the target file basename (e.g., "include/spatial/geometry.hpp" -> "geometry")
+                const target_file = self.getFileBasename(info.source_file);
+
+                // Build the relative link: ../types/geometry.md#anchor
+                // Max size: "../" + section + "/" + file + ".md#" + anchor
+                const max_len = 3 + target_section.len + 1 + target_file.len + 4 + info.anchor.len;
+                const link_buf = try self.allocator.alloc(u8, 1 + symbol_name.len + 2 + max_len + 1);
+
+                const written = std.fmt.bufPrint(link_buf, "[{s}](../{s}/{s}.md#{s})", .{
+                    symbol_name,
+                    target_section,
+                    target_file,
+                    info.anchor,
+                }) catch unreachable;
+                _ = written;
+
                 return .{ .text = link_buf, .needs_free = true };
             },
         }
+    }
+
+    /// Gets the basename of a file path without extension
+    /// e.g., "include/spatial/geometry.hpp" -> "geometry"
+    fn getFileBasename(self: *Self, path: []const u8) []const u8 {
+        _ = self;
+        var result = path;
+
+        // Get filename part (after last /)
+        if (std.mem.lastIndexOfScalar(u8, result, '/')) |idx| {
+            result = result[idx + 1 ..];
+        }
+
+        // Remove extension
+        if (std.mem.lastIndexOfScalar(u8, result, '.')) |idx| {
+            result = result[0..idx];
+        }
+
+        return result;
     }
 
     fn writeFunction(self: *Self, func: types.Function) !void {
@@ -607,6 +662,140 @@ pub const MarkdownGenerator = struct {
                 }
                 try self.writeString("\n\n");
             }
+        }
+
+        try self.writeString("---\n\n");
+    }
+
+    fn writeClass(self: *Self, class: types.Class) !void {
+        // Class name as heading
+        try self.writeString("### `");
+        try self.writeString(class.name);
+        try self.writeString("`\n\n");
+
+        // Code block with class definition
+        try self.writeString("```cpp\nclass ");
+        try self.writeString(class.name);
+        try self.writeString(" {\n");
+
+        // Group fields and methods by access specifier
+        const access_order = [_]types.AccessSpecifier{ .public, .protected, .private };
+        const access_names = [_][]const u8{ "public", "protected", "private" };
+
+        for (access_order, 0..) |access, idx| {
+            var has_members = false;
+
+            // Check if there are any members with this access level
+            for (class.fields) |field| {
+                if (field.access == access) {
+                    has_members = true;
+                    break;
+                }
+            }
+            if (!has_members) {
+                for (class.methods) |method| {
+                    if (method.access == access) {
+                        has_members = true;
+                        break;
+                    }
+                }
+            }
+
+            if (has_members) {
+                try self.writeString(access_names[idx]);
+                try self.writeString(":\n");
+
+                // Write fields
+                for (class.fields) |field| {
+                    if (field.access == access) {
+                        try self.writeString("    ");
+                        try self.writeString(field.type_str);
+                        try self.writeString(" ");
+                        try self.writeString(field.name);
+                        try self.writeString(";\n");
+                    }
+                }
+
+                // Write methods
+                for (class.methods) |method| {
+                    if (method.access == access) {
+                        try self.writeString("    ");
+                        if (method.is_virtual) try self.writeString("virtual ");
+                        if (method.is_static) try self.writeString("static ");
+                        try self.writeString(method.return_type);
+                        try self.writeString(" ");
+                        try self.writeString(method.name);
+                        try self.writeString("(");
+                        for (method.params, 0..) |param, i| {
+                            if (i > 0) try self.writeString(", ");
+                            try self.writeString(param.type_str);
+                            try self.writeString(" ");
+                            try self.writeString(param.name);
+                        }
+                        try self.writeString(")");
+                        if (method.is_const) try self.writeString(" const");
+                        try self.writeString(";\n");
+                    }
+                }
+            }
+        }
+
+        try self.writeString("};\n```\n\n");
+
+        // Documentation
+        if (class.doc) |doc| {
+            if (doc.brief) |brief| {
+                try self.writeString(brief);
+                try self.writeString("\n\n");
+            }
+
+            if (doc.details) |details| {
+                try self.writeString(details);
+                try self.writeString("\n\n");
+            }
+
+            // See also
+            if (doc.see_also.len > 0) {
+                try self.writeString("**See also:** ");
+                for (doc.see_also, 0..) |ref, i| {
+                    if (i > 0) try self.writeString(", ");
+                    try self.writeSymbolLink(ref);
+                }
+                try self.writeString("\n\n");
+            }
+        }
+
+        // Document public methods
+        var has_public_methods = false;
+        for (class.methods) |method| {
+            if (method.access == .public) {
+                has_public_methods = true;
+                break;
+            }
+        }
+
+        if (has_public_methods) {
+            try self.writeString("**Public Methods:**\n\n");
+            for (class.methods) |method| {
+                if (method.access == .public) {
+                    try self.writeString("- `");
+                    try self.writeString(method.name);
+                    try self.writeString("(");
+                    for (method.params, 0..) |param, i| {
+                        if (i > 0) try self.writeString(", ");
+                        try self.writeEscaped(param.type_str);
+                    }
+                    try self.writeString(")`");
+                    if (method.doc) |doc| {
+                        if (doc.brief) |brief| {
+                            try self.writeString(": ");
+                            try self.writeString(brief);
+                        }
+                    }
+                    try self.writeString("\n");
+                }
+            }
+            try self.writeString("\n");
         }
 
         try self.writeString("---\n\n");

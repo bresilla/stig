@@ -1,0 +1,10 @@
+[book]
+title = "Spatial Geometry Library"
+language = "en"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"

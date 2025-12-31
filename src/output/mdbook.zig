@@ -185,6 +185,7 @@ pub const MdbookGenerator = struct {
         var has_enums = false;
         var has_typedefs = false;
         var has_macros = false;
+        var has_classes = false;
 
         for (modules) |module| {
             if (module.functions.len > 0) has_functions = true;
@@ -192,6 +193,7 @@ pub const MdbookGenerator = struct {
             if (module.enums.len > 0) has_enums = true;
             if (module.typedefs.len > 0) has_typedefs = true;
             if (module.macros.len > 0) has_macros = true;
+            if (module.classes.len > 0) has_classes = true;
         }
 
         // Functions section
@@ -210,11 +212,11 @@ pub const MdbookGenerator = struct {
             try content.appendSlice(self.allocator, "\n");
         }
 
-        // Types section
-        if (has_structs or has_enums or has_typedefs) {
+        // Types section (includes structs, enums, typedefs, and classes)
+        if (has_structs or has_enums or has_typedefs or has_classes) {
             try content.appendSlice(self.allocator, "# Types\n\n");
             for (modules) |module| {
-                if (module.structs.len > 0 or module.enums.len > 0 or module.typedefs.len > 0) {
+                if (module.structs.len > 0 or module.enums.len > 0 or module.typedefs.len > 0 or module.classes.len > 0) {
                     const basename = self.getBasename(module.name);
                     try content.appendSlice(self.allocator, "- [");
                     try content.appendSlice(self.allocator, basename);
@@ -338,14 +340,15 @@ pub const MdbookGenerator = struct {
                 try file.writeAll(markdown);
             }
 
-            // Generate types page if there are types
-            if (module.structs.len > 0 or module.enums.len > 0 or module.typedefs.len > 0) {
+            // Generate types page if there are types (structs, enums, typedefs, or classes)
+            if (module.structs.len > 0 or module.enums.len > 0 or module.typedefs.len > 0 or module.classes.len > 0) {
                 const types_module = types.Module{
                     .name = module.name,
                     .functions = &[_]types.Function{},
                     .structs = module.structs,
                     .enums = module.enums,
                     .typedefs = module.typedefs,
+                    .classes = module.classes,
                 };
 
                 // Set current file context for relative link generation
