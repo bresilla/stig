@@ -283,3 +283,186 @@ test "generate markdown for function" {
     try std.testing.expect(std.mem.indexOf(u8, output, "### `add`") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "int add(int a, int b)") != null);
 }
+
+test "generate markdown for struct" {
+    var gen = MarkdownGenerator.init(std.testing.allocator);
+    defer gen.deinit();
+
+    const module = types.Module{
+        .name = "test.h",
+        .functions = &[_]types.Function{},
+        .structs = &[_]types.Struct{
+            .{
+                .name = "Point",
+                .fields = &[_]types.StructField{
+                    .{ .name = "x", .type_str = "int", .doc = "X coordinate" },
+                    .{ .name = "y", .type_str = "int", .doc = "Y coordinate" },
+                },
+                .location = .{ .file = "test.h", .line = 1, .column = 1 },
+            },
+        },
+        .enums = &[_]types.Enum{},
+        .typedefs = &[_]types.Typedef{},
+    };
+
+    const output = try gen.generate(module);
+    try std.testing.expect(std.mem.indexOf(u8, output, "### `Point`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "struct Point") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "int x;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "X coordinate") != null);
+}
+
+test "generate markdown for enum" {
+    var gen = MarkdownGenerator.init(std.testing.allocator);
+    defer gen.deinit();
+
+    const module = types.Module{
+        .name = "test.h",
+        .functions = &[_]types.Function{},
+        .structs = &[_]types.Struct{},
+        .enums = &[_]types.Enum{
+            .{
+                .name = "Color",
+                .values = &[_]types.EnumValue{
+                    .{ .name = "RED", .value = 0, .doc = "Red color" },
+                    .{ .name = "GREEN", .value = 1, .doc = "Green color" },
+                    .{ .name = "BLUE", .value = 2, .doc = "Blue color" },
+                },
+                .location = .{ .file = "test.h", .line = 1, .column = 1 },
+            },
+        },
+        .typedefs = &[_]types.Typedef{},
+    };
+
+    const output = try gen.generate(module);
+    try std.testing.expect(std.mem.indexOf(u8, output, "### `Color`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "enum Color") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "RED = 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Red color") != null);
+}
+
+test "generate markdown for typedef" {
+    var gen = MarkdownGenerator.init(std.testing.allocator);
+    defer gen.deinit();
+
+    const module = types.Module{
+        .name = "test.h",
+        .functions = &[_]types.Function{},
+        .structs = &[_]types.Struct{},
+        .enums = &[_]types.Enum{},
+        .typedefs = &[_]types.Typedef{
+            .{
+                .name = "uint32",
+                .underlying = "unsigned int",
+                .location = .{ .file = "test.h", .line = 1, .column = 1 },
+            },
+        },
+    };
+
+    const output = try gen.generate(module);
+    try std.testing.expect(std.mem.indexOf(u8, output, "### `uint32`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "typedef unsigned int uint32") != null);
+}
+
+test "generate markdown with function documentation" {
+    var gen = MarkdownGenerator.init(std.testing.allocator);
+    defer gen.deinit();
+
+    const module = types.Module{
+        .name = "test.h",
+        .functions = &[_]types.Function{
+            .{
+                .name = "multiply",
+                .return_type = "int",
+                .params = &[_]types.Parameter{
+                    .{ .name = "x", .type_str = "int" },
+                    .{ .name = "y", .type_str = "int" },
+                },
+                .doc = types.DocString{
+                    .raw = "",
+                    .brief = "Multiplies two integers.",
+                    .params = &[_]types.ParamDoc{
+                        .{ .name = "x", .description = "First factor" },
+                        .{ .name = "y", .description = "Second factor" },
+                    },
+                    .returns = "Product of x and y",
+                },
+                .location = .{ .file = "test.h", .line = 1, .column = 1 },
+            },
+        },
+        .structs = &[_]types.Struct{},
+        .enums = &[_]types.Enum{},
+        .typedefs = &[_]types.Typedef{},
+    };
+
+    const output = try gen.generate(module);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Multiplies two integers.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "**Parameters:**") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "`x`: First factor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "**Returns:**") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Product of x and y") != null);
+}
+
+test "generate markdown with deprecated function" {
+    var gen = MarkdownGenerator.init(std.testing.allocator);
+    defer gen.deinit();
+
+    const module = types.Module{
+        .name = "test.h",
+        .functions = &[_]types.Function{
+            .{
+                .name = "old_func",
+                .return_type = "void",
+                .params = &[_]types.Parameter{},
+                .doc = types.DocString{
+                    .raw = "",
+                    .brief = "Old function.",
+                    .deprecated = "Use new_func() instead.",
+                },
+                .location = .{ .file = "test.h", .line = 1, .column = 1 },
+            },
+        },
+        .structs = &[_]types.Struct{},
+        .enums = &[_]types.Enum{},
+        .typedefs = &[_]types.Typedef{},
+    };
+
+    const output = try gen.generate(module);
+    try std.testing.expect(std.mem.indexOf(u8, output, "**Deprecated:**") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Use new_func() instead.") != null);
+}
+
+test "generate markdown for empty module" {
+    var gen = MarkdownGenerator.init(std.testing.allocator);
+    defer gen.deinit();
+
+    const module = types.Module{
+        .name = "empty.h",
+        .functions = &[_]types.Function{},
+        .structs = &[_]types.Struct{},
+        .enums = &[_]types.Enum{},
+        .typedefs = &[_]types.Typedef{},
+    };
+
+    const output = try gen.generate(module);
+    try std.testing.expect(std.mem.indexOf(u8, output, "# empty.h") != null);
+    // Should not have section headers for empty sections
+    try std.testing.expect(std.mem.indexOf(u8, output, "## Functions") == null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "## Structures") == null);
+}
+
+test "generate markdown header" {
+    var gen = MarkdownGenerator.init(std.testing.allocator);
+    defer gen.deinit();
+
+    const module = types.Module{
+        .name = "my_library.h",
+        .functions = &[_]types.Function{},
+        .structs = &[_]types.Struct{},
+        .enums = &[_]types.Enum{},
+        .typedefs = &[_]types.Typedef{},
+    };
+
+    const output = try gen.generate(module);
+    try std.testing.expect(std.mem.startsWith(u8, output, "# my_library.h\n"));
+}

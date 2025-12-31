@@ -209,3 +209,90 @@ test "parse doxygen params" {
     try std.testing.expectEqualStrings("a", doc.params[0].name);
     try std.testing.expectEqualStrings("Sum of a and b", doc.returns.?);
 }
+
+test "detect doxygen format" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+
+    try std.testing.expectEqual(DocFormat.doxygen, extractor.detectFormat("@param x value"));
+    try std.testing.expectEqual(DocFormat.doxygen, extractor.detectFormat("@return result"));
+    try std.testing.expectEqual(DocFormat.doxygen, extractor.detectFormat("@brief Description"));
+}
+
+test "detect markdown format" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+
+    try std.testing.expectEqual(DocFormat.markdown, extractor.detectFormat("## Parameters"));
+    try std.testing.expectEqual(DocFormat.markdown, extractor.detectFormat("### Returns"));
+}
+
+test "detect unknown format" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+
+    try std.testing.expectEqual(DocFormat.unknown, extractor.detectFormat("Just a plain comment"));
+    try std.testing.expectEqual(DocFormat.unknown, extractor.detectFormat("No special markers here"));
+}
+
+test "strip block comment delimiters" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("Description", extractor.stripDelimiters("/** Description */"));
+    try std.testing.expectEqualStrings("Description", extractor.stripDelimiters("/* Description */"));
+}
+
+test "strip triple-slash delimiters" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("Description", extractor.stripDelimiters("/// Description"));
+    try std.testing.expectEqualStrings("Description", extractor.stripDelimiters("// Description"));
+}
+
+test "parse deprecated tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Old function.
+        \\* @deprecated Use new_function() instead.
+    );
+
+    try std.testing.expectEqualStrings("Old function.", doc.brief.?);
+    try std.testing.expectEqualStrings("Use new_function() instead.", doc.deprecated.?);
+}
+
+test "parse returns tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Gets the value.
+        \\* @returns The current value
+    );
+
+    try std.testing.expectEqualStrings("Gets the value.", doc.brief.?);
+    try std.testing.expectEqualStrings("The current value", doc.returns.?);
+}
+
+test "parse empty docstring" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse("");
+
+    try std.testing.expect(doc.brief == null);
+    try std.testing.expectEqual(@as(usize, 0), doc.params.len);
+}
+
+test "extract brief with @brief tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* @brief This is the brief description.
+        \\* More details follow.
+    );
+
+    try std.testing.expectEqualStrings("This is the brief description.", doc.brief.?);
+}
+
+test "skip doxygen tags in brief extraction" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* @param x Some parameter
+        \\* @return Some value
+    );
+
+    // Brief should be null since all lines are tags
+    try std.testing.expect(doc.brief == null);
+}

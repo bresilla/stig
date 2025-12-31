@@ -771,3 +771,158 @@ test "parse function with docstring" {
     try std.testing.expectEqual(@as(usize, 1), module.functions.len);
     try std.testing.expect(module.functions[0].doc != null);
 }
+
+test "parse function with doxygen params" {
+    var parser = try CParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\/**
+        \\ * @brief Multiplies two integers.
+        \\ * @param x First factor
+        \\ * @param y Second factor
+        \\ * @return Product of x and y
+        \\ */
+        \\int multiply(int x, int y);
+    ;
+    const module = try parser.parse(source, "test.h");
+    defer std.testing.allocator.free(module.functions);
+
+    try std.testing.expectEqual(@as(usize, 1), module.functions.len);
+    const func = module.functions[0];
+    try std.testing.expectEqualStrings("multiply", func.name);
+    try std.testing.expect(func.doc != null);
+    if (func.doc) |doc| {
+        try std.testing.expectEqualStrings("Multiplies two integers.", doc.brief.?);
+        try std.testing.expectEqual(@as(usize, 2), doc.params.len);
+        try std.testing.expectEqualStrings("x", doc.params[0].name);
+        try std.testing.expectEqualStrings("Product of x and y", doc.returns.?);
+    }
+}
+
+test "parse multiple functions" {
+    var parser = try CParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\int add(int a, int b);
+        \\int subtract(int a, int b);
+        \\int multiply(int x, int y);
+    ;
+    const module = try parser.parse(source, "test.h");
+    defer std.testing.allocator.free(module.functions);
+
+    try std.testing.expectEqual(@as(usize, 3), module.functions.len);
+    try std.testing.expectEqualStrings("add", module.functions[0].name);
+    try std.testing.expectEqualStrings("subtract", module.functions[1].name);
+    try std.testing.expectEqualStrings("multiply", module.functions[2].name);
+}
+
+test "parse struct with field docs" {
+    var parser = try CParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\/// A 2D point.
+        \\struct Point {
+        \\    int x; /**< X coordinate */
+        \\    int y; ///< Y coordinate
+        \\};
+    ;
+    const module = try parser.parse(source, "test.h");
+    defer std.testing.allocator.free(module.structs);
+
+    try std.testing.expectEqual(@as(usize, 1), module.structs.len);
+    const s = module.structs[0];
+    try std.testing.expectEqualStrings("Point", s.name);
+    try std.testing.expectEqual(@as(usize, 2), s.fields.len);
+    try std.testing.expectEqualStrings("x", s.fields[0].name);
+    try std.testing.expectEqualStrings("y", s.fields[1].name);
+    // Check field docs
+    try std.testing.expectEqualStrings("X coordinate", s.fields[0].doc.?);
+    try std.testing.expectEqualStrings("Y coordinate", s.fields[1].doc.?);
+}
+
+test "parse enum with values and docs" {
+    var parser = try CParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\/**
+        \\ * Log levels.
+        \\ */
+        \\enum LogLevel {
+        \\    LOG_DEBUG = 0,   /**< Debug messages */
+        \\    LOG_INFO = 1,    ///< Info messages
+        \\    LOG_ERROR = 2
+        \\};
+    ;
+    const module = try parser.parse(source, "test.h");
+    defer std.testing.allocator.free(module.enums);
+
+    try std.testing.expectEqual(@as(usize, 1), module.enums.len);
+    const e = module.enums[0];
+    try std.testing.expectEqualStrings("LogLevel", e.name);
+    try std.testing.expectEqual(@as(usize, 3), e.values.len);
+    try std.testing.expectEqualStrings("LOG_DEBUG", e.values[0].name);
+    try std.testing.expectEqual(@as(?i64, 0), e.values[0].value);
+    try std.testing.expectEqualStrings("LOG_INFO", e.values[1].name);
+    try std.testing.expectEqual(@as(?i64, 1), e.values[1].value);
+}
+
+test "parse typedef" {
+    var parser = try CParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\/// Unsigned 32-bit integer.
+        \\typedef unsigned int uint32;
+    ;
+    const module = try parser.parse(source, "test.h");
+    defer std.testing.allocator.free(module.typedefs);
+
+    try std.testing.expectEqual(@as(usize, 1), module.typedefs.len);
+    const td = module.typedefs[0];
+    try std.testing.expectEqualStrings("uint32", td.name);
+    try std.testing.expectEqualStrings("unsigned int", td.underlying);
+}
+
+test "parse void function" {
+    var parser = try CParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source = "void do_nothing(void);";
+    const module = try parser.parse(source, "test.h");
+    defer std.testing.allocator.free(module.functions);
+
+    try std.testing.expectEqual(@as(usize, 1), module.functions.len);
+    try std.testing.expectEqualStrings("do_nothing", module.functions[0].name);
+    try std.testing.expectEqualStrings("void", module.functions[0].return_type);
+}
+
+test "parse empty source" {
+    var parser = try CParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source = "";
+    const module = try parser.parse(source, "empty.h");
+
+    try std.testing.expectEqual(@as(usize, 0), module.functions.len);
+    try std.testing.expectEqual(@as(usize, 0), module.structs.len);
+    try std.testing.expectEqual(@as(usize, 0), module.enums.len);
+    try std.testing.expectEqual(@as(usize, 0), module.typedefs.len);
+}
+
+test "parse source with only comments" {
+    var parser = try CParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\/* This is a comment */
+        \\// Another comment
+        \\/** Doc comment without declaration */
+    ;
+    const module = try parser.parse(source, "comments.h");
+
+    try std.testing.expectEqual(@as(usize, 0), module.functions.len);
+}
