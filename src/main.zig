@@ -75,11 +75,11 @@ pub fn main() !void {
 
     // Load config file
     const config_path = args.config_file orelse "stinger.toml";
-    var toml_parser: ?*config_mod.TomlParser = null;
+    var config_loader: ?*config_mod.ConfigLoader = null;
     var config: config_mod.Config = config_mod.Config{};
 
     if (config_mod.loadFromFile(allocator, config_path)) |result| {
-        toml_parser = result.parser;
+        config_loader = result.loader;
         config = result.config;
     } else |err| {
         if (args.config_file != null) {
@@ -91,9 +91,9 @@ pub fn main() !void {
     }
 
     defer {
-        if (toml_parser) |p| {
-            p.deinit();
-            allocator.destroy(p);
+        if (config_loader) |loader| {
+            loader.deinit();
+            allocator.destroy(loader);
         }
     }
 

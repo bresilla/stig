@@ -30,6 +30,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // zig-toml dependency for TOML config parsing
+    const zig_toml_dep = b.dependency("zig_toml", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Main executable
     const exe = b.addExecutable(.{
         .name = "stinger",
@@ -57,6 +63,9 @@ pub fn build(b: *std.Build) void {
 
     // Add argonaut module
     exe.root_module.addImport("argonaut", argonaut_dep.module("argonaut"));
+
+    // Add zig-toml module
+    exe.root_module.addImport("toml", zig_toml_dep.module("toml"));
 
     b.installArtifact(exe);
 
@@ -91,6 +100,9 @@ pub fn build(b: *std.Build) void {
 
     // Add argonaut module to tests
     unit_tests.root_module.addImport("argonaut", argonaut_dep.module("argonaut"));
+
+    // Add zig-toml module to tests
+    unit_tests.root_module.addImport("toml", zig_toml_dep.module("toml"));
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");

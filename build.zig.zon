@@ -19,6 +19,10 @@
         .argonaut = .{
             .path = "vendor/argonaut",
         },
+        .zig_toml = .{
+            .url = "git+https://github.com/sam701/zig-toml#7e94b0a6fa1c846779304a1b8d7493091d793095",
+            .hash = "toml-0.3.0-bV14BVyFAQDTlzyP2Tw_GGoF7Q3QqP94nLAvB1djeE8S",
+        },
     },
     .paths = .{
         "build.zig",

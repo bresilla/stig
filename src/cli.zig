@@ -44,6 +44,7 @@ pub const ArgParser = struct {
     allocator: std.mem.Allocator,
     parser: ?*argonaut.Parser,
     process_args: ?[]const [:0]u8,
+    remainder: ?[]const []const u8,
 
     // Argument pointers
     output_ptr: ?*[]const u8,
@@ -54,7 +55,6 @@ pub const ArgParser = struct {
     version_ptr: ?*bool,
     watch_ptr: ?*bool,
     serve_ptr: ?*bool,
-    input_files_ptr: ?*std.ArrayList([]const u8),
 
     const Self = @This();
 
@@ -63,6 +63,7 @@ pub const ArgParser = struct {
             .allocator = allocator,
             .parser = null,
             .process_args = null,
+            .remainder = null,
             .output_ptr = null,
             .format_ptr = null,
             .title_ptr = null,
@@ -71,7 +72,6 @@ pub const ArgParser = struct {
             .version_ptr = null,
             .watch_ptr = null,
             .serve_ptr = null,
-            .input_files_ptr = null,
         };
     }
 
@@ -122,17 +122,12 @@ pub const ArgParser = struct {
         help_opts.help = "Show this help message";
         self.help_ptr = try parser.flag("h", "help", &help_opts);
 
-        // Input files as string list
-        var input_opts = argonaut.Options{};
-        input_opts.help = "C/C++ header files to process";
-        self.input_files_ptr = try parser.stringList("", "input", &input_opts);
-
         // Get process args - we need to keep these alive since argonaut stores references
         self.process_args = try std.process.argsAlloc(self.allocator);
         const process_args = self.process_args.?;
 
-        // Parse arguments
-        parser.parse(process_args) catch |err| {
+        // Parse arguments - use parseWithRemainder to get positional args (input files)
+        self.remainder = parser.parseWithRemainder(process_args) catch |err| {
             return err;
         };
 
@@ -177,14 +172,10 @@ pub const ArgParser = struct {
         if (std.mem.eql(u8, format_str, "mdbook")) {
             output_format = .mdbook;
             format_explicitly_set = true;
-        } else if (std.mem.eql(u8, format_str, "md")) {
+        } else if (std.mem.eql(u8, format_str, "md") or std.mem.eql(u8, format_str, "markdown")) {
             output_format = .markdown;
             format_explicitly_set = true;
         }
-        // "markdown" is the default, so we need to check if it was explicitly passed
-        // by checking if the format_ptr was parsed (not just default)
-        // Unfortunately argonaut doesn't expose this, so we check if it's different from default
-        // For now, if user passes -f markdown explicitly, it will still be treated as default
 
         // Get output file (null if empty)
         const output_str = self.output_ptr.?.*;
@@ -202,9 +193,11 @@ pub const ArgParser = struct {
         const watch_mode = self.watch_ptr.?.* or self.serve_ptr.?.*;
         const serve_mode = self.serve_ptr.?.*;
 
-        // Get input files
-        const input_list = self.input_files_ptr.?;
-        const input_files = try self.allocator.dupe([]const u8, input_list.items);
+        // Get input files from remainder (positional arguments)
+        const input_files = if (self.remainder) |rem|
+            try self.allocator.dupe([]const u8, rem)
+        else
+            &[_][]const u8{};
 
         return Args{
             .input_files = input_files,
@@ -223,16 +216,18 @@ pub const ArgParser = struct {
 
     /// Merges CLI args with config file, CLI takes precedence
     pub fn mergeWithConfig(args: *Args, cfg: Config) void {
+        // Format: only use config format if CLI format was not explicitly set
+        if (!args.format_explicitly_set) {
+            args.output_format = OutputFormat.fromConfig(cfg.format);
+        }
+
         // CLI args take precedence over config file
-        if (args.output_file == null and cfg.output_dir.len > 0) {
+        // Only use config output_dir for mdbook format (markdown defaults to stdout)
+        if (args.output_file == null and cfg.output_dir.len > 0 and args.output_format == .mdbook) {
             args.output_file = cfg.output_dir;
         }
         if (args.book_title == null and cfg.title.len > 0) {
             args.book_title = cfg.title;
-        }
-        // Format: only use config format if CLI format was not explicitly set
-        if (!args.format_explicitly_set) {
-            args.output_format = OutputFormat.fromConfig(cfg.format);
         }
     }
 
@@ -307,6 +302,9 @@ pub const ArgParser = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        if (self.remainder) |rem| {
+            self.allocator.free(rem);
+        }
         if (self.parser) |parser| {
             parser.deinit();
         }

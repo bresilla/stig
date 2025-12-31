@@ -7,7 +7,7 @@ const ArgumentType = @import("argument.zig").ArgumentType;
 pub const Parser = struct {
     command: Command,
     allocator: std.mem.Allocator,
-    
+
     /// Creates a new parser with the given program name and description.
     ///
     /// Automatically adds a default help argument (-h, --help).
@@ -23,7 +23,7 @@ pub const Parser = struct {
 
         return parser;
     }
-    
+
     /// Frees all memory associated with the parser.
     ///
     /// You must call this function when you're done using the parser to prevent
@@ -33,7 +33,7 @@ pub const Parser = struct {
         self.command.deinit();
         self.allocator.destroy(self);
     }
-    
+
     /// Parses the provided argument array.
     ///
     /// This is the main entry point after defining all arguments.
@@ -67,6 +67,22 @@ pub const Parser = struct {
         }
     }
 
+    /// Parses arguments and returns any remaining unparsed arguments.
+    /// Unlike parse(), this does not error on unknown arguments - it returns them instead.
+    /// Useful for variadic positional arguments (e.g., multiple input files).
+    pub fn parseWithRemainder(self: *Parser, args: []const []const u8) ![]const []const u8 {
+        var mutable_args = std.ArrayList([]const u8){};
+        defer mutable_args.deinit(self.allocator);
+
+        try mutable_args.appendSlice(self.allocator, args);
+
+        try self.command.parse(&mutable_args);
+
+        try self.command.parsePositionals(&mutable_args);
+
+        return try self.getUnparsed(&mutable_args);
+    }
+
     fn getUnparsed(self: *Parser, args: *std.ArrayList([]const u8)) ![]const []const u8 {
         var unparsed = std.ArrayList([]const u8){};
 
@@ -78,7 +94,7 @@ pub const Parser = struct {
 
         return unparsed.toOwnedSlice(self.allocator);
     }
-    
+
     /// Creates a new subcommand for your parser.
     ///
     /// You can use subcommands to create CLI tools with multiple actions,
@@ -93,7 +109,7 @@ pub const Parser = struct {
     pub fn newCommand(self: *Parser, name: []const u8, description: []const u8) !*Command {
         return try self.command.newCommand(name, description);
     }
-    
+
     /// Adds a boolean flag argument to your parser.
     ///
     /// Flags are boolean switches that don't take values. If you pass the flag,
@@ -118,7 +134,7 @@ pub const Parser = struct {
     pub fn flag(self: *Parser, short: []const u8, long: []const u8, opts: ?*Options) !*bool {
         return try self.command.flag(short, long, opts);
     }
-    
+
     /// Adds a counter flag argument to your parser.
     ///
     /// Counter flags count how many times they appear. You can use this for
@@ -140,7 +156,7 @@ pub const Parser = struct {
     pub fn flagCounter(self: *Parser, short: []const u8, long: []const u8, opts: ?*Options) !*i64 {
         return try self.command.flagCounter(short, long, opts);
     }
-    
+
     /// Adds a string option argument to your parser.
     ///
     /// String options accept text values. You can use them for arguments like
@@ -155,7 +171,7 @@ pub const Parser = struct {
     pub fn string(self: *Parser, short: []const u8, long: []const u8, opts: ?*Options) !*[]const u8 {
         return try self.command.string(short, long, opts);
     }
-    
+
     /// Adds a positional string argument to your parser.
     ///
     /// Positional arguments don't have flags and are identified by their position.
@@ -168,7 +184,7 @@ pub const Parser = struct {
     pub fn stringPositional(self: *Parser, opts: ?*Options) !*[]const u8 {
         return try self.command.stringPositional(opts);
     }
-    
+
     /// Adds an integer option argument to your parser.
     ///
     /// Integer options accept numeric values. You can use them for arguments like
@@ -183,7 +199,7 @@ pub const Parser = struct {
     pub fn int(self: *Parser, short: []const u8, long: []const u8, opts: ?*Options) !*i64 {
         return try self.command.int(short, long, opts);
     }
-    
+
     /// Adds a positional integer argument to your parser.
     ///
     /// This works like `stringPositional()` but parses the value as an integer.
@@ -195,7 +211,7 @@ pub const Parser = struct {
     pub fn intPositional(self: *Parser, opts: ?*Options) !*i64 {
         return try self.command.intPositional(opts);
     }
-    
+
     /// Adds a floating-point option argument to your parser.
     ///
     /// Float options accept decimal numbers. You can use them for arguments like
@@ -210,7 +226,7 @@ pub const Parser = struct {
     pub fn float(self: *Parser, short: []const u8, long: []const u8, opts: ?*Options) !*f64 {
         return try self.command.float(short, long, opts);
     }
-    
+
     /// Adds a positional floating-point argument to your parser.
     ///
     /// This works like `stringPositional()` but parses the value as a float.
@@ -222,7 +238,7 @@ pub const Parser = struct {
     pub fn floatPositional(self: *Parser, opts: ?*Options) !*f64 {
         return try self.command.floatPositional(opts);
     }
-    
+
     /// Adds a string list option argument to your parser.
     ///
     /// List options accept multiple values. You can use them when you need to
@@ -238,7 +254,7 @@ pub const Parser = struct {
     pub fn stringList(self: *Parser, short: []const u8, long: []const u8, opts: ?*Options) !*std.ArrayList([]const u8) {
         return try self.command.stringList(short, long, opts);
     }
-    
+
     /// Adds an integer list option argument to your parser.
     ///
     /// This works like `stringList()` but parses values as integers.
@@ -252,7 +268,7 @@ pub const Parser = struct {
     pub fn intList(self: *Parser, short: []const u8, long: []const u8, opts: ?*Options) !*std.ArrayList(i64) {
         return try self.command.intList(short, long, opts);
     }
-    
+
     /// Adds a floating-point list option argument to your parser.
     ///
     /// This works like `stringList()` but parses values as floats.
@@ -266,7 +282,7 @@ pub const Parser = struct {
     pub fn floatList(self: *Parser, short: []const u8, long: []const u8, opts: ?*Options) !*std.ArrayList(f64) {
         return try self.command.floatList(short, long, opts);
     }
-    
+
     /// Adds a file option argument to your parser.
     ///
     /// File options open and return file handles. You can use them when you need
@@ -281,7 +297,7 @@ pub const Parser = struct {
     pub fn file(self: *Parser, short: []const u8, long: []const u8, opts: ?*Options) !*std.fs.File {
         return try self.command.file(short, long, opts);
     }
-    
+
     /// Adds a positional file argument to your parser.
     ///
     /// This works like `stringPositional()` but opens the file and returns a handle.
@@ -299,7 +315,7 @@ pub const Parser = struct {
     pub fn filePositional(self: *Parser, opts: ?*Options) !*std.fs.File {
         return try self.command.filePositional(opts);
     }
-    
+
     /// Adds a file list option argument to your parser.
     ///
     /// This accepts multiple file paths and returns handles for all of them.
@@ -313,7 +329,7 @@ pub const Parser = struct {
     pub fn fileList(self: *Parser, short: []const u8, long: []const u8, opts: ?*Options) !*std.ArrayList(std.fs.File) {
         return try self.command.fileList(short, long, opts);
     }
-    
+
     /// Adds a selector (choice) option argument to your parser.
     ///
     /// Selectors restrict input to a predefined set of allowed values. You can use
@@ -330,7 +346,7 @@ pub const Parser = struct {
     pub fn selector(self: *Parser, short: []const u8, long: []const u8, allowed: []const []const u8, opts: ?*Options) !*[]const u8 {
         return try self.command.selector(short, long, allowed, opts);
     }
-    
+
     /// Adds a positional selector (choice) argument to your parser.
     ///
     /// This works like `selector()` but for positional arguments.
@@ -343,7 +359,7 @@ pub const Parser = struct {
     pub fn selectorPositional(self: *Parser, allowed: []const []const u8, opts: ?*Options) !*[]const u8 {
         return try self.command.selectorPositional(allowed, opts);
     }
-    
+
     /// Disables the automatic help argument.
     ///
     /// By default, the parser adds `-h` and `--help` flags. If you want to disable
@@ -356,7 +372,7 @@ pub const Parser = struct {
     pub fn disableHelp(self: *Parser) void {
         self.command.disableHelp();
     }
-    
+
     /// Customizes the help argument flags.
     ///
     /// If you want to use different flags for help (instead of the default `-h`
@@ -373,7 +389,7 @@ pub const Parser = struct {
     pub fn setHelp(self: *Parser, short: []const u8, long: []const u8) !void {
         try self.command.setHelp(short, long);
     }
-    
+
     /// Controls whether the program exits when help is requested.
     ///
     /// By default, when users pass the help flag, the parser displays usage
@@ -386,11 +402,11 @@ pub const Parser = struct {
     /// **Example:**
     /// ```zig
     /// parser.exitOnHelp(false); // Don't exit, let me handle help
-    /// ```    
+    /// ```
     pub fn exitOnHelp(self: *Parser, value: bool) void {
         self.command.exitOnHelp(value);
     }
-    
+
     /// Generates a usage/help message for your program.
     ///
     /// You can use this to display help information to users. It includes your
@@ -410,21 +426,21 @@ pub const Parser = struct {
     pub fn usage(self: *Parser, msg: ?[]const u8) ![]const u8 {
         return try self.command.usage(msg);
     }
-    
+
     /// Gets your program's name.
     ///
     /// **Returns:** The name you provided when creating the parser
     pub fn getName(self: Parser) []const u8 {
         return self.command.name;
     }
-    
+
     /// Gets your program's description.
     ///
     /// **Returns:** The description you provided when creating the parser
     pub fn getDescription(self: Parser) []const u8 {
         return self.command.description;
     }
-    
+
     /// Gets all subcommands you've added to the parser.
     ///
     /// **Returns:** A slice of Command pointers
@@ -439,7 +455,7 @@ pub const Parser = struct {
     pub fn getCommands(self: Parser) []const *Command {
         return self.command.commands.items;
     }
-    
+
     /// Gets all arguments you've added to the parser.
     ///
     /// **Returns:** A slice of Argument pointers
