@@ -3,65 +3,120 @@ const ts = @import("tree-sitter");
 const ts_c = @import("tree-sitter-c");
 const CParser = @import("parser/c.zig").CParser;
 const MarkdownGenerator = @import("output/markdown.zig").MarkdownGenerator;
+const cli = @import("cli.zig");
 const types = @import("model/types.zig");
 
 pub fn main() !void {
-    var buf: [8192]u8 = undefined;
-    var file_writer = std.fs.File.stdout().writer(&buf);
-    var stdout = &file_writer.interface;
-    defer stdout.flush() catch {};
-
-    try stdout.print("stinger v0.1.0 - C/C++ documentation generator\n", .{});
-    try stdout.print("Using tree-sitter for parsing\n\n", .{});
-
     // Get allocator
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Parse CLI arguments
+    var arg_parser = cli.ArgParser.init(allocator);
+    var args = arg_parser.parse() catch |err| {
+        switch (err) {
+            error.MissingOutputFile => std.debug.print("Error: -o/--output requires a file path\n", .{}),
+            error.UnknownOption => {},
+            else => std.debug.print("Error parsing arguments: {}\n", .{err}),
+        }
+        arg_parser.printHelp();
+        return;
+    };
+    defer args.deinit();
+
+    // Handle help/version
+    if (args.show_help) {
+        arg_parser.printHelp();
+        return;
+    }
+
+    if (args.show_version) {
+        arg_parser.printVersion();
+        return;
+    }
+
+    // Check for input files
+    if (args.input_files.len == 0) {
+        std.debug.print("Error: No input files specified\n\n", .{});
+        arg_parser.printHelp();
+        return;
+    }
+
     // Initialize parser
     var parser = try CParser.init(allocator);
     defer parser.deinit();
 
-    // Test parsing a simple C snippet
-    const source =
-        \\/** 
-        \\ * Adds two integers together.
-        \\ * @param a First operand
-        \\ * @param b Second operand
-        \\ * @return Sum of a and b
-        \\ */
-        \\int add(int a, int b) {
-        \\    return a + b;
-        \\}
-        \\
-        \\/** A simple 2D point structure. */
-        \\struct Point {
-        \\    int x; /**< X coordinate */
-        \\    int y; /**< Y coordinate */
-        \\};
-        \\
-        \\/** Color enumeration. */
-        \\enum Color {
-        \\    RED = 0,   /**< Red color */
-        \\    GREEN = 1, /**< Green color */
-        \\    BLUE = 2   /**< Blue color */
-        \\};
-        \\
-        \\/// Typedef for unsigned 32-bit integer
-        \\typedef unsigned int uint32;
-    ;
+    // Store sources and modules together so sources outlive module usage
+    const FileData = struct {
+        source: []const u8,
+        module: types.Module,
+    };
 
-    const module = try parser.parse(source, "example.h");
+    var file_data: std.ArrayList(FileData) = .empty;
+    defer {
+        for (file_data.items) |data| {
+            allocator.free(data.source);
+        }
+        file_data.deinit(allocator);
+    }
 
-    // Generate markdown
-    var md_gen = MarkdownGenerator.init(allocator);
-    defer md_gen.deinit();
+    // Process each input file
+    for (args.input_files) |input_file| {
+        // Read file
+        const file = std.fs.cwd().openFile(input_file, .{}) catch |err| {
+            std.debug.print("Error: Cannot open file '{s}': {}\n", .{ input_file, err });
+            continue;
+        };
+        defer file.close();
 
-    const markdown = try md_gen.generate(module);
+        const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
+            std.debug.print("Error: Cannot read file '{s}': {}\n", .{ input_file, err });
+            continue;
+        };
 
-    try stdout.print("=== Generated Markdown ===\n\n", .{});
-    try stdout.writeAll(markdown);
+        // Parse file
+        const module = try parser.parse(source, input_file);
+        try file_data.append(allocator, .{ .source = source, .module = module });
+    }
+
+    // Generate combined output
+    var output_buffer: std.ArrayList(u8) = .empty;
+    defer output_buffer.deinit(allocator);
+
+    for (file_data.items) |data| {
+        // Create a fresh generator for each module
+        var gen = MarkdownGenerator.init(allocator);
+        defer gen.deinit();
+
+        const markdown = try gen.generate(data.module);
+        try output_buffer.appendSlice(allocator, markdown);
+    }
+
+    // Write output
+    if (args.output_file) |output_path| {
+        // Write to file
+        const file = std.fs.cwd().createFile(output_path, .{}) catch |err| {
+            std.debug.print("Error: Cannot create output file '{s}': {}\n", .{ output_path, err });
+            return;
+        };
+        defer file.close();
+
+        file.writeAll(output_buffer.items) catch |err| {
+            std.debug.print("Error: Cannot write to file '{s}': {}\n", .{ output_path, err });
+            return;
+        };
+
+        std.debug.print("Generated documentation: {s}\n", .{output_path});
+    } else {
+        // Write to stdout
+        var buf: [8192]u8 = undefined;
+        var file_writer = std.fs.File.stdout().writer(&buf);
+        var stdout = &file_writer.interface;
+        defer stdout.flush() catch {};
+
+        try stdout.writeAll(output_buffer.items);
+    }
 }
 
 test "parser initialization" {
