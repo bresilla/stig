@@ -1,6 +1,8 @@
 const std = @import("std");
+const config_mod = @import("config.zig");
 
 pub const VERSION = "0.1.0";
+pub const Config = config_mod.Config;
 
 /// Output format for documentation
 pub const OutputFormat = enum {
@@ -8,6 +10,13 @@ pub const OutputFormat = enum {
     markdown,
     /// mdbook directory structure
     mdbook,
+
+    pub fn fromConfig(cfg_format: Config.Format) OutputFormat {
+        return switch (cfg_format) {
+            .markdown => .markdown,
+            .mdbook => .mdbook,
+        };
+    }
 };
 
 /// CLI argument parsing result
@@ -16,6 +25,7 @@ pub const Args = struct {
     output_file: ?[]const u8,
     output_format: OutputFormat,
     book_title: ?[]const u8,
+    config_file: ?[]const u8,
     show_help: bool,
     show_version: bool,
     allocator: std.mem.Allocator,
@@ -43,8 +53,9 @@ pub const ArgParser = struct {
 
         var input_files: std.ArrayList([]const u8) = .empty;
         var output_file: ?[]const u8 = null;
-        var output_format: OutputFormat = .markdown;
+        var output_format: ?OutputFormat = null;
         var book_title: ?[]const u8 = null;
+        var config_file: ?[]const u8 = null;
         var show_help = false;
         var show_version = false;
 
@@ -76,6 +87,11 @@ pub const ArgParser = struct {
                 if (book_title == null) {
                     return error.MissingTitleValue;
                 }
+            } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--config")) {
+                config_file = args_iter.next();
+                if (config_file == null) {
+                    return error.MissingConfigFile;
+                }
             } else if (std.mem.startsWith(u8, arg, "-")) {
                 // Unknown flag
                 std.debug.print("Unknown option: {s}\n", .{arg});
@@ -89,12 +105,30 @@ pub const ArgParser = struct {
         return Args{
             .input_files = try input_files.toOwnedSlice(self.allocator),
             .output_file = output_file,
-            .output_format = output_format,
+            .output_format = output_format orelse .markdown,
             .book_title = book_title,
+            .config_file = config_file,
             .show_help = show_help,
             .show_version = show_version,
             .allocator = self.allocator,
         };
+    }
+
+    /// Merges CLI args with config file, CLI takes precedence
+    pub fn mergeWithConfig(args: *Args, cfg: Config) void {
+        // CLI args take precedence over config file
+        if (args.output_file == null and cfg.output_dir.len > 0) {
+            args.output_file = cfg.output_dir;
+        }
+        if (args.book_title == null and cfg.title.len > 0) {
+            args.book_title = cfg.title;
+        }
+        // Format: if not explicitly set on CLI, use config
+        // Note: we can't easily detect if format was explicitly set,
+        // so config format is only used if output format is still default
+        if (args.output_format == .markdown and cfg.format == .mdbook) {
+            args.output_format = .mdbook;
+        }
     }
 
     /// Prints help message
@@ -113,8 +147,19 @@ pub const ArgParser = struct {
             \\    -o, --output <PATH>    Output file or directory (default: stdout)
             \\    -f, --format <FMT>     Output format: markdown, mdbook (default: markdown)
             \\    --title <TITLE>        Book title (for mdbook format)
+            \\    -c, --config <FILE>    Config file path (default: stinger.toml)
             \\    -h, --help             Show this help message
             \\    -v, --version          Show version information
+            \\
+            \\CONFIG FILE:
+            \\    stinger looks for stinger.toml in the current directory.
+            \\    CLI arguments override config file settings.
+            \\
+            \\    Example stinger.toml:
+            \\        title = "My API"
+            \\        output = "docs"
+            \\        format = "mdbook"
+            \\        inputs = ["src/*.h", "include/*.h"]
             \\
             \\EXAMPLES:
             \\    stinger input.h                         # Output to stdout
@@ -122,6 +167,7 @@ pub const ArgParser = struct {
             \\    stinger src/*.h -o api.md              # Multiple files
             \\    stinger src/*.h -f mdbook -o docs/     # Generate mdbook structure
             \\    stinger src/*.h -f mdbook --title "My API"  # With custom title
+            \\    stinger -c myconfig.toml               # Use custom config file
             \\
         ;
         std.debug.print("{s}", .{help});

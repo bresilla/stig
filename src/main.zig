@@ -6,6 +6,7 @@ const MarkdownGenerator = @import("output/markdown.zig").MarkdownGenerator;
 const MdbookGenerator = @import("output/mdbook.zig").MdbookGenerator;
 const MdbookConfig = @import("output/mdbook.zig").MdbookConfig;
 const cli = @import("cli.zig");
+const config_mod = @import("config.zig");
 const types = @import("model/types.zig");
 
 pub fn main() !void {
@@ -19,6 +20,7 @@ pub fn main() !void {
     var args = arg_parser.parse() catch |err| {
         switch (err) {
             error.MissingOutputFile => std.debug.print("Error: -o/--output requires a file path\n", .{}),
+            error.MissingConfigFile => std.debug.print("Error: -c/--config requires a file path\n", .{}),
             error.UnknownOption => {},
             else => std.debug.print("Error parsing arguments: {}\n", .{err}),
         }
@@ -38,8 +40,41 @@ pub fn main() !void {
         return;
     }
 
-    // Check for input files
-    if (args.input_files.len == 0) {
+    // Load config file
+    const config_path = args.config_file orelse "stinger.toml";
+    var toml_parser: ?*config_mod.TomlParser = null;
+    var config: config_mod.Config = config_mod.Config{};
+
+    if (config_mod.loadFromFile(allocator, config_path)) |result| {
+        toml_parser = result.parser;
+        config = result.config;
+    } else |err| {
+        if (args.config_file != null) {
+            // Only error if user explicitly specified a config file
+            std.debug.print("Error: Cannot load config file '{s}': {}\n", .{ config_path, err });
+            return;
+        }
+        // Use default config if stinger.toml doesn't exist - this is fine
+    }
+
+    defer {
+        if (toml_parser) |p| {
+            p.deinit();
+            allocator.destroy(p);
+        }
+    }
+
+    // Merge CLI args with config (CLI takes precedence)
+    cli.ArgParser.mergeWithConfig(&args, config);
+
+    // Check for input files (from CLI or config)
+    var input_files = args.input_files;
+    if (input_files.len == 0 and config.input_patterns.len > 0) {
+        // Use input patterns from config
+        input_files = config.input_patterns;
+    }
+
+    if (input_files.len == 0) {
         std.debug.print("Error: No input files specified\n\n", .{});
         arg_parser.printHelp();
         return;
@@ -94,13 +129,14 @@ pub fn main() !void {
     switch (args.output_format) {
         .mdbook => {
             // Generate mdbook structure
-            const output_dir = args.output_file orelse "docs";
-            const config = MdbookConfig{
-                .title = args.book_title orelse "API Reference",
+            const output_dir = args.output_file orelse config.output_dir;
+            const mdbook_config = MdbookConfig{
+                .title = args.book_title orelse config.title,
                 .output_dir = output_dir,
+                .generate_intro = config.generate_intro,
             };
 
-            var mdbook_gen = MdbookGenerator.initWithConfig(allocator, config);
+            var mdbook_gen = MdbookGenerator.initWithConfig(allocator, mdbook_config);
             defer mdbook_gen.deinit();
 
             mdbook_gen.generate(modules.items) catch |err| {
