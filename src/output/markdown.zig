@@ -117,6 +117,7 @@ pub const MarkdownGenerator = struct {
 
     /// Extracts the base type name from a type string
     /// e.g., "const struct Point *" -> "Point"
+    /// e.g., "const struct Point* a" -> "Point" (handles param name in type)
     pub fn extractBaseType(type_str: []const u8) []const u8 {
         var result = type_str;
 
@@ -134,8 +135,18 @@ pub const MarkdownGenerator = struct {
             result = result[6..];
         }
 
-        // Strip trailing pointer/reference and spaces
-        result = std.mem.trimRight(u8, result, " *&");
+        // Find the end of the type name (before * or space)
+        // This handles cases like "Point* a" where param name is included
+        var end: usize = 0;
+        for (result, 0..) |c, i| {
+            if (c == '*' or c == '&' or c == ' ') {
+                break;
+            }
+            end = i + 1;
+        }
+        if (end > 0) {
+            result = result[0..end];
+        }
 
         return result;
     }

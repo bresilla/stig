@@ -6,6 +6,7 @@ const CppParser = @import("parser/cpp.zig").CppParser;
 const MarkdownGenerator = @import("output/markdown.zig").MarkdownGenerator;
 const MdbookGenerator = @import("output/mdbook.zig").MdbookGenerator;
 const MdbookConfig = @import("output/mdbook.zig").MdbookConfig;
+const xref = @import("xref.zig");
 const cli = @import("cli.zig");
 const config_mod = @import("config.zig");
 const types = @import("model/types.zig");
@@ -221,6 +222,11 @@ pub fn main() !void {
             std.debug.print("Run 'mdbook build {s}' to build the book\n", .{output_dir});
         },
         .markdown => {
+            // Build symbol table for cross-referencing
+            var symbol_table = xref.SymbolTable.init(allocator);
+            defer symbol_table.deinit();
+            try symbol_table.buildFromModules(modules.items);
+
             // Generate single markdown output
             var output_buffer: std.ArrayList(u8) = .empty;
             defer output_buffer.deinit(allocator);
@@ -228,6 +234,10 @@ pub fn main() !void {
             for (modules.items) |module| {
                 var gen = MarkdownGenerator.init(allocator);
                 defer gen.deinit();
+
+                // Enable cross-reference support
+                gen.setSymbolTable(&symbol_table);
+                gen.setOutputFormat(.markdown);
 
                 const markdown = try gen.generate(module);
                 try output_buffer.appendSlice(allocator, markdown);
