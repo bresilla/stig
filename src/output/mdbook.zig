@@ -111,7 +111,7 @@ pub const MdbookGenerator = struct {
         };
 
         // Create subdirectories for organized content
-        const subdirs = [_][]const u8{ "functions", "types" };
+        const subdirs = [_][]const u8{ "functions", "types", "macros" };
         for (subdirs) |subdir| {
             var subdir_buf: [std.fs.max_path_bytes]u8 = undefined;
             const subdir_path = try std.fmt.bufPrint(&subdir_buf, "{s}/src/{s}", .{ output_dir, subdir });
@@ -184,12 +184,14 @@ pub const MdbookGenerator = struct {
         var has_structs = false;
         var has_enums = false;
         var has_typedefs = false;
+        var has_macros = false;
 
         for (modules) |module| {
             if (module.functions.len > 0) has_functions = true;
             if (module.structs.len > 0) has_structs = true;
             if (module.enums.len > 0) has_enums = true;
             if (module.typedefs.len > 0) has_typedefs = true;
+            if (module.macros.len > 0) has_macros = true;
         }
 
         // Functions section
@@ -217,6 +219,22 @@ pub const MdbookGenerator = struct {
                     try content.appendSlice(self.allocator, "- [");
                     try content.appendSlice(self.allocator, basename);
                     try content.appendSlice(self.allocator, "](./types/");
+                    try content.appendSlice(self.allocator, self.sanitizeFilename(basename));
+                    try content.appendSlice(self.allocator, ".md)\n");
+                }
+            }
+            try content.appendSlice(self.allocator, "\n");
+        }
+
+        // Macros section
+        if (has_macros) {
+            try content.appendSlice(self.allocator, "# Macros\n\n");
+            for (modules) |module| {
+                if (module.macros.len > 0) {
+                    const basename = self.getBasename(module.name);
+                    try content.appendSlice(self.allocator, "- [");
+                    try content.appendSlice(self.allocator, basename);
+                    try content.appendSlice(self.allocator, "](./macros/");
                     try content.appendSlice(self.allocator, self.sanitizeFilename(basename));
                     try content.appendSlice(self.allocator, ".md)\n");
                 }
@@ -336,6 +354,28 @@ pub const MdbookGenerator = struct {
 
                 var path_buf: [std.fs.max_path_bytes]u8 = undefined;
                 const path = try std.fmt.bufPrint(&path_buf, "{s}/src/types/{s}.md", .{ output_dir, safe_name });
+                const file = try std.fs.cwd().createFile(path, .{});
+                defer file.close();
+                try file.writeAll(markdown);
+            }
+
+            // Generate macros page if there are macros
+            if (module.macros.len > 0) {
+                const macros_module = types.Module{
+                    .name = module.name,
+                    .functions = &[_]types.Function{},
+                    .structs = &[_]types.Struct{},
+                    .enums = &[_]types.Enum{},
+                    .typedefs = &[_]types.Typedef{},
+                    .macros = module.macros,
+                };
+
+                // Set current file context for relative link generation
+                self.markdown_gen.setCurrentFile(module.name);
+                const markdown = try self.markdown_gen.generate(macros_module);
+
+                var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+                const path = try std.fmt.bufPrint(&path_buf, "{s}/src/macros/{s}.md", .{ output_dir, safe_name });
                 const file = try std.fs.cwd().createFile(path, .{});
                 defer file.close();
                 try file.writeAll(markdown);

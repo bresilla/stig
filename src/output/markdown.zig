@@ -94,6 +94,14 @@ pub const MarkdownGenerator = struct {
             }
         }
 
+        // Macros section
+        if (module.macros.len > 0) {
+            try self.writeString("## Macros\n\n");
+            for (module.macros) |macro| {
+                try self.writeMacro(macro);
+            }
+        }
+
         return self.buffer.items;
     }
 
@@ -437,6 +445,85 @@ pub const MarkdownGenerator = struct {
         if (td.doc) |doc| {
             if (doc.brief) |brief| {
                 try self.writeString(brief);
+                try self.writeString("\n\n");
+            }
+        }
+
+        try self.writeString("---\n\n");
+    }
+
+    fn writeMacro(self: *Self, macro: types.Macro) !void {
+        // Macro name as heading
+        try self.writeString("### `");
+        try self.writeString(macro.name);
+        try self.writeString("`\n\n");
+
+        // Code block with definition
+        try self.writeString("```c\n#define ");
+        try self.writeString(macro.name);
+
+        // Parameters for function-like macros
+        if (macro.params) |params| {
+            try self.writeString("(");
+            for (params, 0..) |param, i| {
+                if (i > 0) try self.writeString(", ");
+                try self.writeString(param);
+            }
+            try self.writeString(")");
+        }
+
+        // Body
+        if (macro.body.len > 0) {
+            try self.writeString(" ");
+            try self.writeString(macro.body);
+        }
+        try self.writeString("\n```\n\n");
+
+        // Documentation
+        if (macro.doc) |doc| {
+            if (doc.brief) |brief| {
+                try self.writeString(brief);
+                try self.writeString("\n\n");
+            }
+
+            // Parameters for function-like macros
+            if (doc.params.len > 0) {
+                try self.writeString("**Parameters:**\n");
+                for (doc.params) |param| {
+                    try self.writeString("- `");
+                    try self.writeString(param.name);
+                    try self.writeString("`: ");
+                    try self.writeString(param.description);
+                    try self.writeString("\n");
+                }
+                try self.writeString("\n");
+            }
+
+            // Notes
+            if (doc.notes.len > 0) {
+                for (doc.notes) |note| {
+                    try self.writeString("> **Note:** ");
+                    try self.writeString(note);
+                    try self.writeString("\n\n");
+                }
+            }
+
+            // Warnings
+            if (doc.warnings.len > 0) {
+                for (doc.warnings) |warning| {
+                    try self.writeString("> **Warning:** ");
+                    try self.writeString(warning);
+                    try self.writeString("\n\n");
+                }
+            }
+
+            // See also
+            if (doc.see_also.len > 0) {
+                try self.writeString("**See also:** ");
+                for (doc.see_also, 0..) |ref, i| {
+                    if (i > 0) try self.writeString(", ");
+                    try self.writeSymbolLink(ref);
+                }
                 try self.writeString("\n\n");
             }
         }

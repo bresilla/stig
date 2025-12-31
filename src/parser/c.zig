@@ -46,6 +46,7 @@ pub const CParser = struct {
                 .structs = &[_]types.Struct{},
                 .enums = &[_]types.Enum{},
                 .typedefs = &[_]types.Typedef{},
+                .macros = &[_]types.Macro{},
             };
         }
         defer tree.?.destroy();
@@ -54,9 +55,10 @@ pub const CParser = struct {
         var structs: std.ArrayList(types.Struct) = .empty;
         var enums: std.ArrayList(types.Enum) = .empty;
         var typedefs: std.ArrayList(types.Typedef) = .empty;
+        var macros: std.ArrayList(types.Macro) = .empty;
 
         const root = tree.?.rootNode();
-        try self.walkNode(root, &functions, &structs, &enums, &typedefs, filename);
+        try self.walkNode(root, &functions, &structs, &enums, &typedefs, &macros, filename);
 
         return types.Module{
             .name = filename,
@@ -64,6 +66,7 @@ pub const CParser = struct {
             .structs = try structs.toOwnedSlice(self.allocator),
             .enums = try enums.toOwnedSlice(self.allocator),
             .typedefs = try typedefs.toOwnedSlice(self.allocator),
+            .macros = try macros.toOwnedSlice(self.allocator),
         };
     }
 
@@ -75,6 +78,7 @@ pub const CParser = struct {
         structs: *std.ArrayList(types.Struct),
         enums: *std.ArrayList(types.Enum),
         typedefs: *std.ArrayList(types.Typedef),
+        macros: *std.ArrayList(types.Macro),
         filename: []const u8,
     ) !void {
         const kind = node.kind();
@@ -102,13 +106,23 @@ pub const CParser = struct {
             if (try self.extractTypedef(node, filename)) |td| {
                 try typedefs.append(self.allocator, td);
             }
+        } else if (std.mem.eql(u8, kind, "preproc_def")) {
+            // Object-like macro: #define NAME value
+            if (self.extractObjectMacro(node, filename)) |macro| {
+                try macros.append(self.allocator, macro);
+            }
+        } else if (std.mem.eql(u8, kind, "preproc_function_def")) {
+            // Function-like macro: #define NAME(args) body
+            if (try self.extractFunctionMacro(node, filename)) |macro| {
+                try macros.append(self.allocator, macro);
+            }
         }
 
         // Recurse into children
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {
-                try self.walkNode(child, functions, structs, enums, typedefs, filename);
+                try self.walkNode(child, functions, structs, enums, typedefs, macros, filename);
             }
         }
     }
@@ -692,6 +706,92 @@ pub const CParser = struct {
         return null;
     }
 
+    /// Extracts an object-like macro (#define NAME value)
+    fn extractObjectMacro(self: *Self, node: ts.Node, filename: []const u8) ?types.Macro {
+        var name: []const u8 = "";
+        var body: []const u8 = "";
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                if (std.mem.eql(u8, child_kind, "identifier")) {
+                    name = self.getNodeText(child);
+                } else if (std.mem.eql(u8, child_kind, "preproc_arg")) {
+                    body = std.mem.trim(u8, self.getNodeText(child), " \t");
+                }
+            }
+        }
+
+        if (name.len == 0) return null;
+
+        // Find docstring
+        const doc = self.findPrecedingDocstring(node);
+
+        const start = node.startPoint();
+        return types.Macro{
+            .name = name,
+            .params = null, // Object-like macro has no params
+            .body = body,
+            .doc = doc,
+            .location = types.SourceLocation{
+                .file = filename,
+                .line = start.row + 1,
+                .column = start.column + 1,
+            },
+        };
+    }
+
+    /// Extracts a function-like macro (#define NAME(args) body)
+    fn extractFunctionMacro(self: *Self, node: ts.Node, filename: []const u8) !?types.Macro {
+        var name: []const u8 = "";
+        var body: []const u8 = "";
+        var params: std.ArrayList([]const u8) = .empty;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                if (std.mem.eql(u8, child_kind, "identifier")) {
+                    name = self.getNodeText(child);
+                } else if (std.mem.eql(u8, child_kind, "preproc_params")) {
+                    // Extract parameter names
+                    var j: u32 = 0;
+                    while (j < child.childCount()) : (j += 1) {
+                        if (child.child(j)) |param_child| {
+                            if (std.mem.eql(u8, param_child.kind(), "identifier")) {
+                                try params.append(self.allocator, self.getNodeText(param_child));
+                            }
+                        }
+                    }
+                } else if (std.mem.eql(u8, child_kind, "preproc_arg")) {
+                    body = std.mem.trim(u8, self.getNodeText(child), " \t");
+                }
+            }
+        }
+
+        if (name.len == 0) {
+            params.deinit(self.allocator);
+            return null;
+        }
+
+        // Find docstring
+        const doc = self.findPrecedingDocstring(node);
+
+        const start = node.startPoint();
+        return types.Macro{
+            .name = name,
+            .params = try params.toOwnedSlice(self.allocator),
+            .body = body,
+            .doc = doc,
+            .location = types.SourceLocation{
+                .file = filename,
+                .line = start.row + 1,
+                .column = start.column + 1,
+            },
+        };
+    }
+
     /// Gets the text content of a node
     fn getNodeText(self: *Self, node: ts.Node) []const u8 {
         const start = node.startByte();
@@ -925,4 +1025,83 @@ test "parse source with only comments" {
     const module = try parser.parse(source, "comments.h");
 
     try std.testing.expectEqual(@as(usize, 0), module.functions.len);
+}
+
+test "parse object-like macro" {
+    var parser = try CParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\/** Version number */
+        \\#define VERSION 1
+    ;
+    const module = try parser.parse(source, "test.h");
+    defer std.testing.allocator.free(module.macros);
+
+    try std.testing.expectEqual(@as(usize, 1), module.macros.len);
+    try std.testing.expectEqualStrings("VERSION", module.macros[0].name);
+    try std.testing.expectEqualStrings("1", module.macros[0].body);
+    try std.testing.expect(module.macros[0].params == null);
+    try std.testing.expect(module.macros[0].doc != null);
+}
+
+test "parse function-like macro" {
+    var parser = try CParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\/**
+        \\ * Returns the maximum of two values.
+        \\ * @param a First value
+        \\ * @param b Second value
+        \\ */
+        \\#define MAX(a, b) ((a) > (b) ? (a) : (b))
+    ;
+    const module = try parser.parse(source, "test.h");
+    defer {
+        if (module.macros.len > 0) {
+            if (module.macros[0].params) |params| {
+                std.testing.allocator.free(params);
+            }
+        }
+        std.testing.allocator.free(module.macros);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), module.macros.len);
+    const macro = module.macros[0];
+    try std.testing.expectEqualStrings("MAX", macro.name);
+    try std.testing.expect(macro.params != null);
+    try std.testing.expectEqual(@as(usize, 2), macro.params.?.len);
+    try std.testing.expectEqualStrings("a", macro.params.?[0]);
+    try std.testing.expectEqualStrings("b", macro.params.?[1]);
+    try std.testing.expect(macro.doc != null);
+    if (macro.doc) |doc| {
+        try std.testing.expectEqualStrings("Returns the maximum of two values.", doc.brief.?);
+        try std.testing.expectEqual(@as(usize, 2), doc.params.len);
+    }
+}
+
+test "parse multiple macros" {
+    var parser = try CParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\#define VERSION 1
+        \\#define NAME "test"
+        \\#define ADD(a, b) ((a) + (b))
+    ;
+    const module = try parser.parse(source, "test.h");
+    defer {
+        for (module.macros) |macro| {
+            if (macro.params) |params| {
+                std.testing.allocator.free(params);
+            }
+        }
+        std.testing.allocator.free(module.macros);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), module.macros.len);
+    try std.testing.expectEqualStrings("VERSION", module.macros[0].name);
+    try std.testing.expectEqualStrings("NAME", module.macros[1].name);
+    try std.testing.expectEqualStrings("ADD", module.macros[2].name);
 }
