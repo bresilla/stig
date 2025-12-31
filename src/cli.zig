@@ -95,7 +95,7 @@ pub const ArgParser = struct {
 
         var format_opts = argonaut.Options{};
         format_opts.help = "Output format: markdown, mdbook (default: markdown)";
-        format_opts.default_string = "markdown";
+        // Don't set default - we'll check if it was explicitly set
         self.format_ptr = try parser.string("f", "format", &format_opts);
 
         var title_opts = argonaut.Options{};
@@ -165,16 +165,18 @@ pub const ArgParser = struct {
             };
         }
 
-        // Parse format - check if it was explicitly set (not the default)
+        // Parse format - check if it was explicitly set
         const format_str = self.format_ptr.?.*;
         var output_format: OutputFormat = .markdown;
         var format_explicitly_set = false;
-        if (std.mem.eql(u8, format_str, "mdbook")) {
-            output_format = .mdbook;
+        // Only set format_explicitly_set if user actually passed -f flag
+        if (format_str.len > 0) {
             format_explicitly_set = true;
-        } else if (std.mem.eql(u8, format_str, "md") or std.mem.eql(u8, format_str, "markdown")) {
-            output_format = .markdown;
-            format_explicitly_set = true;
+            if (std.mem.eql(u8, format_str, "mdbook")) {
+                output_format = .mdbook;
+            } else if (std.mem.eql(u8, format_str, "md") or std.mem.eql(u8, format_str, "markdown")) {
+                output_format = .markdown;
+            }
         }
 
         // Get output file (null if empty)

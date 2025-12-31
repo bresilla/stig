@@ -102,14 +102,43 @@ pub fn main() !void {
     cli.ArgParser.mergeWithConfig(&args, config);
 
     // Check for input files (from CLI or config)
-    var input_files = args.input_files;
-    if (input_files.len == 0 and config.input_patterns.len > 0) {
+    var input_patterns = args.input_files;
+    if (input_patterns.len == 0 and config.input_patterns.len > 0) {
         // Use input patterns from config
-        input_files = config.input_patterns;
+        input_patterns = config.input_patterns;
     }
 
-    if (input_files.len == 0) {
+    if (input_patterns.len == 0) {
         std.debug.print("Error: No input files specified\n\n", .{});
+        arg_parser.printHelp();
+        return;
+    }
+
+    // Expand glob patterns to actual file paths
+    var expanded_files: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (expanded_files.items) |f| {
+            allocator.free(f);
+        }
+        expanded_files.deinit(allocator);
+    }
+
+    for (input_patterns) |pattern| {
+        // Check if pattern contains glob characters
+        if (std.mem.indexOfAny(u8, pattern, "*?[")) |_| {
+            // It's a glob pattern - expand it
+            try expandGlob(allocator, pattern, &expanded_files);
+        } else {
+            // It's a regular file path
+            const path_copy = try allocator.dupe(u8, pattern);
+            try expanded_files.append(allocator, path_copy);
+        }
+    }
+
+    const input_files = expanded_files.items;
+
+    if (input_files.len == 0) {
+        std.debug.print("Error: No files matched the input patterns\n\n", .{});
         arg_parser.printHelp();
         return;
     }
@@ -280,6 +309,70 @@ fn isCppFile(filename: []const u8) bool {
         }
     }
     return false;
+}
+
+/// Expands a glob pattern to matching file paths
+fn expandGlob(allocator: std.mem.Allocator, pattern: []const u8, results: *std.ArrayList([]const u8)) !void {
+    // Split pattern into directory and file pattern
+    const last_sep = std.mem.lastIndexOfScalar(u8, pattern, '/');
+    const dir_path = if (last_sep) |idx| pattern[0..idx] else ".";
+    const file_pattern = if (last_sep) |idx| pattern[idx + 1 ..] else pattern;
+
+    // Open the directory
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+        std.debug.print("Warning: Cannot open directory '{s}': {}\n", .{ dir_path, err });
+        return;
+    };
+    defer dir.close();
+
+    // Iterate and match files
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        if (entry.kind != .file) continue;
+
+        // Simple glob matching (supports * and ?)
+        if (globMatch(file_pattern, entry.name)) {
+            // Build full path
+            const full_path = if (last_sep != null)
+                try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, entry.name })
+            else
+                try allocator.dupe(u8, entry.name);
+
+            try results.append(allocator, full_path);
+        }
+    }
+}
+
+/// Simple glob pattern matching (supports * and ?)
+fn globMatch(pattern: []const u8, name: []const u8) bool {
+    var pi: usize = 0;
+    var ni: usize = 0;
+    var star_pi: ?usize = null;
+    var star_ni: usize = 0;
+
+    while (ni < name.len) {
+        if (pi < pattern.len and (pattern[pi] == '?' or pattern[pi] == name[ni])) {
+            pi += 1;
+            ni += 1;
+        } else if (pi < pattern.len and pattern[pi] == '*') {
+            star_pi = pi;
+            star_ni = ni;
+            pi += 1;
+        } else if (star_pi) |sp| {
+            pi = sp + 1;
+            star_ni += 1;
+            ni = star_ni;
+        } else {
+            return false;
+        }
+    }
+
+    // Check remaining pattern characters (must all be *)
+    while (pi < pattern.len and pattern[pi] == '*') {
+        pi += 1;
+    }
+
+    return pi == pattern.len;
 }
 
 test "parser initialization" {
