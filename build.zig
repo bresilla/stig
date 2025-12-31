@@ -17,6 +17,13 @@ pub fn build(b: *std.Build) void {
         .@"build-shared" = false,
     });
 
+    // Tree-sitter C++ grammar dependency (local vendor)
+    const tree_sitter_cpp_dep = b.dependency("tree_sitter_cpp", .{
+        .target = target,
+        .optimize = optimize,
+        .@"build-shared" = false,
+    });
+
     // Main executable
     const exe = b.addExecutable(.{
         .name = "stinger",
@@ -35,6 +42,12 @@ pub fn build(b: *std.Build) void {
     ts_c_module.addImport("tree-sitter", tree_sitter_dep.module("tree_sitter"));
     exe.root_module.addImport("tree-sitter-c", ts_c_module);
     exe.linkLibrary(tree_sitter_c_dep.artifact("tree-sitter-c"));
+
+    // Add tree-sitter-cpp module and link its library
+    const ts_cpp_module = tree_sitter_cpp_dep.module("tree-sitter-cpp");
+    ts_cpp_module.addImport("tree-sitter", tree_sitter_dep.module("tree_sitter"));
+    exe.root_module.addImport("tree-sitter-cpp", ts_cpp_module);
+    exe.linkLibrary(tree_sitter_cpp_dep.artifact("tree-sitter-cpp"));
 
     b.installArtifact(exe);
 
@@ -61,6 +74,11 @@ pub fn build(b: *std.Build) void {
     test_ts_c_module.addImport("tree-sitter", tree_sitter_dep.module("tree_sitter"));
     unit_tests.root_module.addImport("tree-sitter-c", test_ts_c_module);
     unit_tests.linkLibrary(tree_sitter_c_dep.artifact("tree-sitter-c"));
+
+    const test_ts_cpp_module = tree_sitter_cpp_dep.module("tree-sitter-cpp");
+    test_ts_cpp_module.addImport("tree-sitter", tree_sitter_dep.module("tree_sitter"));
+    unit_tests.root_module.addImport("tree-sitter-cpp", test_ts_cpp_module);
+    unit_tests.linkLibrary(tree_sitter_cpp_dep.artifact("tree-sitter-cpp"));
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");

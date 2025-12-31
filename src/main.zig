@@ -2,6 +2,7 @@ const std = @import("std");
 const ts = @import("tree-sitter");
 const ts_c = @import("tree-sitter-c");
 const CParser = @import("parser/c.zig").CParser;
+const CppParser = @import("parser/cpp.zig").CppParser;
 const MarkdownGenerator = @import("output/markdown.zig").MarkdownGenerator;
 const MdbookGenerator = @import("output/mdbook.zig").MdbookGenerator;
 const MdbookConfig = @import("output/mdbook.zig").MdbookConfig;
@@ -109,9 +110,12 @@ pub fn main() !void {
         return;
     }
 
-    // Initialize parser
-    var parser = try CParser.init(allocator);
-    defer parser.deinit();
+    // Initialize parsers
+    var c_parser = try CParser.init(allocator);
+    defer c_parser.deinit();
+
+    var cpp_parser = try CppParser.init(allocator);
+    defer cpp_parser.deinit();
 
     // Store sources and modules together so sources outlive module usage
     const FileData = struct {
@@ -141,8 +145,13 @@ pub fn main() !void {
             continue;
         };
 
-        // Parse file
-        const module = try parser.parse(source, input_file);
+        // Choose parser based on file extension
+        const is_cpp = isCppFile(input_file);
+        const module = if (is_cpp)
+            try cpp_parser.parse(source, input_file)
+        else
+            try c_parser.parse(source, input_file);
+
         try file_data.append(allocator, .{ .source = source, .module = module });
     }
 
@@ -215,6 +224,17 @@ pub fn main() !void {
             }
         },
     }
+}
+
+/// Checks if a file is a C++ file based on extension
+fn isCppFile(filename: []const u8) bool {
+    const cpp_extensions = [_][]const u8{ ".cpp", ".cxx", ".cc", ".hpp", ".hxx", ".hh", ".C", ".H" };
+    for (cpp_extensions) |ext| {
+        if (std.mem.endsWith(u8, filename, ext)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 test "parser initialization" {

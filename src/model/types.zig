@@ -108,6 +108,52 @@ pub const Macro = struct {
     location: SourceLocation,
 };
 
+/// Access specifier for C++ class members
+pub const AccessSpecifier = enum {
+    public,
+    protected,
+    private,
+};
+
+/// C++ class method
+pub const Method = struct {
+    name: []const u8,
+    return_type: []const u8,
+    params: []const Parameter,
+    doc: ?DocString = null,
+    access: AccessSpecifier = .private,
+    is_virtual: bool = false,
+    is_static: bool = false,
+    is_const: bool = false,
+    is_override: bool = false,
+    is_pure_virtual: bool = false,
+};
+
+/// C++ class field with access specifier
+pub const ClassField = struct {
+    name: []const u8,
+    type_str: []const u8,
+    doc: ?[]const u8 = null,
+    access: AccessSpecifier = .private,
+};
+
+/// C++ class definition
+pub const Class = struct {
+    name: []const u8,
+    methods: []const Method = &[_]Method{},
+    fields: []const ClassField = &[_]ClassField{},
+    doc: ?DocString = null,
+    location: SourceLocation = .{ .file = "", .line = 0, .column = 0 },
+    namespace: ?[]const u8 = null,
+    base_classes: []const []const u8 = &[_][]const u8{},
+};
+
+/// C++ namespace
+pub const Namespace = struct {
+    name: []const u8,
+    doc: ?DocString = null,
+};
+
 /// A parsed module (typically one header file)
 pub const Module = struct {
     name: []const u8,
@@ -116,4 +162,7 @@ pub const Module = struct {
     enums: []const Enum,
     typedefs: []const Typedef,
     macros: []const Macro = &[_]Macro{},
+    // C++ specific
+    classes: []const Class = &[_]Class{},
+    namespaces: []const Namespace = &[_]Namespace{},
 };
