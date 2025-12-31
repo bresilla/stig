@@ -2,10 +2,11 @@ const std = @import("std");
 const ts = @import("tree-sitter");
 const ts_c = @import("tree-sitter-c");
 const CParser = @import("parser/c.zig").CParser;
+const MarkdownGenerator = @import("output/markdown.zig").MarkdownGenerator;
 const types = @import("model/types.zig");
 
 pub fn main() !void {
-    var buf: [4096]u8 = undefined;
+    var buf: [8192]u8 = undefined;
     var file_writer = std.fs.File.stdout().writer(&buf);
     var stdout = &file_writer.interface;
     defer stdout.flush() catch {};
@@ -46,67 +47,21 @@ pub fn main() !void {
         \\    GREEN = 1, /**< Green color */
         \\    BLUE = 2   /**< Blue color */
         \\};
+        \\
+        \\/// Typedef for unsigned 32-bit integer
+        \\typedef unsigned int uint32;
     ;
 
-    const module = try parser.parse(source, "example.c");
+    const module = try parser.parse(source, "example.h");
 
-    try stdout.print("Parsed module: {s}\n\n", .{module.name});
+    // Generate markdown
+    var md_gen = MarkdownGenerator.init(allocator);
+    defer md_gen.deinit();
 
-    // Print functions
-    try stdout.print("Functions ({d}):\n", .{module.functions.len});
-    for (module.functions) |func| {
-        try stdout.print("  - {s} {s}(", .{ func.return_type, func.name });
-        for (func.params, 0..) |param, i| {
-            if (i > 0) try stdout.print(", ", .{});
-            try stdout.print("{s} {s}", .{ param.type_str, param.name });
-        }
-        try stdout.print(") at line {d}\n", .{func.location.line});
-        if (func.doc) |doc| {
-            if (doc.brief) |brief| {
-                try stdout.print("      Doc: {s}\n", .{brief});
-            }
-        }
-    }
+    const markdown = try md_gen.generate(module);
 
-    // Print structs
-    try stdout.print("\nStructures ({d}):\n", .{module.structs.len});
-    for (module.structs) |s| {
-        try stdout.print("  - struct {s} at line {d}\n", .{ s.name, s.location.line });
-        if (s.doc) |doc| {
-            if (doc.brief) |brief| {
-                try stdout.print("      Doc: {s}\n", .{brief});
-            }
-        }
-        for (s.fields) |field| {
-            try stdout.print("      {s} {s}", .{ field.type_str, field.name });
-            if (field.doc) |doc| {
-                try stdout.print(" - {s}", .{doc});
-            }
-            try stdout.print("\n", .{});
-        }
-    }
-
-    // Print enums
-    try stdout.print("\nEnumerations ({d}):\n", .{module.enums.len});
-    for (module.enums) |e| {
-        try stdout.print("  - enum {s} at line {d}\n", .{ e.name, e.location.line });
-        if (e.doc) |doc| {
-            if (doc.brief) |brief| {
-                try stdout.print("      Doc: {s}\n", .{brief});
-            }
-        }
-        for (e.values) |val| {
-            if (val.value) |v| {
-                try stdout.print("      {s} = {d}", .{ val.name, v });
-            } else {
-                try stdout.print("      {s}", .{val.name});
-            }
-            if (val.doc) |doc| {
-                try stdout.print(" - {s}", .{doc});
-            }
-            try stdout.print("\n", .{});
-        }
-    }
+    try stdout.print("=== Generated Markdown ===\n\n", .{});
+    try stdout.writeAll(markdown);
 }
 
 test "parser initialization" {

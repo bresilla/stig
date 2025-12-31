@@ -155,6 +155,14 @@ pub const DocstringExtractor = struct {
         // Strip /** and */
         if (std.mem.startsWith(u8, result, "/**")) {
             result = result[3..];
+        } else if (std.mem.startsWith(u8, result, "///")) {
+            result = result[3..];
+            // Also strip leading space after ///
+            if (result.len > 0 and result[0] == ' ') {
+                result = result[1..];
+            }
+        } else if (std.mem.startsWith(u8, result, "//")) {
+            result = result[2..];
         } else if (std.mem.startsWith(u8, result, "/*")) {
             result = result[2..];
         }
