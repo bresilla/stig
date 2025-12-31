@@ -1,10 +1,17 @@
 const std = @import("std");
 const types = @import("../model/types.zig");
+const xref = @import("../xref.zig");
 
-/// Markdown output generator
+/// Markdown output generator with optional cross-reference support
 pub const MarkdownGenerator = struct {
     allocator: std.mem.Allocator,
     buffer: std.ArrayList(u8) = .empty,
+    /// Optional symbol table for cross-reference resolution
+    symbol_table: ?*xref.SymbolTable = null,
+    /// Current file being generated (for relative link calculation)
+    current_file: []const u8 = "",
+    /// Output format (affects link generation)
+    output_format: xref.SymbolTable.OutputFormat = .markdown,
 
     const Self = @This();
 
@@ -14,8 +21,38 @@ pub const MarkdownGenerator = struct {
         };
     }
 
+    /// Initialize with cross-reference support
+    pub fn initWithXRef(
+        allocator: std.mem.Allocator,
+        symbol_table: *xref.SymbolTable,
+        current_file: []const u8,
+        output_format: xref.SymbolTable.OutputFormat,
+    ) Self {
+        return Self{
+            .allocator = allocator,
+            .symbol_table = symbol_table,
+            .current_file = current_file,
+            .output_format = output_format,
+        };
+    }
+
     pub fn deinit(self: *Self) void {
         self.buffer.deinit(self.allocator);
+    }
+
+    /// Sets the symbol table for cross-reference resolution
+    pub fn setSymbolTable(self: *Self, table: *xref.SymbolTable) void {
+        self.symbol_table = table;
+    }
+
+    /// Sets the current file context for relative link generation
+    pub fn setCurrentFile(self: *Self, file: []const u8) void {
+        self.current_file = file;
+    }
+
+    /// Sets the output format
+    pub fn setOutputFormat(self: *Self, format: xref.SymbolTable.OutputFormat) void {
+        self.output_format = format;
     }
 
     /// Generates markdown documentation for a module
@@ -70,6 +107,107 @@ pub const MarkdownGenerator = struct {
         try self.buffer.appendSlice(self.allocator, s);
     }
 
+    /// Extracts the base type name from a type string
+    /// e.g., "const struct Point *" -> "Point"
+    pub fn extractBaseType(type_str: []const u8) []const u8 {
+        var result = type_str;
+
+        // Strip leading const
+        if (std.mem.startsWith(u8, result, "const ")) {
+            result = result[6..];
+        }
+
+        // Strip leading struct/enum/union keywords
+        if (std.mem.startsWith(u8, result, "struct ")) {
+            result = result[7..];
+        } else if (std.mem.startsWith(u8, result, "enum ")) {
+            result = result[5..];
+        } else if (std.mem.startsWith(u8, result, "union ")) {
+            result = result[6..];
+        }
+
+        // Strip trailing pointer/reference and spaces
+        result = std.mem.trimRight(u8, result, " *&");
+
+        return result;
+    }
+
+    /// Writes a type with optional cross-reference link
+    fn writeTypeWithLink(self: *Self, type_str: []const u8) !void {
+        if (self.symbol_table) |table| {
+            // Extract base type for lookup
+            const base_type = extractBaseType(type_str);
+
+            if (table.lookup(base_type)) |info| {
+                // Found a known symbol - generate a link
+                const link = try self.generateLink(base_type, info);
+                defer if (link.needs_free) self.allocator.free(link.text);
+
+                // Write the type with the base type as a link
+                // e.g., "const Point *" becomes "const [Point](#point) *"
+                if (std.mem.indexOf(u8, type_str, base_type)) |start| {
+                    // Write prefix (e.g., "const ")
+                    if (start > 0) {
+                        try self.writeString(type_str[0..start]);
+                    }
+                    // Write linked type
+                    try self.writeString(link.text);
+                    // Write suffix (e.g., " *")
+                    const end = start + base_type.len;
+                    if (end < type_str.len) {
+                        try self.writeString(type_str[end..]);
+                    }
+                    return;
+                }
+            }
+        }
+        // No cross-reference - write plain type
+        try self.writeString(type_str);
+    }
+
+    /// Writes a symbol reference with optional cross-reference link (for @see tags)
+    fn writeSymbolLink(self: *Self, symbol_name: []const u8) !void {
+        if (self.symbol_table) |table| {
+            if (table.lookup(symbol_name)) |info| {
+                const link = try self.generateLink(symbol_name, info);
+                defer if (link.needs_free) self.allocator.free(link.text);
+                try self.writeString(link.text);
+                return;
+            }
+        }
+        // No cross-reference - write as code
+        try self.writeString("`");
+        try self.writeString(symbol_name);
+        try self.writeString("`");
+    }
+
+    const LinkResult = struct {
+        text: []const u8,
+        needs_free: bool,
+    };
+
+    /// Generates a markdown link for a symbol
+    fn generateLink(self: *Self, symbol_name: []const u8, info: xref.SymbolInfo) !LinkResult {
+        switch (self.output_format) {
+            .markdown => {
+                // Single file: use anchor links [name](#anchor)
+                // Format: [symbol_name](#anchor)
+                const link_len = 1 + symbol_name.len + 2 + 1 + info.anchor.len + 1; // [name](#anchor)
+                const link_buf = try self.allocator.alloc(u8, link_len);
+                _ = std.fmt.bufPrint(link_buf, "[{s}](#{s})", .{ symbol_name, info.anchor }) catch unreachable;
+                return .{ .text = link_buf, .needs_free = true };
+            },
+            .mdbook => {
+                // mdbook: use relative path links
+                // For now, use simple anchor links within the same section
+                const link_len = 1 + symbol_name.len + 2 + 1 + info.anchor.len + 1;
+                const link_buf = try self.allocator.alloc(u8, link_len);
+                _ = std.fmt.bufPrint(link_buf, "[{s}](#{s})", .{ symbol_name, info.anchor }) catch unreachable;
+                return .{ .text = link_buf, .needs_free = true };
+            },
+        }
+    }
+
     fn writeFunction(self: *Self, func: types.Function) !void {
         // Function name as heading
         try self.writeString("### `");
@@ -103,7 +241,17 @@ pub const MarkdownGenerator = struct {
                 for (doc.params) |param| {
                     try self.writeString("- `");
                     try self.writeString(param.name);
-                    try self.writeString("`: ");
+                    try self.writeString("`");
+                    // Try to find the type from the function signature
+                    for (func.params) |fp| {
+                        if (std.mem.eql(u8, fp.name, param.name)) {
+                            try self.writeString(" (");
+                            try self.writeTypeWithLink(fp.type_str);
+                            try self.writeString(")");
+                            break;
+                        }
+                    }
+                    try self.writeString(": ");
                     try self.writeString(param.description);
                     try self.writeString("\n");
                 }
@@ -112,6 +260,10 @@ pub const MarkdownGenerator = struct {
 
             if (doc.returns) |ret| {
                 try self.writeString("**Returns:** ");
+                // Add return type with link if it's a known type
+                try self.writeString("(");
+                try self.writeTypeWithLink(func.return_type);
+                try self.writeString(") ");
                 try self.writeString(ret);
                 try self.writeString("\n\n");
             }
@@ -140,14 +292,12 @@ pub const MarkdownGenerator = struct {
                 }
             }
 
-            // See also
+            // See also - with cross-reference links
             if (doc.see_also.len > 0) {
                 try self.writeString("**See also:** ");
                 for (doc.see_also, 0..) |ref, i| {
                     if (i > 0) try self.writeString(", ");
-                    try self.writeString("`");
-                    try self.writeString(ref);
-                    try self.writeString("`");
+                    try self.writeSymbolLink(ref);
                 }
                 try self.writeString("\n\n");
             }
@@ -191,13 +341,15 @@ pub const MarkdownGenerator = struct {
             }
         }
 
-        // Fields documentation
+        // Fields documentation with type links
         if (s.fields.len > 0) {
             try self.writeString("**Fields:**\n");
             for (s.fields) |field| {
                 try self.writeString("- `");
                 try self.writeString(field.name);
-                try self.writeString("`");
+                try self.writeString("` (");
+                try self.writeTypeWithLink(field.type_str);
+                try self.writeString(")");
                 if (field.doc) |doc| {
                     try self.writeString(": ");
                     try self.writeString(doc);
@@ -502,4 +654,154 @@ test "generate markdown header" {
 
     const output = try gen.generate(module);
     try std.testing.expect(std.mem.startsWith(u8, output, "# my_library.h\n"));
+}
+
+test "extract base type" {
+    try std.testing.expectEqualStrings("Point", MarkdownGenerator.extractBaseType("Point"));
+    try std.testing.expectEqualStrings("Point", MarkdownGenerator.extractBaseType("Point *"));
+    try std.testing.expectEqualStrings("Point", MarkdownGenerator.extractBaseType("const Point *"));
+    try std.testing.expectEqualStrings("Point", MarkdownGenerator.extractBaseType("struct Point"));
+    try std.testing.expectEqualStrings("Point", MarkdownGenerator.extractBaseType("struct Point *"));
+    try std.testing.expectEqualStrings("Color", MarkdownGenerator.extractBaseType("enum Color"));
+    try std.testing.expectEqualStrings("Data", MarkdownGenerator.extractBaseType("union Data"));
+}
+
+test "generate markdown with cross-references" {
+    var symbol_table = xref.SymbolTable.init(std.testing.allocator);
+    defer symbol_table.deinit();
+
+    // Register a struct type
+    try symbol_table.register("Point", .struct_type, "geometry.h");
+
+    var gen = MarkdownGenerator.init(std.testing.allocator);
+    defer gen.deinit();
+    gen.setSymbolTable(&symbol_table);
+
+    // Create a function that uses the Point type
+    const module = types.Module{
+        .name = "test.h",
+        .functions = &[_]types.Function{
+            .{
+                .name = "get_point",
+                .return_type = "Point *",
+                .params = &[_]types.Parameter{},
+                .doc = types.DocString{
+                    .raw = "",
+                    .brief = "Gets a point.",
+                    .returns = "A pointer to a Point",
+                },
+                .location = .{ .file = "test.h", .line = 1, .column = 1 },
+            },
+        },
+        .structs = &[_]types.Struct{},
+        .enums = &[_]types.Enum{},
+        .typedefs = &[_]types.Typedef{},
+    };
+
+    const output = try gen.generate(module);
+
+    // Should contain a link to Point
+    try std.testing.expect(std.mem.indexOf(u8, output, "[Point](#point)") != null);
+}
+
+test "generate markdown with see_also cross-references" {
+    var symbol_table = xref.SymbolTable.init(std.testing.allocator);
+    defer symbol_table.deinit();
+
+    // Register related functions
+    try symbol_table.register("other_func", .function, "test.h");
+
+    var gen = MarkdownGenerator.init(std.testing.allocator);
+    defer gen.deinit();
+    gen.setSymbolTable(&symbol_table);
+
+    const module = types.Module{
+        .name = "test.h",
+        .functions = &[_]types.Function{
+            .{
+                .name = "my_func",
+                .return_type = "void",
+                .params = &[_]types.Parameter{},
+                .doc = types.DocString{
+                    .raw = "",
+                    .brief = "Does something.",
+                    .see_also = &[_][]const u8{"other_func"},
+                },
+                .location = .{ .file = "test.h", .line = 1, .column = 1 },
+            },
+        },
+        .structs = &[_]types.Struct{},
+        .enums = &[_]types.Enum{},
+        .typedefs = &[_]types.Typedef{},
+    };
+
+    const output = try gen.generate(module);
+
+    // Should contain a link to other_func in See also section
+    try std.testing.expect(std.mem.indexOf(u8, output, "**See also:**") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "[other_func](#other-func)") != null);
+}
+
+test "generate markdown without cross-references falls back to plain text" {
+    var gen = MarkdownGenerator.init(std.testing.allocator);
+    defer gen.deinit();
+
+    // No symbol table set - should fall back to plain text
+    const module = types.Module{
+        .name = "test.h",
+        .functions = &[_]types.Function{
+            .{
+                .name = "my_func",
+                .return_type = "void",
+                .params = &[_]types.Parameter{},
+                .doc = types.DocString{
+                    .raw = "",
+                    .brief = "Does something.",
+                    .see_also = &[_][]const u8{"unknown_func"},
+                },
+                .location = .{ .file = "test.h", .line = 1, .column = 1 },
+            },
+        },
+        .structs = &[_]types.Struct{},
+        .enums = &[_]types.Enum{},
+        .typedefs = &[_]types.Typedef{},
+    };
+
+    const output = try gen.generate(module);
+
+    // Should contain plain code text (no link)
+    try std.testing.expect(std.mem.indexOf(u8, output, "`unknown_func`") != null);
+}
+
+test "struct fields show type with cross-reference links" {
+    var symbol_table = xref.SymbolTable.init(std.testing.allocator);
+    defer symbol_table.deinit();
+
+    // Register a type
+    try symbol_table.register("Color", .enum_type, "types.h");
+
+    var gen = MarkdownGenerator.init(std.testing.allocator);
+    defer gen.deinit();
+    gen.setSymbolTable(&symbol_table);
+
+    const module = types.Module{
+        .name = "test.h",
+        .functions = &[_]types.Function{},
+        .structs = &[_]types.Struct{
+            .{
+                .name = "Shape",
+                .fields = &[_]types.StructField{
+                    .{ .name = "fill_color", .type_str = "Color", .doc = "Fill color" },
+                },
+                .location = .{ .file = "test.h", .line = 1, .column = 1 },
+            },
+        },
+        .enums = &[_]types.Enum{},
+        .typedefs = &[_]types.Typedef{},
+    };
+
+    const output = try gen.generate(module);
+
+    // Should contain a link to Color in the fields section
+    try std.testing.expect(std.mem.indexOf(u8, output, "`fill_color` ([Color](#color))") != null);
 }

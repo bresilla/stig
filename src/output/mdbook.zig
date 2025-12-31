@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("../model/types.zig");
 const MarkdownGenerator = @import("markdown.zig").MarkdownGenerator;
+const xref = @import("../xref.zig");
 
 /// Configuration for mdbook generation
 pub const MdbookConfig = struct {
@@ -32,6 +33,8 @@ pub const MdbookGenerator = struct {
     allocator: std.mem.Allocator,
     config: MdbookConfig,
     markdown_gen: MarkdownGenerator,
+    /// Symbol table for cross-reference resolution
+    symbol_table: xref.SymbolTable,
 
     const Self = @This();
 
@@ -40,6 +43,7 @@ pub const MdbookGenerator = struct {
             .allocator = allocator,
             .config = .{},
             .markdown_gen = MarkdownGenerator.init(allocator),
+            .symbol_table = xref.SymbolTable.init(allocator),
         };
     }
 
@@ -48,16 +52,25 @@ pub const MdbookGenerator = struct {
             .allocator = allocator,
             .config = config,
             .markdown_gen = MarkdownGenerator.init(allocator),
+            .symbol_table = xref.SymbolTable.init(allocator),
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.markdown_gen.deinit();
+        self.symbol_table.deinit();
     }
 
     /// Generates the complete mdbook structure to the output directory
     pub fn generate(self: *Self, modules: []const types.Module) !void {
         const output_dir = self.config.output_dir;
+
+        // Build symbol table from all modules for cross-referencing
+        try self.symbol_table.buildFromModules(modules);
+
+        // Configure markdown generator with cross-reference support
+        self.markdown_gen.setSymbolTable(&self.symbol_table);
+        self.markdown_gen.setOutputFormat(.mdbook);
 
         // Create output directory structure
         try self.createDirectoryStructure(output_dir);
@@ -296,6 +309,8 @@ pub const MdbookGenerator = struct {
                     .typedefs = &[_]types.Typedef{},
                 };
 
+                // Set current file context for relative link generation
+                self.markdown_gen.setCurrentFile(module.name);
                 const markdown = try self.markdown_gen.generate(func_module);
 
                 var path_buf: [std.fs.max_path_bytes]u8 = undefined;
@@ -315,6 +330,8 @@ pub const MdbookGenerator = struct {
                     .typedefs = module.typedefs,
                 };
 
+                // Set current file context for relative link generation
+                self.markdown_gen.setCurrentFile(module.name);
                 const markdown = try self.markdown_gen.generate(types_module);
 
                 var path_buf: [std.fs.max_path_bytes]u8 = undefined;
