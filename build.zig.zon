@@ -15,6 +15,10 @@
         .tree_sitter_cpp = .{
             .path = "vendor/tree-sitter-cpp",
         },
+
+        .argonaut = .{
+            .path = "vendor/argonaut",
+        },
     },
     .paths = .{
         "build.zig",

@@ -48,6 +48,8 @@ pub fn main() !void {
 
     // Parse CLI arguments
     var arg_parser = cli.ArgParser.init(allocator);
+    defer arg_parser.deinit();
+
     var args = arg_parser.parse() catch |err| {
         switch (err) {
             error.MissingOutputFile => std.debug.print("Error: -o/--output requires a file path\n", .{}),
@@ -60,7 +62,7 @@ pub fn main() !void {
     };
     defer args.deinit();
 
-    // Handle help/version
+    // Handle help/version (defer will clean up arg_parser)
     if (args.show_help) {
         arg_parser.printHelp();
         return;

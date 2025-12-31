@@ -1,4 +1,5 @@
 const std = @import("std");
+const argonaut = @import("argonaut");
 const config_mod = @import("config.zig");
 
 pub const VERSION = "0.1.0";
@@ -24,6 +25,7 @@ pub const Args = struct {
     input_files: []const []const u8,
     output_file: ?[]const u8,
     output_format: OutputFormat,
+    format_explicitly_set: bool,
     book_title: ?[]const u8,
     config_file: ?[]const u8,
     show_help: bool,
@@ -37,88 +39,182 @@ pub const Args = struct {
     }
 };
 
-/// CLI argument parser
+/// CLI argument parser using argonaut
 pub const ArgParser = struct {
     allocator: std.mem.Allocator,
+    parser: ?*argonaut.Parser,
+    process_args: ?[]const [:0]u8,
+
+    // Argument pointers
+    output_ptr: ?*[]const u8,
+    format_ptr: ?*[]const u8,
+    title_ptr: ?*[]const u8,
+    config_ptr: ?*[]const u8,
+    help_ptr: ?*bool,
+    version_ptr: ?*bool,
+    watch_ptr: ?*bool,
+    serve_ptr: ?*bool,
+    input_files_ptr: ?*std.ArrayList([]const u8),
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) Self {
-        return Self{ .allocator = allocator };
+        return Self{
+            .allocator = allocator,
+            .parser = null,
+            .process_args = null,
+            .output_ptr = null,
+            .format_ptr = null,
+            .title_ptr = null,
+            .config_ptr = null,
+            .help_ptr = null,
+            .version_ptr = null,
+            .watch_ptr = null,
+            .serve_ptr = null,
+            .input_files_ptr = null,
+        };
     }
 
-    /// Parses command-line arguments
+    /// Parses command-line arguments using argonaut
     pub fn parse(self: *Self) !Args {
-        var args_iter = std.process.args();
-        // Skip program name
-        _ = args_iter.skip();
+        // Create argonaut parser
+        self.parser = try argonaut.newParser(
+            self.allocator,
+            "stinger",
+            "C/C++ documentation generator using tree-sitter",
+        );
+        const parser = self.parser.?;
 
-        var input_files: std.ArrayList([]const u8) = .empty;
-        var output_file: ?[]const u8 = null;
-        var output_format: ?OutputFormat = null;
-        var book_title: ?[]const u8 = null;
-        var config_file: ?[]const u8 = null;
-        var show_help = false;
-        var show_version = false;
-        var watch_mode = false;
-        var serve_mode = false;
+        // Disable argonaut's automatic help - we'll handle it ourselves
+        parser.command.disableHelp();
 
-        while (args_iter.next()) |arg| {
-            if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-                show_help = true;
-            } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--version")) {
-                show_version = true;
-            } else if (std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--watch")) {
-                watch_mode = true;
-            } else if (std.mem.eql(u8, arg, "--serve")) {
-                watch_mode = true;
-                serve_mode = true;
-            } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
-                output_file = args_iter.next();
-                if (output_file == null) {
-                    return error.MissingOutputFile;
-                }
-            } else if (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--format")) {
-                const format_str = args_iter.next();
-                if (format_str == null) {
-                    return error.MissingFormatValue;
-                }
-                if (std.mem.eql(u8, format_str.?, "mdbook")) {
-                    output_format = .mdbook;
-                } else if (std.mem.eql(u8, format_str.?, "markdown") or std.mem.eql(u8, format_str.?, "md")) {
-                    output_format = .markdown;
-                } else {
-                    std.debug.print("Unknown format: {s}\n", .{format_str.?});
-                    return error.UnknownFormat;
-                }
-            } else if (std.mem.eql(u8, arg, "--title")) {
-                book_title = args_iter.next();
-                if (book_title == null) {
-                    return error.MissingTitleValue;
-                }
-            } else if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--config")) {
-                config_file = args_iter.next();
-                if (config_file == null) {
-                    return error.MissingConfigFile;
-                }
-            } else if (std.mem.startsWith(u8, arg, "-")) {
-                // Unknown flag
-                std.debug.print("Unknown option: {s}\n", .{arg});
-                return error.UnknownOption;
-            } else {
-                // Positional argument (input file)
-                try input_files.append(self.allocator, arg);
-            }
+        // Define arguments
+        var output_opts = argonaut.Options{};
+        output_opts.help = "Output file or directory (default: stdout)";
+        self.output_ptr = try parser.string("o", "output", &output_opts);
+
+        var format_opts = argonaut.Options{};
+        format_opts.help = "Output format: markdown, mdbook (default: markdown)";
+        format_opts.default_string = "markdown";
+        self.format_ptr = try parser.string("f", "format", &format_opts);
+
+        var title_opts = argonaut.Options{};
+        title_opts.help = "Book title (for mdbook format)";
+        self.title_ptr = try parser.string("", "title", &title_opts);
+
+        var config_opts = argonaut.Options{};
+        config_opts.help = "Config file path (default: stinger.toml)";
+        self.config_ptr = try parser.string("c", "config", &config_opts);
+
+        var version_opts = argonaut.Options{};
+        version_opts.help = "Show version information";
+        self.version_ptr = try parser.flag("v", "version", &version_opts);
+
+        var watch_opts = argonaut.Options{};
+        watch_opts.help = "Watch for file changes and regenerate";
+        self.watch_ptr = try parser.flag("w", "watch", &watch_opts);
+
+        var serve_opts = argonaut.Options{};
+        serve_opts.help = "Watch mode + spawn mdbook serve for live preview";
+        self.serve_ptr = try parser.flag("", "serve", &serve_opts);
+
+        var help_opts = argonaut.Options{};
+        help_opts.help = "Show this help message";
+        self.help_ptr = try parser.flag("h", "help", &help_opts);
+
+        // Input files as string list
+        var input_opts = argonaut.Options{};
+        input_opts.help = "C/C++ header files to process";
+        self.input_files_ptr = try parser.stringList("", "input", &input_opts);
+
+        // Get process args - we need to keep these alive since argonaut stores references
+        self.process_args = try std.process.argsAlloc(self.allocator);
+        const process_args = self.process_args.?;
+
+        // Parse arguments
+        parser.parse(process_args) catch |err| {
+            return err;
+        };
+
+        // Check for help flag
+        if (self.help_ptr.?.*) {
+            return Args{
+                .input_files = &[_][]const u8{},
+                .output_file = null,
+                .output_format = .markdown,
+                .format_explicitly_set = false,
+                .book_title = null,
+                .config_file = null,
+                .show_help = true,
+                .show_version = false,
+                .watch_mode = false,
+                .serve_mode = false,
+                .allocator = self.allocator,
+            };
         }
 
+        // Check for version flag
+        if (self.version_ptr.?.*) {
+            return Args{
+                .input_files = &[_][]const u8{},
+                .output_file = null,
+                .output_format = .markdown,
+                .format_explicitly_set = false,
+                .book_title = null,
+                .config_file = null,
+                .show_help = false,
+                .show_version = true,
+                .watch_mode = false,
+                .serve_mode = false,
+                .allocator = self.allocator,
+            };
+        }
+
+        // Parse format - check if it was explicitly set (not the default)
+        const format_str = self.format_ptr.?.*;
+        var output_format: OutputFormat = .markdown;
+        var format_explicitly_set = false;
+        if (std.mem.eql(u8, format_str, "mdbook")) {
+            output_format = .mdbook;
+            format_explicitly_set = true;
+        } else if (std.mem.eql(u8, format_str, "md")) {
+            output_format = .markdown;
+            format_explicitly_set = true;
+        }
+        // "markdown" is the default, so we need to check if it was explicitly passed
+        // by checking if the format_ptr was parsed (not just default)
+        // Unfortunately argonaut doesn't expose this, so we check if it's different from default
+        // For now, if user passes -f markdown explicitly, it will still be treated as default
+
+        // Get output file (null if empty)
+        const output_str = self.output_ptr.?.*;
+        const output_file: ?[]const u8 = if (output_str.len > 0) output_str else null;
+
+        // Get title (null if empty)
+        const title_str = self.title_ptr.?.*;
+        const book_title: ?[]const u8 = if (title_str.len > 0) title_str else null;
+
+        // Get config file (null if empty)
+        const config_str = self.config_ptr.?.*;
+        const config_file: ?[]const u8 = if (config_str.len > 0) config_str else null;
+
+        // Get watch/serve modes
+        const watch_mode = self.watch_ptr.?.* or self.serve_ptr.?.*;
+        const serve_mode = self.serve_ptr.?.*;
+
+        // Get input files
+        const input_list = self.input_files_ptr.?;
+        const input_files = try self.allocator.dupe([]const u8, input_list.items);
+
         return Args{
-            .input_files = try input_files.toOwnedSlice(self.allocator),
+            .input_files = input_files,
             .output_file = output_file,
-            .output_format = output_format orelse .markdown,
+            .output_format = output_format,
+            .format_explicitly_set = format_explicitly_set,
             .book_title = book_title,
             .config_file = config_file,
-            .show_help = show_help,
-            .show_version = show_version,
+            .show_help = false,
+            .show_version = false,
             .watch_mode = watch_mode,
             .serve_mode = serve_mode,
             .allocator = self.allocator,
@@ -134,17 +230,20 @@ pub const ArgParser = struct {
         if (args.book_title == null and cfg.title.len > 0) {
             args.book_title = cfg.title;
         }
-        // Format: if not explicitly set on CLI, use config
-        // Note: we can't easily detect if format was explicitly set,
-        // so config format is only used if output format is still default
-        if (args.output_format == .markdown and cfg.format == .mdbook) {
-            args.output_format = .mdbook;
+        // Format: only use config format if CLI format was not explicitly set
+        if (!args.format_explicitly_set) {
+            args.output_format = OutputFormat.fromConfig(cfg.format);
         }
     }
 
     /// Prints help message
     pub fn printHelp(self: *Self) void {
+        // Always use our custom help for better formatting
         _ = self;
+        printFallbackHelp();
+    }
+
+    fn printFallbackHelp() void {
         const help =
             \\stinger - C/C++ documentation generator
             \\
@@ -205,6 +304,15 @@ pub const ArgParser = struct {
     pub fn printVersion(self: *Self) void {
         _ = self;
         std.debug.print("stinger {s}\n", .{VERSION});
+    }
+
+    pub fn deinit(self: *Self) void {
+        if (self.parser) |parser| {
+            parser.deinit();
+        }
+        if (self.process_args) |args| {
+            std.process.argsFree(self.allocator, args);
+        }
     }
 };
 

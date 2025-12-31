@@ -24,6 +24,12 @@ pub fn build(b: *std.Build) void {
         .@"build-shared" = false,
     });
 
+    // argonaut dependency for CLI argument parsing
+    const argonaut_dep = b.dependency("argonaut", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Main executable
     const exe = b.addExecutable(.{
         .name = "stinger",
@@ -48,6 +54,9 @@ pub fn build(b: *std.Build) void {
     ts_cpp_module.addImport("tree-sitter", tree_sitter_dep.module("tree_sitter"));
     exe.root_module.addImport("tree-sitter-cpp", ts_cpp_module);
     exe.linkLibrary(tree_sitter_cpp_dep.artifact("tree-sitter-cpp"));
+
+    // Add argonaut module
+    exe.root_module.addImport("argonaut", argonaut_dep.module("argonaut"));
 
     b.installArtifact(exe);
 
@@ -79,6 +88,9 @@ pub fn build(b: *std.Build) void {
     test_ts_cpp_module.addImport("tree-sitter", tree_sitter_dep.module("tree_sitter"));
     unit_tests.root_module.addImport("tree-sitter-cpp", test_ts_cpp_module);
     unit_tests.linkLibrary(tree_sitter_cpp_dep.artifact("tree-sitter-cpp"));
+
+    // Add argonaut module to tests
+    unit_tests.root_module.addImport("argonaut", argonaut_dep.module("argonaut"));
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
