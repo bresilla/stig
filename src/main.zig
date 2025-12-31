@@ -192,7 +192,7 @@ pub fn main() !void {
     }
 
     // Process each input file
-    for (args.input_files) |input_file| {
+    for (input_files) |input_file| {
         // Read file
         const file = std.fs.cwd().openFile(input_file, .{}) catch |err| {
             std.debug.print("Error: Cannot open file '{s}': {}\n", .{ input_file, err });
