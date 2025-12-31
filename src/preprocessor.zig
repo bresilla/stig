@@ -3,8 +3,8 @@ const types = @import("model/types.zig");
 const CParser = @import("parser/c.zig").CParser;
 const MarkdownGenerator = @import("output/markdown.zig").MarkdownGenerator;
 
-/// mdbook preprocessor for stinger
-/// Processes {{#stinger ...}} directives in mdbook chapters
+/// mdbook preprocessor for stig
+/// Processes {{#stig ...}} directives in mdbook chapters
 pub const Preprocessor = struct {
     allocator: std.mem.Allocator,
     parser: CParser,
@@ -145,7 +145,7 @@ pub const Preprocessor = struct {
         }
     }
 
-    /// Processes the book JSON, replacing stinger directives
+    /// Processes the book JSON, replacing stig directives
     fn processBook(self: *Self, book_json: []const u8) ![]u8 {
         var output: std.ArrayList(u8) = .empty;
         errdefer output.deinit(self.allocator);
@@ -203,17 +203,17 @@ pub const Preprocessor = struct {
         return output.toOwnedSlice(self.allocator);
     }
 
-    /// Processes chapter content, replacing {{#stinger ...}} directives
+    /// Processes chapter content, replacing {{#stig ...}} directives
     fn processContent(self: *Self, content: []const u8) ![]u8 {
         var output: std.ArrayList(u8) = .empty;
         errdefer output.deinit(self.allocator);
 
         var i: usize = 0;
         while (i < content.len) {
-            // Look for {{#stinger
-            if (i + 11 <= content.len and std.mem.eql(u8, content[i .. i + 11], "{{#stinger ")) {
+            // Look for {{#stig
+            if (i + 8 <= content.len and std.mem.eql(u8, content[i .. i + 8], "{{#stig ")) {
                 const directive_start = i;
-                i += 11;
+                i += 8;
 
                 // Find the end }}
                 const directive_end = std.mem.indexOf(u8, content[i..], "}}") orelse {
@@ -248,7 +248,7 @@ pub const Preprocessor = struct {
         return output.toOwnedSlice(self.allocator);
     }
 
-    /// Processes a single stinger directive
+    /// Processes a single stig directive
     fn processDirective(self: *Self, args: []const u8) ![]u8 {
         // Parse directive: "api path/to/file.h" or "function func_name" or "struct StructName"
         var iter = std.mem.splitScalar(u8, args, ' ');

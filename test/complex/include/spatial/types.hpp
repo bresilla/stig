@@ -1,7 +1,7 @@
 /**
  * @file types.hpp
  * @brief Core type definitions for the spatial geometry library
- * @author Stinger Test Suite
+ * @author Stig Test Suite
  * @version 1.0.0
  * 
  * This header provides fundamental type aliases and utility types

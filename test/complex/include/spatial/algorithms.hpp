@@ -1,7 +1,7 @@
 /**
  * @file algorithms.hpp
  * @brief Spatial algorithms and utility functions
- * @author Stinger Test Suite
+ * @author Stig Test Suite
  * @version 1.0.0
  * 
  * Provides free functions for common spatial operations:

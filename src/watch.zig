@@ -31,7 +31,7 @@ pub const Watcher = struct {
         serve_mode: bool,
     ) Self {
         // Cache directory inside output dir - allocate properly
-        const cache_dir = std.fs.path.join(allocator, &.{ output_dir, ".stinger-cache" }) catch output_dir;
+        const cache_dir = std.fs.path.join(allocator, &.{ output_dir, ".stig-cache" }) catch output_dir;
 
         return Self{
             .allocator = allocator,

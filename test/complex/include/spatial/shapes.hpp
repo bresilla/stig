@@ -1,7 +1,7 @@
 /**
  * @file shapes.hpp
  * @brief 2D shape classes for geometric primitives
- * @author Stinger Test Suite
+ * @author Stig Test Suite
  * @version 1.0.0
  * 
  * Provides abstract Shape base class and concrete implementations

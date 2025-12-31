@@ -1,10 +1,10 @@
-# Stinger
+# Stig
 
 C/C++ documentation generator using tree-sitter parsing with mdbook output support
 
 ## Overview
 
-Stinger is a documentation generator for C and C++ codebases that parses source files using tree-sitter and extracts documentation from Doxygen-style comments. It generates clean markdown documentation that can be viewed standalone or built into an mdbook.
+Stig is a documentation generator for C and C++ codebases that parses source files using tree-sitter and extracts documentation from Doxygen-style comments. It generates clean markdown documentation that can be viewed standalone or built into an mdbook.
 
 **Key Features:**
 - **Tree-sitter Parsing**: Accurate AST-based extraction of functions, structs, enums, typedefs, and macros
@@ -21,12 +21,12 @@ Stinger is a documentation generator for C and C++ codebases that parses source 
 Requires Zig 0.14.0 or later.
 
 ```bash
-git clone https://github.com/bresilla/stinger.git
-cd stinger
+git clone https://github.com/bresilla/stig.git
+cd stig
 zig build -Doptimize=ReleaseFast
 ```
 
-The binary will be at `zig-out/bin/stinger`.
+The binary will be at `zig-out/bin/stig`.
 
 ### Development Environment (Nix + Devbox)
 
@@ -37,7 +37,7 @@ For a reproducible development environment:
 curl -fsSL https://get.jetpack.io/devbox | bash
 
 # Enter the development shell
-cd stinger
+cd stig
 devbox shell
 ```
 
@@ -47,50 +47,50 @@ devbox shell
 
 ```bash
 # Generate markdown to stdout
-stinger include/mylib.h
+stig include/mylib.h
 
 # Generate markdown to file
-stinger include/mylib.h -o api.md
+stig include/mylib.h -o api.md
 
 # Generate mdbook structure
-stinger include/*.h -f mdbook -o docs/
+stig include/*.h -f mdbook -o docs/
 
 # Generate with custom title
-stinger include/*.h -f mdbook -o docs/ --title "My Library API"
+stig include/*.h -f mdbook -o docs/ --title "My Library API"
 ```
 
 ### Watch Mode
 
 ```bash
 # Watch for changes and regenerate
-stinger include/*.h -f mdbook -o docs/ --watch
+stig include/*.h -f mdbook -o docs/ --watch
 
 # Watch with live preview (spawns mdbook serve)
-stinger include/*.h -f mdbook -o docs/ --serve
+stig include/*.h -f mdbook -o docs/ --serve
 ```
 
 ### mdbook Preprocessor
 
-Stinger can run as an mdbook preprocessor, allowing you to embed API documentation directly in your mdbook chapters.
+Stig can run as an mdbook preprocessor, allowing you to embed API documentation directly in your mdbook chapters.
 
 Add to your `book.toml`:
 
 ```toml
-[preprocessor.stinger]
-command = "stinger preprocessor"
+[preprocessor.stig]
+command = "stig preprocessor"
 ```
 
 Use in markdown files:
 
 ```markdown
-{{#stinger api ../include/mylib.h}}
-{{#stinger function my_function}}
-{{#stinger struct MyStruct}}
+{{#stig api ../include/mylib.h}}
+{{#stig function my_function}}
+{{#stig struct MyStruct}}
 ```
 
 ### Configuration File
 
-Stinger looks for `stinger.toml` in the current directory. CLI arguments override config file settings.
+Stig looks for `stig.toml` in the current directory. CLI arguments override config file settings.
 
 ```toml
 title = "My Library API"
@@ -105,7 +105,7 @@ authors = ["Your Name"]
 
 ## Supported Documentation Styles
 
-Stinger extracts documentation from several comment styles:
+Stig extracts documentation from several comment styles:
 
 ```c
 /**
@@ -135,7 +135,7 @@ enum Color {
 
 ## Output Structure
 
-When generating mdbook format, stinger creates:
+When generating mdbook format, stig creates:
 
 ```
 docs/
@@ -156,7 +156,7 @@ docs/
 ## CLI Reference
 
 ```
-stinger [OPTIONS] <INPUT_FILES>...
+stig [OPTIONS] <INPUT_FILES>...
 
 ARGS:
     <INPUT_FILES>...    C/C++ header files to process
@@ -165,7 +165,7 @@ OPTIONS:
     -o, --output <PATH>    Output file or directory (default: stdout)
     -f, --format <FMT>     Output format: markdown, mdbook (default: markdown)
     --title <TITLE>        Book title (for mdbook format)
-    -c, --config <FILE>    Config file path (default: stinger.toml)
+    -c, --config <FILE>    Config file path (default: stig.toml)
     -w, --watch            Watch for file changes and regenerate
     --serve                Watch mode + spawn mdbook serve for live preview
     -h, --help             Show help message

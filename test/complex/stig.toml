@@ -2,11 +2,11 @@ title = "Spatial Geometry Library"
 output = "book"
 format = "mdbook"
 
-[stinger]
+[stig]
 inputs = ["include/spatial/*.hpp"]
 generate_intro = true
 grouping = "by_header"
 
 [book]
-authors = ["Stinger Test Suite"]
+authors = ["Stig Test Suite"]
 language = "en"

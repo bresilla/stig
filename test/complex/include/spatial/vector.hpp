@@ -1,7 +1,7 @@
 /**
  * @file vector.hpp
  * @brief N-dimensional vector class template
- * @author Stinger Test Suite
+ * @author Stig Test Suite
  * @version 1.0.0
  * 
  * Provides a generic Vector class with specializations for 2D and 3D vectors.

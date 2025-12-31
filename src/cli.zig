@@ -80,7 +80,7 @@ pub const ArgParser = struct {
         // Create argonaut parser
         self.parser = try argonaut.newParser(
             self.allocator,
-            "stinger",
+            "stig",
             "C/C++ documentation generator using tree-sitter",
         );
         const parser = self.parser.?;
@@ -103,7 +103,7 @@ pub const ArgParser = struct {
         self.title_ptr = try parser.string("", "title", &title_opts);
 
         var config_opts = argonaut.Options{};
-        config_opts.help = "Config file path (default: stinger.toml)";
+        config_opts.help = "Config file path (default: stig.toml)";
         self.config_ptr = try parser.string("c", "config", &config_opts);
 
         var version_opts = argonaut.Options{};
@@ -242,10 +242,10 @@ pub const ArgParser = struct {
 
     fn printFallbackHelp() void {
         const help =
-            \\stinger - C/C++ documentation generator
+            \\stig - C/C++ documentation generator
             \\
             \\USAGE:
-            \\    stinger [OPTIONS] <INPUT_FILES>...
+            \\    stig [OPTIONS] <INPUT_FILES>...
             \\
             \\ARGS:
             \\    <INPUT_FILES>...    C/C++ header files to process
@@ -254,17 +254,17 @@ pub const ArgParser = struct {
             \\    -o, --output <PATH>    Output file or directory (default: stdout)
             \\    -f, --format <FMT>     Output format: markdown, mdbook (default: markdown)
             \\    --title <TITLE>        Book title (for mdbook format)
-            \\    -c, --config <FILE>    Config file path (default: stinger.toml)
+            \\    -c, --config <FILE>    Config file path (default: stig.toml)
             \\    -w, --watch            Watch for file changes and regenerate
             \\    --serve                Watch mode + spawn mdbook serve for live preview
             \\    -h, --help             Show this help message
             \\    -v, --version          Show version information
             \\
             \\CONFIG FILE:
-            \\    stinger looks for stinger.toml in the current directory.
+            \\    stig looks for stig.toml in the current directory.
             \\    CLI arguments override config file settings.
             \\
-            \\    Example stinger.toml:
+            \\    Example stig.toml:
             \\        title = "My API"
             \\        output = "docs"
             \\        format = "mdbook"
@@ -274,24 +274,24 @@ pub const ArgParser = struct {
             \\    preprocessor    Run as mdbook preprocessor (reads JSON from stdin)
             \\
             \\EXAMPLES:
-            \\    stinger input.h                         # Output to stdout
-            \\    stinger input.h -o output.md           # Output to file
-            \\    stinger src/*.h -o api.md              # Multiple files
-            \\    stinger src/*.h -f mdbook -o docs/     # Generate mdbook structure
-            \\    stinger src/*.h -f mdbook --title "My API"  # With custom title
-            \\    stinger -c myconfig.toml               # Use custom config file
-            \\    stinger src/*.h -f mdbook -o docs/ --watch  # Watch mode
-            \\    stinger src/*.h -f mdbook -o docs/ --serve  # Watch + live preview
+            \\    stig input.h                         # Output to stdout
+            \\    stig input.h -o output.md           # Output to file
+            \\    stig src/*.h -o api.md              # Multiple files
+            \\    stig src/*.h -f mdbook -o docs/     # Generate mdbook structure
+            \\    stig src/*.h -f mdbook --title "My API"  # With custom title
+            \\    stig -c myconfig.toml               # Use custom config file
+            \\    stig src/*.h -f mdbook -o docs/ --watch  # Watch mode
+            \\    stig src/*.h -f mdbook -o docs/ --serve  # Watch + live preview
             \\
             \\MDBOOK PREPROCESSOR:
             \\    Add to book.toml:
-            \\        [preprocessor.stinger]
-            \\        command = "stinger preprocessor"
+            \\        [preprocessor.stig]
+            \\        command = "stig preprocessor"
             \\
             \\    Use in chapters:
-            \\        {{#stinger api ../include/mylib.h}}
-            \\        {{#stinger function my_function}}
-            \\        {{#stinger struct MyStruct}}
+            \\        {{#stig api ../include/mylib.h}}
+            \\        {{#stig function my_function}}
+            \\        {{#stig struct MyStruct}}
             \\
         ;
         std.debug.print("{s}", .{help});
@@ -300,7 +300,7 @@ pub const ArgParser = struct {
     /// Prints version information
     pub fn printVersion(self: *Self) void {
         _ = self;
-        std.debug.print("stinger {s}\n", .{VERSION});
+        std.debug.print("stig {s}\n", .{VERSION});
     }
 
     pub fn deinit(self: *Self) void {

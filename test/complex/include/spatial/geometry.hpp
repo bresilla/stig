@@ -1,7 +1,7 @@
 /**
  * @file geometry.hpp
  * @brief Point and Transform classes for spatial geometry
- * @author Stinger Test Suite
+ * @author Stig Test Suite
  * @version 1.0.0
  * 
  * Provides Point classes (wrappers around vectors with geometric semantics)

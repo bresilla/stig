@@ -300,7 +300,7 @@ pub const Cache = struct {
 
 // Tests
 test "cache - init and deinit" {
-    var cache = Cache.init(std.testing.allocator, ".stinger-cache");
+    var cache = Cache.init(std.testing.allocator, ".stig-cache");
     defer cache.deinit();
 }
 
@@ -313,7 +313,7 @@ test "cache - compute file hash" {
     try file.writeAll("Hello, World!");
     file.close();
 
-    var cache = Cache.init(std.testing.allocator, ".stinger-cache");
+    var cache = Cache.init(std.testing.allocator, ".stig-cache");
     defer cache.deinit();
 
     // Get the full path
@@ -327,7 +327,7 @@ test "cache - compute file hash" {
 }
 
 test "cache - check new file" {
-    var cache = Cache.init(std.testing.allocator, ".stinger-cache");
+    var cache = Cache.init(std.testing.allocator, ".stig-cache");
     defer cache.deinit();
 
     const status = try cache.checkFile("/nonexistent/file.h");

@@ -76,7 +76,7 @@ pub fn main() !void {
     }
 
     // Load config file
-    const config_path = args.config_file orelse "stinger.toml";
+    const config_path = args.config_file orelse "stig.toml";
     var config_loader: ?*config_mod.ConfigLoader = null;
     var config: config_mod.Config = config_mod.Config{};
 
@@ -89,7 +89,7 @@ pub fn main() !void {
             std.debug.print("Error: Cannot load config file '{s}': {}\n", .{ config_path, err });
             return;
         }
-        // Use default config if stinger.toml doesn't exist - this is fine
+        // Use default config if stig.toml doesn't exist - this is fine
     }
 
     defer {

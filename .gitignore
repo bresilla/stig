@@ -9,3 +9,5 @@ zig-cache/
 
 # Generated docs
 docs/book/
+test/complex/book
+test/complex/docs

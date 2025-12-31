@@ -1,7 +1,7 @@
 const std = @import("std");
 const toml = @import("toml");
 
-/// Stinger configuration loaded from stinger.toml
+/// Stig configuration loaded from stig.toml
 pub const Config = struct {
     /// Project title for documentation
     title: []const u8 = "API Reference",
@@ -32,7 +32,7 @@ pub const Config = struct {
     };
 };
 
-/// TOML structure that maps to stinger.toml file format
+/// TOML structure that maps to stig.toml file format
 /// Supports multiple section styles for flexibility
 const TomlConfig = struct {
     // Root level fields
@@ -48,8 +48,8 @@ const TomlConfig = struct {
     grouping: ?[]const u8 = null,
     authors: ?[]const []const u8 = null,
 
-    // [stinger] section
-    stinger: ?StingerSection = null,
+    // [stig] section
+    stig: ?StigSection = null,
 
     // [book] section (mdbook compatibility)
     book: ?BookSection = null,
@@ -57,7 +57,7 @@ const TomlConfig = struct {
     // Note: [output] section conflicts with 'output' field name
     // We'll handle output_dir and format from root level only
 
-    const StingerSection = struct {
+    const StigSection = struct {
         title: ?[]const u8 = null,
         output: ?[]const u8 = null,
         output_dir: ?[]const u8 = null,
@@ -134,7 +134,7 @@ pub const ConfigLoader = struct {
         // Title: root > stinger > book
         if (tc.title) |t| {
             config.title = t;
-        } else if (tc.stinger) |s| {
+        } else if (tc.stig) |s| {
             if (s.title) |t| config.title = t;
         } else if (tc.book) |b| {
             if (b.title) |t| config.title = t;
@@ -145,7 +145,7 @@ pub const ConfigLoader = struct {
             config.output_dir = o;
         } else if (tc.output_dir) |o| {
             config.output_dir = o;
-        } else if (tc.stinger) |s| {
+        } else if (tc.stig) |s| {
             if (s.output) |o| {
                 config.output_dir = o;
             } else if (s.output_dir) |o| {
@@ -156,7 +156,7 @@ pub const ConfigLoader = struct {
         // Format: root > stinger
         const format_str = blk: {
             if (tc.format) |f| break :blk f;
-            if (tc.stinger) |s| {
+            if (tc.stig) |s| {
                 if (s.format) |f| break :blk f;
             }
             break :blk null;
@@ -174,7 +174,7 @@ pub const ConfigLoader = struct {
             config.input_patterns = i;
         } else if (tc.input) |i| {
             config.input_patterns = i;
-        } else if (tc.stinger) |s| {
+        } else if (tc.stig) |s| {
             if (s.inputs) |i| {
                 config.input_patterns = i;
             } else if (s.input) |i| {
@@ -187,7 +187,7 @@ pub const ConfigLoader = struct {
             config.language = l;
         } else if (tc.lang) |l| {
             config.language = l;
-        } else if (tc.stinger) |s| {
+        } else if (tc.stig) |s| {
             if (s.language) |l| {
                 config.language = l;
             } else if (s.lang) |l| {
@@ -200,14 +200,14 @@ pub const ConfigLoader = struct {
         // Generate intro: root > stinger
         if (tc.generate_intro) |g| {
             config.generate_intro = g;
-        } else if (tc.stinger) |s| {
+        } else if (tc.stig) |s| {
             if (s.generate_intro) |g| config.generate_intro = g;
         }
 
         // Grouping: root > stinger
         const grouping_str = blk: {
             if (tc.grouping) |g| break :blk g;
-            if (tc.stinger) |s| {
+            if (tc.stig) |s| {
                 if (s.grouping) |g| break :blk g;
             }
             break :blk null;
@@ -225,7 +225,7 @@ pub const ConfigLoader = struct {
         // Authors: root > stinger > book
         if (tc.authors) |a| {
             config.authors = a;
-        } else if (tc.stinger) |s| {
+        } else if (tc.stig) |s| {
             if (s.authors) |a| config.authors = a;
         } else if (tc.book) |b| {
             if (b.authors) |a| config.authors = a;
@@ -249,9 +249,9 @@ pub fn loadFromFile(allocator: std.mem.Allocator, path: []const u8) !struct { co
     return .{ .config = config, .loader = loader };
 }
 
-/// Finds and loads stinger.toml from current directory
+/// Finds and loads stig.toml from current directory
 pub fn findAndLoad(allocator: std.mem.Allocator) !struct { config: Config, loader: *ConfigLoader } {
-    return loadFromFile(allocator, "stinger.toml");
+    return loadFromFile(allocator, "stig.toml");
 }
 
 // Tests
@@ -278,9 +278,9 @@ test "parse basic config" {
     try std.testing.expectEqual(Config.Format.mdbook, config.format);
 }
 
-test "parse config with stinger section" {
+test "parse config with stig section" {
     const content =
-        \\[stinger]
+        \\[stig]
         \\title = "Test API"
         \\output = "build/docs"
         \\format = "markdown"
