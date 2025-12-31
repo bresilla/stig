@@ -161,6 +161,9 @@ pub const ArgParser = struct {
             \\        format = "mdbook"
             \\        inputs = ["src/*.h", "include/*.h"]
             \\
+            \\SUBCOMMANDS:
+            \\    preprocessor    Run as mdbook preprocessor (reads JSON from stdin)
+            \\
             \\EXAMPLES:
             \\    stinger input.h                         # Output to stdout
             \\    stinger input.h -o output.md           # Output to file
@@ -168,6 +171,16 @@ pub const ArgParser = struct {
             \\    stinger src/*.h -f mdbook -o docs/     # Generate mdbook structure
             \\    stinger src/*.h -f mdbook --title "My API"  # With custom title
             \\    stinger -c myconfig.toml               # Use custom config file
+            \\
+            \\MDBOOK PREPROCESSOR:
+            \\    Add to book.toml:
+            \\        [preprocessor.stinger]
+            \\        command = "stinger preprocessor"
+            \\
+            \\    Use in chapters:
+            \\        {{#stinger api ../include/mylib.h}}
+            \\        {{#stinger function my_function}}
+            \\        {{#stinger struct MyStruct}}
             \\
         ;
         std.debug.print("{s}", .{help});

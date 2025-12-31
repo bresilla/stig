@@ -8,12 +8,41 @@ const MdbookConfig = @import("output/mdbook.zig").MdbookConfig;
 const cli = @import("cli.zig");
 const config_mod = @import("config.zig");
 const types = @import("model/types.zig");
+const preprocessor = @import("preprocessor.zig");
 
 pub fn main() !void {
     // Get allocator
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    // Check for preprocessor subcommand first
+    var args_iter = std.process.args();
+    _ = args_iter.skip(); // Skip program name
+    if (args_iter.next()) |first_arg| {
+        if (std.mem.eql(u8, first_arg, "preprocessor") or std.mem.eql(u8, first_arg, "preprocess")) {
+            // Check for "supports" subcommand (mdbook calls: stinger preprocessor supports <renderer>)
+            if (args_iter.next()) |second_arg| {
+                if (std.mem.eql(u8, second_arg, "supports")) {
+                    // We support all renderers (html, pdf, etc.)
+                    // Exit with 0 to indicate support
+                    return;
+                }
+            }
+            // Run as mdbook preprocessor - use page allocator to avoid leak reports on stderr
+            preprocessor.runPreprocessor(std.heap.page_allocator) catch |err| {
+                std.debug.print("Preprocessor error: {}\n", .{err});
+                return;
+            };
+            return;
+        }
+        // Handle mdbook's "supports" check (for direct invocation: stinger supports <renderer>)
+        if (std.mem.eql(u8, first_arg, "supports")) {
+            // We support all renderers (html, pdf, etc.)
+            // Exit with 0 to indicate support
+            return;
+        }
+    }
 
     // Parse CLI arguments
     var arg_parser = cli.ArgParser.init(allocator);
