@@ -2,10 +2,20 @@ const std = @import("std");
 
 pub const VERSION = "0.1.0";
 
+/// Output format for documentation
+pub const OutputFormat = enum {
+    /// Single markdown file
+    markdown,
+    /// mdbook directory structure
+    mdbook,
+};
+
 /// CLI argument parsing result
 pub const Args = struct {
     input_files: []const []const u8,
     output_file: ?[]const u8,
+    output_format: OutputFormat,
+    book_title: ?[]const u8,
     show_help: bool,
     show_version: bool,
     allocator: std.mem.Allocator,
@@ -33,6 +43,8 @@ pub const ArgParser = struct {
 
         var input_files: std.ArrayList([]const u8) = .empty;
         var output_file: ?[]const u8 = null;
+        var output_format: OutputFormat = .markdown;
+        var book_title: ?[]const u8 = null;
         var show_help = false;
         var show_version = false;
 
@@ -45,6 +57,24 @@ pub const ArgParser = struct {
                 output_file = args_iter.next();
                 if (output_file == null) {
                     return error.MissingOutputFile;
+                }
+            } else if (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--format")) {
+                const format_str = args_iter.next();
+                if (format_str == null) {
+                    return error.MissingFormatValue;
+                }
+                if (std.mem.eql(u8, format_str.?, "mdbook")) {
+                    output_format = .mdbook;
+                } else if (std.mem.eql(u8, format_str.?, "markdown") or std.mem.eql(u8, format_str.?, "md")) {
+                    output_format = .markdown;
+                } else {
+                    std.debug.print("Unknown format: {s}\n", .{format_str.?});
+                    return error.UnknownFormat;
+                }
+            } else if (std.mem.eql(u8, arg, "--title")) {
+                book_title = args_iter.next();
+                if (book_title == null) {
+                    return error.MissingTitleValue;
                 }
             } else if (std.mem.startsWith(u8, arg, "-")) {
                 // Unknown flag
@@ -59,6 +89,8 @@ pub const ArgParser = struct {
         return Args{
             .input_files = try input_files.toOwnedSlice(self.allocator),
             .output_file = output_file,
+            .output_format = output_format,
+            .book_title = book_title,
             .show_help = show_help,
             .show_version = show_version,
             .allocator = self.allocator,
@@ -78,14 +110,18 @@ pub const ArgParser = struct {
             \\    <INPUT_FILES>...    C/C++ header files to process
             \\
             \\OPTIONS:
-            \\    -o, --output <FILE>    Output file (default: stdout)
+            \\    -o, --output <PATH>    Output file or directory (default: stdout)
+            \\    -f, --format <FMT>     Output format: markdown, mdbook (default: markdown)
+            \\    --title <TITLE>        Book title (for mdbook format)
             \\    -h, --help             Show this help message
             \\    -v, --version          Show version information
             \\
             \\EXAMPLES:
-            \\    stinger input.h                    # Output to stdout
-            \\    stinger input.h -o output.md      # Output to file
-            \\    stinger src/*.h -o api.md         # Multiple files
+            \\    stinger input.h                         # Output to stdout
+            \\    stinger input.h -o output.md           # Output to file
+            \\    stinger src/*.h -o api.md              # Multiple files
+            \\    stinger src/*.h -f mdbook -o docs/     # Generate mdbook structure
+            \\    stinger src/*.h -f mdbook --title "My API"  # With custom title
             \\
         ;
         std.debug.print("{s}", .{help});

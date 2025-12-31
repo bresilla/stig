@@ -3,6 +3,8 @@ const ts = @import("tree-sitter");
 const ts_c = @import("tree-sitter-c");
 const CParser = @import("parser/c.zig").CParser;
 const MarkdownGenerator = @import("output/markdown.zig").MarkdownGenerator;
+const MdbookGenerator = @import("output/mdbook.zig").MdbookGenerator;
+const MdbookConfig = @import("output/mdbook.zig").MdbookConfig;
 const cli = @import("cli.zig");
 const types = @import("model/types.zig");
 
@@ -80,42 +82,73 @@ pub fn main() !void {
         try file_data.append(allocator, .{ .source = source, .module = module });
     }
 
-    // Generate combined output
-    var output_buffer: std.ArrayList(u8) = .empty;
-    defer output_buffer.deinit(allocator);
+    // Collect modules for generation
+    var modules: std.ArrayList(types.Module) = .empty;
+    defer modules.deinit(allocator);
 
     for (file_data.items) |data| {
-        // Create a fresh generator for each module
-        var gen = MarkdownGenerator.init(allocator);
-        defer gen.deinit();
-
-        const markdown = try gen.generate(data.module);
-        try output_buffer.appendSlice(allocator, markdown);
+        try modules.append(allocator, data.module);
     }
 
-    // Write output
-    if (args.output_file) |output_path| {
-        // Write to file
-        const file = std.fs.cwd().createFile(output_path, .{}) catch |err| {
-            std.debug.print("Error: Cannot create output file '{s}': {}\n", .{ output_path, err });
-            return;
-        };
-        defer file.close();
+    // Generate output based on format
+    switch (args.output_format) {
+        .mdbook => {
+            // Generate mdbook structure
+            const output_dir = args.output_file orelse "docs";
+            const config = MdbookConfig{
+                .title = args.book_title orelse "API Reference",
+                .output_dir = output_dir,
+            };
 
-        file.writeAll(output_buffer.items) catch |err| {
-            std.debug.print("Error: Cannot write to file '{s}': {}\n", .{ output_path, err });
-            return;
-        };
+            var mdbook_gen = MdbookGenerator.initWithConfig(allocator, config);
+            defer mdbook_gen.deinit();
 
-        std.debug.print("Generated documentation: {s}\n", .{output_path});
-    } else {
-        // Write to stdout
-        var buf: [8192]u8 = undefined;
-        var file_writer = std.fs.File.stdout().writer(&buf);
-        var stdout = &file_writer.interface;
-        defer stdout.flush() catch {};
+            mdbook_gen.generate(modules.items) catch |err| {
+                std.debug.print("Error generating mdbook: {}\n", .{err});
+                return;
+            };
 
-        try stdout.writeAll(output_buffer.items);
+            std.debug.print("Generated mdbook structure in: {s}/\n", .{output_dir});
+            std.debug.print("Run 'mdbook build {s}' to build the book\n", .{output_dir});
+        },
+        .markdown => {
+            // Generate single markdown output
+            var output_buffer: std.ArrayList(u8) = .empty;
+            defer output_buffer.deinit(allocator);
+
+            for (modules.items) |module| {
+                var gen = MarkdownGenerator.init(allocator);
+                defer gen.deinit();
+
+                const markdown = try gen.generate(module);
+                try output_buffer.appendSlice(allocator, markdown);
+            }
+
+            // Write output
+            if (args.output_file) |output_path| {
+                // Write to file
+                const file = std.fs.cwd().createFile(output_path, .{}) catch |err| {
+                    std.debug.print("Error: Cannot create output file '{s}': {}\n", .{ output_path, err });
+                    return;
+                };
+                defer file.close();
+
+                file.writeAll(output_buffer.items) catch |err| {
+                    std.debug.print("Error: Cannot write to file '{s}': {}\n", .{ output_path, err });
+                    return;
+                };
+
+                std.debug.print("Generated documentation: {s}\n", .{output_path});
+            } else {
+                // Write to stdout
+                var buf: [8192]u8 = undefined;
+                var file_writer = std.fs.File.stdout().writer(&buf);
+                const stdout = &file_writer.interface;
+                defer stdout.flush() catch {};
+
+                try stdout.writeAll(output_buffer.items);
+            }
+        },
     }
 }
 
