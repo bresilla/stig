@@ -320,6 +320,13 @@ pub const JsonGenerator = struct {
         self.indent_level -= 1;
         try self.writeIndent();
         try self.writeChar('}');
+        try self.writeChar(',');
+        try self.writeNewline();
+
+        // Function calls (for call graph)
+        try self.writeIndent();
+        try self.writeKey("calls");
+        try self.writeStringArray(func.calls);
         try self.writeNewline();
 
         self.indent_level -= 1;

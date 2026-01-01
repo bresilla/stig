@@ -193,6 +193,8 @@ pub const Function = struct {
     template_params: []const TemplateParam = &[_]TemplateParam{},
     requires_clause: ?[]const u8 = null,
     attributes: []const Attribute = &[_]Attribute{},
+    /// Functions called by this function (for call graph)
+    calls: []const []const u8 = &[_][]const u8{},
 };
 
 /// Struct field
@@ -293,6 +295,8 @@ pub const Method = struct {
     is_explicit: bool = false,
     is_noexcept: bool = false,
     attributes: []const Attribute = &[_]Attribute{},
+    /// Functions/methods called by this method (for call graph)
+    calls: []const []const u8 = &[_][]const u8{},
 };
 
 /// C++ class field with access specifier
@@ -466,6 +470,18 @@ pub const IncludeInfo = struct {
     is_system: bool,
     /// Line number where the include appears
     line: u32,
+};
+
+/// Function call information for call graph generation
+pub const CallInfo = struct {
+    /// Name of the function making the call
+    caller: []const u8,
+    /// Name of the function being called
+    callee: []const u8,
+    /// Location where the call occurs
+    call_site: SourceLocation,
+    /// Whether this is a method call (obj.method())
+    is_method_call: bool = false,
 };
 
 /// A parsed module (typically one header file)
