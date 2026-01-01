@@ -30,14 +30,39 @@ pub const DocstringExtractor = struct {
         self.base_path = path;
     }
 
+    /// Checks if a string starts with a command (either @ or \ prefix)
+    fn startsWithCommand(text: []const u8, command: []const u8) bool {
+        // Check for @command
+        if (text.len >= 1 + command.len) {
+            if (text[0] == '@' and std.mem.startsWith(u8, text[1..], command)) {
+                return true;
+            }
+        }
+        // Check for \command
+        if (text.len >= 1 + command.len) {
+            if (text[0] == '\\' and std.mem.startsWith(u8, text[1..], command)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Gets the length of the command prefix (@ or \) plus command name
+    fn commandPrefixLen(command: []const u8) usize {
+        return 1 + command.len; // @ or \ plus command name
+    }
+
     /// Detects the docstring format from raw comment text
     pub fn detectFormat(self: *Self, raw: []const u8) DocFormat {
         _ = self;
 
-        // Check for Doxygen tags
+        // Check for Doxygen tags (both @ and \ prefixes)
         if (std.mem.indexOf(u8, raw, "@param") != null or
+            std.mem.indexOf(u8, raw, "\\param") != null or
             std.mem.indexOf(u8, raw, "@return") != null or
-            std.mem.indexOf(u8, raw, "@brief") != null)
+            std.mem.indexOf(u8, raw, "\\return") != null or
+            std.mem.indexOf(u8, raw, "@brief") != null or
+            std.mem.indexOf(u8, raw, "\\brief") != null)
         {
             return .doxygen;
         }
@@ -94,13 +119,13 @@ pub const DocstringExtractor = struct {
                 content = std.mem.trimLeft(u8, content, " ");
             }
 
-            // Skip @brief tag if present, return the rest
-            if (std.mem.startsWith(u8, content, "@brief ")) {
+            // Skip @brief or \brief tag if present, return the rest
+            if (startsWithCommand(content, "brief ")) {
                 return content[7..];
             }
 
-            // Skip lines that start with @ (other Doxygen tags)
-            if (content.len > 0 and content[0] == '@') continue;
+            // Skip lines that start with @ or \ (other Doxygen tags)
+            if (content.len > 0 and (content[0] == '@' or content[0] == '\\')) continue;
 
             if (content.len > 0) {
                 return content;
@@ -120,8 +145,8 @@ pub const DocstringExtractor = struct {
         var details_end: usize = 0;
         var current_pos: usize = 0;
 
-        // Tags that end the details section
-        const end_tags = [_][]const u8{ "@param", "@tparam", "@return", "@returns", "@retval", "@deprecated", "@note", "@warning", "@see", "@sa", "@since", "@author", "@version", "@example", "@pre", "@post" };
+        // Tags that end the details section (without prefix - we check both @ and \)
+        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post" };
 
         while (lines.next()) |line| {
             const line_start = current_pos;
@@ -138,16 +163,16 @@ pub const DocstringExtractor = struct {
                 continue;
             }
 
-            // Check if this is a @brief tag (part of brief, not details)
-            if (std.mem.startsWith(u8, trimmed, "@brief ")) {
+            // Check if this is a @brief or \brief tag (part of brief, not details)
+            if (startsWithCommand(trimmed, "brief ")) {
                 found_brief = true;
                 continue;
             }
 
-            // Check if this is an end tag (param, return, etc.)
+            // Check if this is an end tag (param, return, etc.) with @ or \ prefix
             var is_end_tag = false;
             for (end_tags) |tag| {
-                if (std.mem.startsWith(u8, trimmed, tag)) {
+                if (startsWithCommand(trimmed, tag)) {
                     is_end_tag = true;
                     break;
                 }
@@ -211,8 +236,8 @@ pub const DocstringExtractor = struct {
         while (lines.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \t\r*");
 
-            // @param <name> <description>
-            if (std.mem.startsWith(u8, trimmed, "@param ")) {
+            // @param or \param <name> <description>
+            if (startsWithCommand(trimmed, "param ")) {
                 const rest = trimmed[7..];
                 var parts = std.mem.splitScalar(u8, rest, ' ');
                 if (parts.next()) |param_name| {
@@ -225,8 +250,8 @@ pub const DocstringExtractor = struct {
                     }
                 }
             }
-            // @tparam <name> <description> (template parameter)
-            else if (std.mem.startsWith(u8, trimmed, "@tparam ")) {
+            // @tparam or \tparam <name> <description> (template parameter)
+            else if (startsWithCommand(trimmed, "tparam ")) {
                 const rest = trimmed[8..];
                 var parts = std.mem.splitScalar(u8, rest, ' ');
                 if (parts.next()) |tparam_name| {
@@ -245,15 +270,13 @@ pub const DocstringExtractor = struct {
                     }
                 }
             }
-            // @return / @returns
-            else if (std.mem.startsWith(u8, trimmed, "@return ") or
-                std.mem.startsWith(u8, trimmed, "@returns "))
-            {
-                const prefix_len: usize = if (std.mem.startsWith(u8, trimmed, "@returns ")) 9 else 8;
+            // @return / @returns / \return / \returns
+            else if (startsWithCommand(trimmed, "return ") or startsWithCommand(trimmed, "returns ")) {
+                const prefix_len: usize = if (startsWithCommand(trimmed, "returns ")) 9 else 8;
                 doc.returns = trimmed[prefix_len..];
             }
-            // @retval <value> <description>
-            else if (std.mem.startsWith(u8, trimmed, "@retval ")) {
+            // @retval or \retval <value> <description>
+            else if (startsWithCommand(trimmed, "retval ")) {
                 const rest = trimmed[8..];
                 var parts = std.mem.splitScalar(u8, rest, ' ');
                 if (parts.next()) |retval_value| {
@@ -265,47 +288,45 @@ pub const DocstringExtractor = struct {
                     });
                 }
             }
-            // @deprecated
-            else if (std.mem.startsWith(u8, trimmed, "@deprecated ")) {
+            // @deprecated or \deprecated
+            else if (startsWithCommand(trimmed, "deprecated ")) {
                 doc.deprecated = trimmed[12..];
-            } else if (std.mem.eql(u8, trimmed, "@deprecated")) {
+            } else if (std.mem.eql(u8, trimmed, "@deprecated") or std.mem.eql(u8, trimmed, "\\deprecated")) {
                 doc.deprecated = "This is deprecated.";
             }
-            // @note
-            else if (std.mem.startsWith(u8, trimmed, "@note ")) {
+            // @note or \note
+            else if (startsWithCommand(trimmed, "note ")) {
                 try notes.append(self.allocator, trimmed[6..]);
             }
-            // @warning
-            else if (std.mem.startsWith(u8, trimmed, "@warning ")) {
+            // @warning or \warning
+            else if (startsWithCommand(trimmed, "warning ")) {
                 try warnings.append(self.allocator, trimmed[9..]);
             }
-            // @see / @sa (see also)
-            else if (std.mem.startsWith(u8, trimmed, "@see ")) {
+            // @see / @sa / \see / \sa (see also)
+            else if (startsWithCommand(trimmed, "see ")) {
                 try see_also.append(self.allocator, trimmed[5..]);
-            } else if (std.mem.startsWith(u8, trimmed, "@sa ")) {
+            } else if (startsWithCommand(trimmed, "sa ")) {
                 try see_also.append(self.allocator, trimmed[4..]);
             }
-            // @example
-            else if (std.mem.startsWith(u8, trimmed, "@example ")) {
+            // @example or \example
+            else if (startsWithCommand(trimmed, "example ")) {
                 try examples.append(self.allocator, trimmed[9..]);
             }
-            // @since
-            else if (std.mem.startsWith(u8, trimmed, "@since ")) {
+            // @since or \since
+            else if (startsWithCommand(trimmed, "since ")) {
                 doc.since = trimmed[7..];
             }
-            // @author
-            else if (std.mem.startsWith(u8, trimmed, "@author ")) {
+            // @author or \author
+            else if (startsWithCommand(trimmed, "author ")) {
                 doc.author = trimmed[8..];
             }
-            // @version
-            else if (std.mem.startsWith(u8, trimmed, "@version ")) {
+            // @version or \version
+            else if (startsWithCommand(trimmed, "version ")) {
                 doc.version = trimmed[9..];
             }
-            // @throw / @exception
-            else if (std.mem.startsWith(u8, trimmed, "@throw ") or
-                std.mem.startsWith(u8, trimmed, "@exception "))
-            {
-                const prefix_len: usize = if (std.mem.startsWith(u8, trimmed, "@exception ")) 11 else 7;
+            // @throw / @exception / \throw / \exception
+            else if (startsWithCommand(trimmed, "throw ") or startsWithCommand(trimmed, "exception ")) {
+                const prefix_len: usize = if (startsWithCommand(trimmed, "exception ")) 11 else 7;
                 const rest = trimmed[prefix_len..];
                 var parts = std.mem.splitScalar(u8, rest, ' ');
                 if (parts.next()) |exception_type| {
@@ -317,12 +338,12 @@ pub const DocstringExtractor = struct {
                     });
                 }
             }
-            // @pre (precondition)
-            else if (std.mem.startsWith(u8, trimmed, "@pre ")) {
+            // @pre or \pre (precondition)
+            else if (startsWithCommand(trimmed, "pre ")) {
                 try preconditions.append(self.allocator, trimmed[5..]);
             }
-            // @post (postcondition)
-            else if (std.mem.startsWith(u8, trimmed, "@post ")) {
+            // @post or \post (postcondition)
+            else if (startsWithCommand(trimmed, "post ")) {
                 try postconditions.append(self.allocator, trimmed[6..]);
             }
         }
@@ -746,4 +767,26 @@ test "parse retval tag" {
     try std.testing.expectEqualStrings("File not found", doc.retvals[1].description);
     try std.testing.expectEqualStrings("-2", doc.retvals[2].value);
     try std.testing.expectEqualStrings("Permission denied", doc.retvals[2].description);
+}
+
+test "parse backslash command prefix" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* \brief Opens a file.
+        \\* \param path The file path
+        \\* \return File handle
+        \\* \note Thread-safe
+    );
+    defer {
+        std.testing.allocator.free(doc.params);
+        std.testing.allocator.free(doc.notes);
+    }
+
+    try std.testing.expectEqualStrings("Opens a file.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 1), doc.params.len);
+    try std.testing.expectEqualStrings("path", doc.params[0].name);
+    try std.testing.expectEqualStrings("The file path", doc.params[0].description);
+    try std.testing.expectEqualStrings("File handle", doc.returns.?);
+    try std.testing.expectEqual(@as(usize, 1), doc.notes.len);
+    try std.testing.expectEqualStrings("Thread-safe", doc.notes[0]);
 }
