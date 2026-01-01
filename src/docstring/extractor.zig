@@ -1488,3 +1488,48 @@ test "parse mermaid with backslash prefix" {
     try std.testing.expectEqual(@as(usize, 1), doc.mermaid_diagrams.len);
     try std.testing.expect(std.mem.indexOf(u8, doc.mermaid_diagrams[0].content, "flowchart TD") != null);
 }
+
+test "containsPageCommand" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+
+    try std.testing.expect(extractor.containsPageCommand("@page examples Example Page"));
+    try std.testing.expect(extractor.containsPageCommand("\\page examples Example Page"));
+    try std.testing.expect(extractor.containsPageCommand("@mainpage My Project"));
+    try std.testing.expect(extractor.containsPageCommand("\\mainpage My Project"));
+    try std.testing.expect(!extractor.containsPageCommand("@param x A parameter"));
+    try std.testing.expect(!extractor.containsPageCommand("Just some text"));
+}
+
+test "parsePage with @page" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const page = try extractor.parsePage(
+        \\* @page examples Example Code
+        \\* 
+        \\* ## Usage
+        \\* 
+        \\* Here's how to use it.
+    );
+    defer if (page) |p| std.testing.allocator.free(p.content);
+
+    try std.testing.expect(page != null);
+    try std.testing.expectEqualStrings("examples", page.?.id);
+    try std.testing.expectEqualStrings("Example Code", page.?.title);
+    try std.testing.expect(!page.?.is_mainpage);
+    try std.testing.expect(std.mem.indexOf(u8, page.?.content, "## Usage") != null);
+}
+
+test "parsePage with @mainpage" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const page = try extractor.parsePage(
+        \\* @mainpage Project Documentation
+        \\* 
+        \\* Welcome to the project!
+    );
+    defer if (page) |p| std.testing.allocator.free(p.content);
+
+    try std.testing.expect(page != null);
+    try std.testing.expectEqualStrings("mainpage", page.?.id);
+    try std.testing.expectEqualStrings("Project Documentation", page.?.title);
+    try std.testing.expect(page.?.is_mainpage);
+    try std.testing.expect(std.mem.indexOf(u8, page.?.content, "Welcome to the project!") != null);
+}

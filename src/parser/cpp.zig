@@ -41,7 +41,6 @@ pub const CppParser = struct {
 
     /// Parses C++ source code and extracts documentation
     pub fn parse(self: *Self, source: []const u8, filename: []const u8) !types.Module {
-        std.debug.print("CppParser.parse called for file: {s}, source len: {d}\n", .{ filename, source.len });
         self.source = source;
 
         const tree = self.parser.parseString(source, null);
@@ -1796,21 +1795,16 @@ pub const CppParser = struct {
 
     /// Extracts custom pages from standalone doc comments containing @page or @mainpage
     fn extractPages(self: *Self, root: ts.Node, pages: *std.ArrayList(types.Page)) !void {
-        std.debug.print("extractPages: root has {d} children\n", .{root.childCount()});
-
         var i: u32 = 0;
         while (i < root.childCount()) : (i += 1) {
             if (root.child(i)) |child| {
                 const child_kind = child.kind();
-                std.debug.print("  Child {d}: kind='{s}'\n", .{ i, child_kind });
 
                 if (std.mem.eql(u8, child_kind, "comment")) {
                     const text = self.getNodeText(child);
-                    std.debug.print("    Comment text (first 60): '{s}'\n", .{text[0..@min(text.len, 60)]});
 
                     // Only process doc comments (/** or ///)
                     if (!std.mem.startsWith(u8, text, "/**") and !std.mem.startsWith(u8, text, "///")) {
-                        std.debug.print("    -> Not a doc comment, skipping\n", .{});
                         continue;
                     }
 
@@ -1827,37 +1821,25 @@ pub const CppParser = struct {
                     stripped = std.mem.trim(u8, stripped, " \t\n\r");
 
                     // Check if this comment contains @page or @mainpage
-                    const has_page_cmd = self.docstring_extractor.containsPageCommand(stripped);
-                    std.debug.print("    containsPageCommand: {}\n", .{has_page_cmd});
-
-                    if (has_page_cmd) {
+                    if (self.docstring_extractor.containsPageCommand(stripped)) {
                         // Check if this comment is NOT attached to a declaration
                         // (standalone page comments should not be followed by a declaration)
                         const next = child.nextSibling();
-                        const next_kind = if (next) |n| n.kind() else "null";
-                        std.debug.print("    Next sibling kind: '{s}'\n", .{next_kind});
-
                         const is_standalone = next == null or
                             std.mem.eql(u8, next.?.kind(), "comment") or
                             std.mem.eql(u8, next.?.kind(), "preproc_ifdef") or
                             std.mem.eql(u8, next.?.kind(), "preproc_ifndef") or
                             std.mem.eql(u8, next.?.kind(), "preproc_endif");
 
-                        std.debug.print("    is_standalone: {}\n", .{is_standalone});
-
                         if (is_standalone) {
                             if (try self.docstring_extractor.parsePage(stripped)) |page| {
-                                std.debug.print("    -> Added page: id='{s}' title='{s}'\n", .{ page.id, page.title });
                                 try pages.append(self.allocator, page);
-                            } else {
-                                std.debug.print("    -> parsePage returned null\n", .{});
                             }
                         }
                     }
                 }
             }
         }
-        std.debug.print("extractPages: found {d} pages\n", .{pages.items.len});
     }
 };
 
