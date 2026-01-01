@@ -61,9 +61,13 @@ pub const CParser = struct {
         var enums: std.ArrayList(types.Enum) = .empty;
         var typedefs: std.ArrayList(types.Typedef) = .empty;
         var macros: std.ArrayList(types.Macro) = .empty;
+        var pages: std.ArrayList(types.Page) = .empty;
 
         const root = tree.?.rootNode();
         try self.walkNode(root, &functions, &structs, &enums, &typedefs, &macros, filename);
+
+        // Extract custom pages (@page, @mainpage) from standalone doc comments
+        try self.extractPages(root, &pages);
 
         return types.Module{
             .name = filename,
@@ -72,6 +76,7 @@ pub const CParser = struct {
             .enums = try enums.toOwnedSlice(self.allocator),
             .typedefs = try typedefs.toOwnedSlice(self.allocator),
             .macros = try macros.toOwnedSlice(self.allocator),
+            .pages = try pages.toOwnedSlice(self.allocator),
         };
     }
 
