@@ -6,7 +6,8 @@ Welcome to the API documentation.
 
 This documentation covers:
 
+- **2** functions
 
 ## Source Files
 
-- `/tmp/test_friends2.hpp`
+- `/tmp/test_variadic.hpp`

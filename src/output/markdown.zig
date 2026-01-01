@@ -302,8 +302,15 @@ pub const MarkdownGenerator = struct {
         for (template_params, 0..) |param, i| {
             if (i > 0) try self.writeString(", ");
             try self.writeString(param.kind);
+            if (param.is_variadic) {
+                try self.writeString("...");
+            }
             try self.writeString(" ");
             try self.writeString(param.name);
+            if (param.default_value) |default| {
+                try self.writeString(" = ");
+                try self.writeString(default);
+            }
         }
         try self.writeString(">\n");
     }
@@ -317,6 +324,9 @@ pub const MarkdownGenerator = struct {
         for (template_params, 0..) |param, i| {
             if (i > 0) try self.writeString(", ");
             try self.writeString(param.name);
+            if (param.is_variadic) {
+                try self.writeString("...");
+            }
         }
         try self.writeString("&gt;");
     }
@@ -672,9 +682,20 @@ pub const MarkdownGenerator = struct {
             for (func.template_params) |param| {
                 try self.writeString("- `");
                 try self.writeString(param.name);
+                if (param.is_variadic) {
+                    try self.writeString("...");
+                }
                 try self.writeString("` (");
                 try self.writeString(param.kind);
+                if (param.is_variadic) {
+                    try self.writeString("...");
+                }
                 try self.writeString(")");
+                if (param.default_value) |default| {
+                    try self.writeString(" = `");
+                    try self.writeString(default);
+                    try self.writeString("`");
+                }
                 // Look for @tparam documentation for this parameter
                 if (func.doc) |doc| {
                     for (doc.tparams) |tparam| {
@@ -1069,9 +1090,20 @@ pub const MarkdownGenerator = struct {
             for (class.template_params) |param| {
                 try self.writeString("- `");
                 try self.writeString(param.name);
+                if (param.is_variadic) {
+                    try self.writeString("...");
+                }
                 try self.writeString("` (");
                 try self.writeString(param.kind);
+                if (param.is_variadic) {
+                    try self.writeString("...");
+                }
                 try self.writeString(")");
+                if (param.default_value) |default| {
+                    try self.writeString(" = `");
+                    try self.writeString(default);
+                    try self.writeString("`");
+                }
                 // Look for @tparam documentation for this parameter
                 if (class.doc) |doc| {
                     for (doc.tparams) |tparam| {

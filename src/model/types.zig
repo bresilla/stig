@@ -261,6 +261,8 @@ pub const TypeAlias = struct {
 pub const TemplateParam = struct {
     name: []const u8,
     kind: []const u8 = "typename", // "typename", "class", or a type for non-type params
+    is_variadic: bool = false, // true for parameter packs (typename... Args)
+    default_value: ?[]const u8 = null, // default value (e.g., "int" for typename T = int)
 };
 
 /// C++ attribute (e.g., [[nodiscard]], [[deprecated("reason")]])

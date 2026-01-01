@@ -299,19 +299,29 @@ pub const CppParser = struct {
 
                             if (std.mem.eql(u8, param_kind, "type_parameter_declaration")) {
                                 // typename T or class T
-                                if (self.extractTypeParameter(param_node)) |param| {
+                                if (self.extractTypeParameter(param_node, false)) |param| {
                                     try params.append(self.allocator, param);
                                 }
                             } else if (std.mem.eql(u8, param_kind, "optional_type_parameter_declaration")) {
                                 // typename T = DefaultType (with default value)
-                                if (self.extractTypeParameter(param_node)) |param| {
+                                if (self.extractTypeParameterWithDefault(param_node)) |param| {
+                                    try params.append(self.allocator, param);
+                                }
+                            } else if (std.mem.eql(u8, param_kind, "variadic_type_parameter_declaration")) {
+                                // typename... Args (variadic type parameter)
+                                if (self.extractTypeParameter(param_node, true)) |param| {
                                     try params.append(self.allocator, param);
                                 }
                             } else if (std.mem.eql(u8, param_kind, "parameter_declaration") or
                                 std.mem.eql(u8, param_kind, "optional_parameter_declaration"))
                             {
                                 // Non-type template parameter like "size_t N" or "size_t N = 10"
-                                if (self.extractNonTypeTemplateParam(param_node)) |param| {
+                                if (self.extractNonTypeTemplateParam(param_node, false)) |param| {
+                                    try params.append(self.allocator, param);
+                                }
+                            } else if (std.mem.eql(u8, param_kind, "variadic_parameter_declaration")) {
+                                // auto... Values (variadic non-type parameter)
+                                if (self.extractNonTypeTemplateParam(param_node, true)) |param| {
                                     try params.append(self.allocator, param);
                                 }
                             } else if (std.mem.eql(u8, param_kind, "template_template_parameter_declaration")) {
@@ -330,7 +340,7 @@ pub const CppParser = struct {
     }
 
     /// Extracts a type template parameter (typename T or class T)
-    fn extractTypeParameter(self: *Self, node: ts.Node) ?types.TemplateParam {
+    fn extractTypeParameter(self: *Self, node: ts.Node, is_variadic: bool) ?types.TemplateParam {
         var name: ?[]const u8 = null;
         var kind: []const u8 = "typename";
 
@@ -357,11 +367,56 @@ pub const CppParser = struct {
         return types.TemplateParam{
             .name = name.?,
             .kind = kind,
+            .is_variadic = is_variadic,
+        };
+    }
+
+    /// Extracts a type template parameter with default value (typename T = int)
+    fn extractTypeParameterWithDefault(self: *Self, node: ts.Node) ?types.TemplateParam {
+        var name: ?[]const u8 = null;
+        var kind: []const u8 = "typename";
+        var default_value: ?[]const u8 = null;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                const child_text = self.getNodeText(child);
+
+                if (std.mem.eql(u8, child_kind, "typename") or std.mem.eql(u8, child_text, "typename")) {
+                    kind = "typename";
+                } else if (std.mem.eql(u8, child_kind, "class") or std.mem.eql(u8, child_text, "class")) {
+                    kind = "class";
+                } else if (std.mem.eql(u8, child_kind, "type_identifier") or
+                    std.mem.eql(u8, child_kind, "identifier"))
+                {
+                    if (name == null) {
+                        name = child_text;
+                    } else {
+                        // Second type_identifier is the default value
+                        default_value = child_text;
+                    }
+                } else if (std.mem.eql(u8, child_kind, "type_descriptor") or
+                    std.mem.eql(u8, child_kind, "primitive_type") or
+                    std.mem.eql(u8, child_kind, "template_type"))
+                {
+                    // Default value can be a complex type
+                    default_value = child_text;
+                }
+            }
+        }
+
+        if (name == null) return null;
+
+        return types.TemplateParam{
+            .name = name.?,
+            .kind = kind,
+            .default_value = default_value,
         };
     }
 
     /// Extracts a non-type template parameter (e.g., size_t N, int Value)
-    fn extractNonTypeTemplateParam(self: *Self, node: ts.Node) ?types.TemplateParam {
+    fn extractNonTypeTemplateParam(self: *Self, node: ts.Node, is_variadic: bool) ?types.TemplateParam {
         var name: ?[]const u8 = null;
         var param_type: ?[]const u8 = null;
 
@@ -372,13 +427,26 @@ pub const CppParser = struct {
 
                 if (std.mem.eql(u8, child_kind, "type_identifier") or
                     std.mem.eql(u8, child_kind, "primitive_type") or
-                    std.mem.eql(u8, child_kind, "sized_type_specifier"))
+                    std.mem.eql(u8, child_kind, "sized_type_specifier") or
+                    std.mem.eql(u8, child_kind, "placeholder_type_specifier"))
                 {
                     if (param_type == null) {
                         param_type = self.getNodeText(child);
                     }
                 } else if (std.mem.eql(u8, child_kind, "identifier")) {
                     name = self.getNodeText(child);
+                } else if (std.mem.eql(u8, child_kind, "variadic_declarator")) {
+                    // For variadic non-type params like "int... Values"
+                    // The name is inside the variadic_declarator
+                    var j: u32 = 0;
+                    while (j < child.childCount()) : (j += 1) {
+                        if (child.child(j)) |inner| {
+                            if (std.mem.eql(u8, inner.kind(), "identifier")) {
+                                name = self.getNodeText(inner);
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -388,6 +456,7 @@ pub const CppParser = struct {
         return types.TemplateParam{
             .name = name.?,
             .kind = param_type orelse "auto",
+            .is_variadic = is_variadic,
         };
     }
 
