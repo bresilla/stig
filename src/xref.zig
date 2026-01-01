@@ -151,10 +151,28 @@ pub const SymbolTable = struct {
     /// Builds symbol table from parsed modules
     pub fn buildFromModules(self: *Self, modules: []const types.Module) !void {
         for (modules) |module| {
-            // Register functions
+            // Register functions with signature-based names for overload disambiguation
             for (module.functions) |func| {
                 const unique_name = if (func.doc) |doc| doc.unique_name_override else null;
                 try self.registerWithUniqueName(func.name, .function, module.name, unique_name);
+
+                // Also register with signature for overload disambiguation
+                const sig_name = try self.generateSignatureName(func.name, func.params);
+                if (!std.mem.eql(u8, sig_name, func.name)) {
+                    // Only register if different from base name (i.e., has parameters)
+                    if (!self.symbols.contains(sig_name)) {
+                        const anchor = try self.generateAnchor(func.name);
+                        try self.symbols.put(sig_name, SymbolInfo{
+                            .kind = .function,
+                            .source_file = module.name,
+                            .anchor = anchor,
+                            .name = func.name,
+                        });
+                    }
+                    self.allocator.free(sig_name);
+                } else {
+                    self.allocator.free(sig_name);
+                }
             }
 
             // Register structs
@@ -181,6 +199,49 @@ pub const SymbolTable = struct {
                 try self.registerWithUniqueName(class.name, .class_type, module.name, unique_name);
             }
         }
+    }
+
+    /// Generates a function name with parameter signature for overload disambiguation
+    /// e.g., "process" with params [int, double] -> "process(int, double)"
+    fn generateSignatureName(self: *Self, name: []const u8, params: []const types.Parameter) ![]u8 {
+        if (params.len == 0) {
+            return try self.allocator.dupe(u8, name);
+        }
+
+        // Calculate total length
+        var total_len = name.len + 1; // name + "("
+        for (params, 0..) |param, i| {
+            if (i > 0) total_len += 2; // ", "
+            total_len += param.type_str.len;
+        }
+        total_len += 1; // ")"
+
+        var result = try self.allocator.alloc(u8, total_len);
+        var pos: usize = 0;
+
+        // Copy name
+        @memcpy(result[pos..][0..name.len], name);
+        pos += name.len;
+
+        // Add "("
+        result[pos] = '(';
+        pos += 1;
+
+        // Add parameter types
+        for (params, 0..) |param, i| {
+            if (i > 0) {
+                result[pos] = ',';
+                result[pos + 1] = ' ';
+                pos += 2;
+            }
+            @memcpy(result[pos..][0..param.type_str.len], param.type_str);
+            pos += param.type_str.len;
+        }
+
+        // Add ")"
+        result[pos] = ')';
+
+        return result;
     }
 
     /// Generates a relative link to a symbol from a given context
