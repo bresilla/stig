@@ -142,6 +142,38 @@ pub const MarkdownGenerator = struct {
 
         try self.writeHeader(module.name);
 
+        // File-level documentation (@file)
+        if (module.file_doc) |file_doc| {
+            if (file_doc.brief) |brief| {
+                try self.writeString(brief);
+                try self.writeString("\n\n");
+            }
+            if (file_doc.details) |details| {
+                try self.writeString(details);
+                try self.writeString("\n\n");
+            }
+            if (file_doc.author) |author| {
+                try self.writeString("**Author:** ");
+                try self.writeString(author);
+                try self.writeString("\n\n");
+            }
+            if (file_doc.since) |since| {
+                try self.writeString("**Since:** ");
+                try self.writeString(since);
+                try self.writeString("\n\n");
+            }
+            if (file_doc.version) |version| {
+                try self.writeString("**Version:** ");
+                try self.writeString(version);
+                try self.writeString("\n\n");
+            }
+            if (file_doc.deprecated) |deprecated| {
+                try self.writeString("> **Deprecated:** ");
+                try self.writeString(deprecated);
+                try self.writeString("\n\n");
+            }
+        }
+
         // Functions section
         if (module.functions.len > 0) {
             var has_visible_funcs = false;
