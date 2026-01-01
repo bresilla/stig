@@ -133,6 +133,92 @@ pub const SymbolTable = struct {
         return self.symbols.get(name);
     }
 
+    /// Looks up a symbol with scope-relative resolution
+    /// If name starts with *, searches from current_scope outward
+    /// If name starts with ?, performs fuzzy matching
+    pub fn lookupScoped(self: *Self, name: []const u8, current_scope: []const u8) ?SymbolInfo {
+        if (name.len == 0) return null;
+
+        // Check for * prefix (relative lookup)
+        if (name[0] == '*') {
+            const relative_name = name[1..];
+            return self.lookupRelative(relative_name, current_scope);
+        }
+
+        // Check for ? prefix (fuzzy lookup)
+        if (name[0] == '?') {
+            const fuzzy_name = name[1..];
+            return self.lookupFuzzy(fuzzy_name, current_scope);
+        }
+
+        // Normal lookup
+        return self.lookup(name);
+    }
+
+    /// Looks up a symbol starting from current scope and moving outward
+    fn lookupRelative(self: *Self, name: []const u8, current_scope: []const u8) ?SymbolInfo {
+        // Try current scope first
+        if (current_scope.len > 0) {
+            // Build fully qualified name: current_scope::name
+            var qualified = std.ArrayList(u8).init(self.allocator);
+            defer qualified.deinit();
+
+            qualified.appendSlice(self.allocator, current_scope) catch return null;
+            qualified.appendSlice(self.allocator, "::") catch return null;
+            qualified.appendSlice(self.allocator, name) catch return null;
+
+            if (self.symbols.get(qualified.items)) |info| {
+                return info;
+            }
+
+            // Try parent scopes
+            var scope = current_scope;
+            while (std.mem.lastIndexOf(u8, scope, "::")) |idx| {
+                scope = scope[0..idx];
+
+                qualified.clearRetainingCapacity();
+                qualified.appendSlice(self.allocator, scope) catch return null;
+                qualified.appendSlice(self.allocator, "::") catch return null;
+                qualified.appendSlice(self.allocator, name) catch return null;
+
+                if (self.symbols.get(qualified.items)) |info| {
+                    return info;
+                }
+            }
+        }
+
+        // Try global scope
+        return self.symbols.get(name);
+    }
+
+    /// Looks up a symbol with fuzzy matching (partial name match)
+    fn lookupFuzzy(self: *Self, name: []const u8, current_scope: []const u8) ?SymbolInfo {
+        // First try relative lookup
+        if (self.lookupRelative(name, current_scope)) |info| {
+            return info;
+        }
+
+        // Then try to find any symbol ending with the name
+        var iter = self.symbols.iterator();
+        while (iter.next()) |entry| {
+            const key = entry.key_ptr.*;
+            if (std.mem.endsWith(u8, key, name)) {
+                // Check if it's a proper suffix (preceded by :: or start of string)
+                if (key.len == name.len) {
+                    return entry.value_ptr.*;
+                }
+                if (key.len > name.len + 1 and
+                    key[key.len - name.len - 2] == ':' and
+                    key[key.len - name.len - 1] == ':')
+                {
+                    return entry.value_ptr.*;
+                }
+            }
+        }
+
+        return null;
+    }
+
     /// Generates a markdown anchor from a name (lowercase, replace spaces/underscores with hyphens)
     fn generateAnchor(self: *Self, name: []const u8) ![]u8 {
         var anchor = try self.allocator.alloc(u8, name.len);
