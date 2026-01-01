@@ -146,7 +146,7 @@ pub const DocstringExtractor = struct {
         var current_pos: usize = 0;
 
         // Tags that end the details section (without prefix - we check both @ and \)
-        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude", "synopsis", "group", "unique_name", "module", "entity", "file", "output_section", "copydoc", "todo", "bug", "snippet", "attention", "important", "date", "copyright", "mermaid", "code", "endcode" };
+        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude", "synopsis", "group", "unique_name", "module", "entity", "file", "output_section", "copydoc", "todo", "bug", "test", "snippet", "attention", "important", "date", "copyright", "mermaid", "code", "endcode" };
 
         while (lines.next()) |line| {
             const line_start = current_pos;
@@ -235,6 +235,7 @@ pub const DocstringExtractor = struct {
         var invariants: std.ArrayList([]const u8) = .empty;
         var todos: std.ArrayList(types.TodoItem) = .empty;
         var bugs: std.ArrayList(types.BugItem) = .empty;
+        var tests: std.ArrayList(types.TestRef) = .empty;
         var snippets: std.ArrayList(types.SnippetRef) = .empty;
         var attention: std.ArrayList([]const u8) = .empty;
         var important: std.ArrayList([]const u8) = .empty;
@@ -603,6 +604,21 @@ pub const DocstringExtractor = struct {
                     });
                 }
             }
+            // @test or \test - test reference: @test test_name [file_path]
+            else if (startsWithCommand(trimmed, "test ")) {
+                const rest = std.mem.trim(u8, trimmed[6..], " \t");
+                if (rest.len > 0) {
+                    // Split into test name and optional file path
+                    var parts = std.mem.splitScalar(u8, rest, ' ');
+                    if (parts.next()) |test_name| {
+                        const file_path = parts.next();
+                        try tests.append(self.allocator, types.TestRef{
+                            .name = test_name,
+                            .file = file_path,
+                        });
+                    }
+                }
+            }
             // @snippet or \snippet <file> <anchor> [language]
             else if (startsWithCommand(trimmed, "snippet ")) {
                 const rest = std.mem.trim(u8, trimmed[9..], " \t");
@@ -692,6 +708,9 @@ pub const DocstringExtractor = struct {
         if (bugs.items.len > 0) {
             doc.bugs = try bugs.toOwnedSlice(self.allocator);
         }
+        if (tests.items.len > 0) {
+            doc.tests = try tests.toOwnedSlice(self.allocator);
+        }
         if (snippets.items.len > 0) {
             doc.snippets = try snippets.toOwnedSlice(self.allocator);
         }
@@ -766,6 +785,12 @@ pub const DocstringExtractor = struct {
             return true;
         }
         return false;
+    }
+
+    /// Checks if text contains @ref or \ref tags for cross-references
+    pub fn containsRef(text: []const u8) bool {
+        return std.mem.indexOf(u8, text, "@ref ") != null or
+            std.mem.indexOf(u8, text, "\\ref ") != null;
     }
 
     /// Parses a @page or @mainpage docstring into a Page struct
@@ -1532,4 +1557,50 @@ test "parsePage with @mainpage" {
     try std.testing.expectEqualStrings("Project Documentation", page.?.title);
     try std.testing.expect(page.?.is_mainpage);
     try std.testing.expect(std.mem.indexOf(u8, page.?.content, "Welcome to the project!") != null);
+}
+
+test "parse test tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Calculates factorial.
+        \\* @test test_factorial_basic
+        \\* @test test_factorial_zero
+    );
+    defer std.testing.allocator.free(doc.tests);
+
+    try std.testing.expectEqualStrings("Calculates factorial.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 2), doc.tests.len);
+    try std.testing.expectEqualStrings("test_factorial_basic", doc.tests[0].name);
+    try std.testing.expect(doc.tests[0].file == null);
+    try std.testing.expectEqualStrings("test_factorial_zero", doc.tests[1].name);
+    try std.testing.expect(doc.tests[1].file == null);
+}
+
+test "parse test tag with file" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Calculates factorial.
+        \\* @test test_factorial_negative test/test_math.cpp
+    );
+    defer std.testing.allocator.free(doc.tests);
+
+    try std.testing.expectEqual(@as(usize, 1), doc.tests.len);
+    try std.testing.expectEqualStrings("test_factorial_negative", doc.tests[0].name);
+    try std.testing.expectEqualStrings("test/test_math.cpp", doc.tests[0].file.?);
+}
+
+test "parse test with backslash prefix" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Function description.
+        \\* \test test_my_function
+        \\* \test test_edge_case test/edge.cpp
+    );
+    defer std.testing.allocator.free(doc.tests);
+
+    try std.testing.expectEqual(@as(usize, 2), doc.tests.len);
+    try std.testing.expectEqualStrings("test_my_function", doc.tests[0].name);
+    try std.testing.expect(doc.tests[0].file == null);
+    try std.testing.expectEqualStrings("test_edge_case", doc.tests[1].name);
+    try std.testing.expectEqualStrings("test/edge.cpp", doc.tests[1].file.?);
 }

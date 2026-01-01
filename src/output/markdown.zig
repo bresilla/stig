@@ -3,6 +3,7 @@ const types = @import("../model/types.zig");
 const xref = @import("../xref.zig");
 const config = @import("../config.zig");
 const snippet_mod = @import("../snippet.zig");
+const extractor_mod = @import("../docstring/extractor.zig");
 
 /// Markdown output generator with optional cross-reference support
 pub const MarkdownGenerator = struct {
@@ -526,6 +527,101 @@ pub const MarkdownGenerator = struct {
         }
     }
 
+    /// Processes text and replaces @ref/\ref tags with markdown links
+    /// @ref symbol -> [symbol](#symbol) or [symbol](path#anchor)
+    /// @ref symbol "text" -> [text](#symbol)
+    /// If target not found, renders as code: `symbol`
+    fn processRefs(self: *Self, text: []const u8) !void {
+        var i: usize = 0;
+        while (i < text.len) {
+            // Look for @ref or \ref
+            const ref_start = blk: {
+                if (i + 5 <= text.len and std.mem.eql(u8, text[i .. i + 5], "@ref ")) {
+                    break :blk i;
+                }
+                if (i + 5 <= text.len and std.mem.eql(u8, text[i .. i + 5], "\\ref ")) {
+                    break :blk i;
+                }
+                // No ref found at this position, write char and continue
+                try self.buffer.append(self.allocator, text[i]);
+                i += 1;
+                continue;
+            };
+
+            // Found @ref, parse it
+            i = ref_start + 5; // Skip "@ref " or "\ref "
+
+            // Skip whitespace
+            while (i < text.len and (text[i] == ' ' or text[i] == '\t')) {
+                i += 1;
+            }
+
+            // Extract target (until space, quote, newline, or special chars)
+            const target_start = i;
+            while (i < text.len and text[i] != ' ' and text[i] != '"' and text[i] != '\n' and text[i] != '\r' and text[i] != ',' and text[i] != '.') {
+                i += 1;
+            }
+            const target = text[target_start..i];
+
+            // Check for optional display text in quotes
+            var display_text: ?[]const u8 = null;
+            // Look ahead for optional display text - skip spaces temporarily
+            var look_ahead = i;
+            while (look_ahead < text.len and text[look_ahead] == ' ') {
+                look_ahead += 1;
+            }
+            if (look_ahead < text.len and text[look_ahead] == '"') {
+                // Found a quote, advance to it
+                i = look_ahead + 1; // Skip opening quote
+                const display_start = i;
+                while (i < text.len and text[i] != '"') {
+                    i += 1;
+                }
+                display_text = text[display_start..i];
+                if (i < text.len) i += 1; // Skip closing quote
+            }
+            // If no quote found, don't consume the space - it stays for the next iteration
+
+            // Generate link
+            const link_text = display_text orelse target;
+
+            // Skip empty targets
+            if (target.len == 0) {
+                continue;
+            }
+
+            // Try to resolve target using symbol table
+            if (self.symbol_table) |table| {
+                if (table.lookup(target)) |info| {
+                    const link = try self.generateLink(target, info);
+                    defer if (link.needs_free) self.allocator.free(link.text);
+
+                    // If we have custom display text, modify the link
+                    if (display_text) |dt| {
+                        try self.writeString("[");
+                        try self.writeString(dt);
+                        try self.writeString("](");
+                        // Extract href from link - find the URL part
+                        if (std.mem.indexOf(u8, link.text, "](")) |start| {
+                            if (std.mem.lastIndexOf(u8, link.text, ")")) |end| {
+                                try self.writeString(link.text[start + 2 .. end]);
+                            }
+                        }
+                        try self.writeString(")");
+                    } else {
+                        try self.writeString(link.text);
+                    }
+                    continue;
+                }
+            }
+
+            // Target not found - render as code
+            try self.writeString("`");
+            try self.writeString(link_text);
+            try self.writeString("`");
+        }
+    }
+
     /// Formats template parameters as a signature string for code blocks
     /// e.g., "template<typename T, usize N>\n"
     fn formatTemplateSignature(self: *Self, template_params: []const types.TemplateParam) !void {
@@ -852,7 +948,12 @@ pub const MarkdownGenerator = struct {
         // Documentation
         if (func.doc) |doc| {
             if (doc.brief) |brief| {
-                try self.writeString(brief);
+                // Process @ref tags in brief
+                if (extractor_mod.DocstringExtractor.containsRef(brief)) {
+                    try self.processRefs(brief);
+                } else {
+                    try self.writeString(brief);
+                }
                 try self.writeString("\n\n");
             }
 
@@ -882,7 +983,12 @@ pub const MarkdownGenerator = struct {
                 }
 
                 if (cleaned_lines.items.len > 0) {
-                    try self.writeString(cleaned_lines.items);
+                    // Process @ref tags in details
+                    if (extractor_mod.DocstringExtractor.containsRef(cleaned_lines.items)) {
+                        try self.processRefs(cleaned_lines.items);
+                    } else {
+                        try self.writeString(cleaned_lines.items);
+                    }
                     try self.writeString("\n\n");
                 }
             }
@@ -903,7 +1009,12 @@ pub const MarkdownGenerator = struct {
                         }
                     }
                     try self.writeString(": ");
-                    try self.writeString(param.description);
+                    // Process @ref tags in param description
+                    if (extractor_mod.DocstringExtractor.containsRef(param.description)) {
+                        try self.processRefs(param.description);
+                    } else {
+                        try self.writeString(param.description);
+                    }
                     try self.writeString("\n");
                 }
                 try self.writeString("\n");
@@ -915,7 +1026,12 @@ pub const MarkdownGenerator = struct {
                 try self.writeString("(");
                 try self.writeTypeWithLink(func.return_type);
                 try self.writeString(") ");
-                try self.writeString(ret);
+                // Process @ref tags in return description
+                if (extractor_mod.DocstringExtractor.containsRef(ret)) {
+                    try self.processRefs(ret);
+                } else {
+                    try self.writeString(ret);
+                }
                 try self.writeString("\n\n");
             }
 
@@ -928,7 +1044,12 @@ pub const MarkdownGenerator = struct {
                     try self.writeString("`");
                     if (retval.description.len > 0) {
                         try self.writeString(": ");
-                        try self.writeString(retval.description);
+                        // Process @ref tags in retval description
+                        if (extractor_mod.DocstringExtractor.containsRef(retval.description)) {
+                            try self.processRefs(retval.description);
+                        } else {
+                            try self.writeString(retval.description);
+                        }
                     }
                     try self.writeString("\n");
                 }
@@ -1129,6 +1250,18 @@ pub const MarkdownGenerator = struct {
                 for (doc.see_also, 0..) |ref, i| {
                     if (i > 0) try self.writeString(", ");
                     try self.writeSymbolLink(ref);
+                }
+                try self.writeString("\n\n");
+            }
+
+            // Tests
+            if (doc.tests.len > 0) {
+                try self.writeString("**Tests:** ");
+                for (doc.tests, 0..) |test_ref, i| {
+                    if (i > 0) try self.writeString(", ");
+                    try self.writeString("`");
+                    try self.writeString(test_ref.name);
+                    try self.writeString("`");
                 }
                 try self.writeString("\n\n");
             }

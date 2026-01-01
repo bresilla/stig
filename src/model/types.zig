@@ -45,6 +45,16 @@ pub const GroupInfo = struct {
     heading: ?[]const u8 = null,
 };
 
+/// Test case reference from @test tag
+pub const TestRef = struct {
+    /// Test case name (e.g., "test_factorial_basic")
+    name: []const u8,
+    /// Optional test file path (e.g., "test/test_math.cpp")
+    file: ?[]const u8 = null,
+    /// Optional line number in test file
+    line: ?u32 = null,
+};
+
 /// Parsed docstring with structured information
 pub const DocString = struct {
     /// Raw docstring text
@@ -133,6 +143,8 @@ pub const DocString = struct {
     mermaid_diagrams: []const MermaidDiagram = &[_]MermaidDiagram{},
     /// Code blocks (@code/@endcode)
     code_blocks: []const CodeBlock = &[_]CodeBlock{},
+    /// Test references (@test)
+    tests: []const TestRef = &[_]TestRef{},
 };
 
 /// Function parameter
@@ -422,6 +434,16 @@ pub const CodeBlock = struct {
     show_line_numbers: bool = false,
 };
 
+/// Include directive information
+pub const IncludeInfo = struct {
+    /// Include path (e.g., "vector.hpp" or "spatial/point.hpp")
+    path: []const u8,
+    /// Whether this is a system include (<...>) vs local include ("...")
+    is_system: bool,
+    /// Line number where the include appears
+    line: u32,
+};
+
 /// A parsed module (typically one header file)
 pub const Module = struct {
     name: []const u8,
@@ -440,4 +462,6 @@ pub const Module = struct {
     file_doc: ?DocString = null,
     /// Custom pages (@page, @mainpage)
     pages: []const Page = &[_]Page{},
+    /// Include directives found in this file
+    includes: []const IncludeInfo = &[_]IncludeInfo{},
 };

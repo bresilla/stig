@@ -7,6 +7,7 @@ const MarkdownGenerator = @import("output/markdown.zig").MarkdownGenerator;
 const MdbookGenerator = @import("output/mdbook.zig").MdbookGenerator;
 const MdbookConfig = @import("output/mdbook.zig").MdbookConfig;
 const JsonGenerator = @import("output/json.zig").JsonGenerator;
+const HtmlGenerator = @import("output/html.zig").HtmlGenerator;
 const xref = @import("xref.zig");
 const cli = @import("cli.zig");
 const config_mod = @import("config.zig");
@@ -350,10 +351,20 @@ pub fn main() !void {
                 return;
             }
 
+            // Map config.Grouping to MdbookConfig.GroupingStrategy
+            const grouping_strategy: MdbookConfig.GroupingStrategy = switch (config.grouping) {
+                .by_header => .by_header,
+                .by_prefix => .by_prefix,
+                .flat => .flat,
+                .by_module => .by_module,
+            };
+
             const mdbook_config = MdbookConfig{
                 .title = args.book_title orelse config.title,
                 .output_dir = output_dir,
                 .generate_intro = config.generate_intro,
+                .grouping = grouping_strategy,
+                .module_configs = config.modules,
             };
 
             var mdbook_gen = MdbookGenerator.initWithConfig(allocator, mdbook_config);
@@ -464,6 +475,46 @@ pub fn main() !void {
                 defer stdout.flush() catch {};
 
                 try stdout.writeAll(json_output);
+            }
+        },
+        .html => {
+            // Generate single-page HTML output
+            var html_gen = HtmlGenerator.init(allocator);
+            defer html_gen.deinit();
+
+            // Set title if provided
+            if (args.book_title) |title| {
+                html_gen.setTitle(title);
+            }
+
+            const html_output = html_gen.generate(modules.items) catch |err| {
+                std.debug.print("Error generating HTML: {}\n", .{err});
+                return;
+            };
+
+            // Write output
+            if (args.output_file) |output_path| {
+                // Write to file
+                const file = std.fs.cwd().createFile(output_path, .{}) catch |err| {
+                    std.debug.print("Error: Cannot create output file '{s}': {}\n", .{ output_path, err });
+                    return;
+                };
+                defer file.close();
+
+                file.writeAll(html_output) catch |err| {
+                    std.debug.print("Error: Cannot write to file '{s}': {}\n", .{ output_path, err });
+                    return;
+                };
+
+                std.debug.print("Generated HTML documentation: {s}\n", .{output_path});
+            } else {
+                // Write to stdout
+                var buf: [8192]u8 = undefined;
+                var file_writer = std.fs.File.stdout().writer(&buf);
+                const stdout = &file_writer.interface;
+                defer stdout.flush() catch {};
+
+                try stdout.writeAll(html_output);
             }
         },
     }

@@ -173,6 +173,13 @@ pub const JsonGenerator = struct {
         try self.writeIndent();
         try self.writeKey("groups");
         try self.serializeGroups(module.groups);
+        try self.writeChar(',');
+        try self.writeNewline();
+
+        // Includes
+        try self.writeIndent();
+        try self.writeKey("includes");
+        try self.serializeIncludes(module.includes);
         try self.writeNewline();
 
         self.indent_level -= 1;
@@ -1391,6 +1398,52 @@ pub const JsonGenerator = struct {
         try self.writeChar(']');
     }
 
+    fn serializeIncludes(self: *Self, includes: []const types.IncludeInfo) !void {
+        try self.writeChar('[');
+        if (includes.len > 0) {
+            try self.writeNewline();
+            self.indent_level += 1;
+
+            for (includes, 0..) |inc, i| {
+                try self.writeIndent();
+                try self.writeChar('{');
+                try self.writeNewline();
+                self.indent_level += 1;
+
+                try self.writeIndent();
+                try self.writeKeyValue("path", inc.path);
+                try self.writeChar(',');
+                try self.writeNewline();
+
+                try self.writeIndent();
+                try self.writeKey("is_system");
+                try self.writeString(if (inc.is_system) "true" else "false");
+                try self.writeChar(',');
+                try self.writeNewline();
+
+                try self.writeIndent();
+                try self.writeKey("line");
+                var buf: [32]u8 = undefined;
+                const line_str = try std.fmt.bufPrint(&buf, "{d}", .{inc.line});
+                try self.writeString(line_str);
+                try self.writeNewline();
+
+                self.indent_level -= 1;
+                try self.writeIndent();
+                try self.writeChar('}');
+
+                if (i < includes.len - 1) {
+                    try self.writeChar(',');
+                }
+                try self.writeNewline();
+            }
+
+            self.indent_level -= 1;
+            try self.writeIndent();
+        }
+        try self.writeChar(']');
+    }
+
     // =========================================================================
     // Common serializers
     // =========================================================================
@@ -1797,11 +1850,60 @@ pub const JsonGenerator = struct {
         try self.writeIndent();
         try self.writeKey("code_blocks");
         try self.serializeCodeBlocks(doc.code_blocks);
+        try self.writeChar(',');
+        try self.writeNewline();
+
+        // Tests
+        try self.writeIndent();
+        try self.writeKey("tests");
+        try self.serializeTestRefs(doc.tests);
         try self.writeNewline();
 
         self.indent_level -= 1;
         try self.writeIndent();
         try self.writeChar('}');
+    }
+
+    fn serializeTestRefs(self: *Self, tests: []const types.TestRef) !void {
+        try self.writeChar('[');
+        if (tests.len > 0) {
+            try self.writeNewline();
+            self.indent_level += 1;
+
+            for (tests, 0..) |t, i| {
+                try self.writeIndent();
+                try self.writeChar('{');
+                try self.writeNewline();
+                self.indent_level += 1;
+
+                try self.writeIndent();
+                try self.writeKeyValue("name", t.name);
+                try self.writeChar(',');
+                try self.writeNewline();
+
+                try self.writeIndent();
+                try self.writeKey("file");
+                if (t.file) |file| {
+                    try self.writeJsonString(file);
+                } else {
+                    try self.writeString("null");
+                }
+                try self.writeNewline();
+
+                self.indent_level -= 1;
+                try self.writeIndent();
+                try self.writeChar('}');
+
+                if (i < tests.len - 1) {
+                    try self.writeChar(',');
+                }
+                try self.writeNewline();
+            }
+
+            self.indent_level -= 1;
+            try self.writeIndent();
+        }
+        try self.writeChar(']');
     }
 
     fn serializeCodeBlocks(self: *Self, blocks: []const types.CodeBlock) !void {

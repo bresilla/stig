@@ -66,9 +66,10 @@ pub const CppParser = struct {
         var concepts: std.ArrayList(types.Concept) = .empty;
         var type_aliases: std.ArrayList(types.TypeAlias) = .empty;
         var pages: std.ArrayList(types.Page) = .empty;
+        var includes: std.ArrayList(types.IncludeInfo) = .empty;
 
         const root = tree.?.rootNode();
-        try self.walkNode(root, &functions, &structs, &enums, &typedefs, &macros, &classes, &namespaces, &concepts, &type_aliases, filename, null);
+        try self.walkNode(root, &functions, &structs, &enums, &typedefs, &macros, &classes, &namespaces, &concepts, &type_aliases, &includes, filename, null);
 
         // Extract custom pages (@page, @mainpage) from standalone doc comments
         try self.extractPages(root, &pages);
@@ -85,6 +86,7 @@ pub const CppParser = struct {
             .concepts = try concepts.toOwnedSlice(self.allocator),
             .type_aliases = try type_aliases.toOwnedSlice(self.allocator),
             .pages = try pages.toOwnedSlice(self.allocator),
+            .includes = try includes.toOwnedSlice(self.allocator),
         };
     }
 
@@ -111,6 +113,7 @@ pub const CppParser = struct {
         namespaces: *std.ArrayList(types.Namespace),
         concepts: *std.ArrayList(types.Concept),
         type_aliases: *std.ArrayList(types.TypeAlias),
+        includes: *std.ArrayList(types.IncludeInfo),
         filename: []const u8,
         current_namespace: ?[]const u8,
     ) !void {
@@ -155,7 +158,7 @@ pub const CppParser = struct {
                         var j: u32 = 0;
                         while (j < child.childCount()) : (j += 1) {
                             if (child.child(j)) |body_child| {
-                                try self.walkNode(body_child, functions, structs, enums, typedefs, macros, classes, namespaces, concepts, type_aliases, filename, ns_info.full_name);
+                                try self.walkNode(body_child, functions, structs, enums, typedefs, macros, classes, namespaces, concepts, type_aliases, includes, filename, ns_info.full_name);
                             }
                         }
                     }
@@ -172,13 +175,17 @@ pub const CppParser = struct {
             if (try self.extractMacro(node, filename)) |m| {
                 try macros.append(self.allocator, m);
             }
+        } else if (std.mem.eql(u8, node_kind, "preproc_include")) {
+            if (self.extractInclude(node)) |inc| {
+                try includes.append(self.allocator, inc);
+            }
         }
 
         // Recurse into children
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {
-                try self.walkNode(child, functions, structs, enums, typedefs, macros, classes, namespaces, concepts, type_aliases, filename, current_namespace);
+                try self.walkNode(child, functions, structs, enums, typedefs, macros, classes, namespaces, concepts, type_aliases, includes, filename, current_namespace);
             }
         }
     }
@@ -1577,6 +1584,46 @@ pub const CppParser = struct {
                 .line = start.row + 1,
                 .column = start.column + 1,
             },
+        };
+    }
+
+    /// Extracts include directive information
+    /// Handles both #include <...> and #include "..."
+    fn extractInclude(self: *Self, node: ts.Node) ?types.IncludeInfo {
+        var path: ?[]const u8 = null;
+        var is_system = false;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                if (std.mem.eql(u8, child_kind, "system_lib_string")) {
+                    // #include <...>
+                    const text = self.getNodeText(child);
+                    // Remove < and >
+                    if (text.len >= 2) {
+                        path = text[1 .. text.len - 1];
+                        is_system = true;
+                    }
+                } else if (std.mem.eql(u8, child_kind, "string_literal")) {
+                    // #include "..."
+                    const text = self.getNodeText(child);
+                    // Remove quotes
+                    if (text.len >= 2) {
+                        path = text[1 .. text.len - 1];
+                        is_system = false;
+                    }
+                }
+            }
+        }
+
+        if (path == null) return null;
+
+        const start = node.startPoint();
+        return types.IncludeInfo{
+            .path = path.?,
+            .is_system = is_system,
+            .line = start.row + 1,
         };
     }
 

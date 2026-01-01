@@ -62,9 +62,10 @@ pub const CParser = struct {
         var typedefs: std.ArrayList(types.Typedef) = .empty;
         var macros: std.ArrayList(types.Macro) = .empty;
         var pages: std.ArrayList(types.Page) = .empty;
+        var includes: std.ArrayList(types.IncludeInfo) = .empty;
 
         const root = tree.?.rootNode();
-        try self.walkNode(root, &functions, &structs, &enums, &typedefs, &macros, filename);
+        try self.walkNode(root, &functions, &structs, &enums, &typedefs, &macros, &includes, filename);
 
         // Extract custom pages (@page, @mainpage) from standalone doc comments
         try self.extractPages(root, &pages);
@@ -77,6 +78,7 @@ pub const CParser = struct {
             .typedefs = try typedefs.toOwnedSlice(self.allocator),
             .macros = try macros.toOwnedSlice(self.allocator),
             .pages = try pages.toOwnedSlice(self.allocator),
+            .includes = try includes.toOwnedSlice(self.allocator),
         };
     }
 
@@ -89,6 +91,7 @@ pub const CParser = struct {
         enums: *std.ArrayList(types.Enum),
         typedefs: *std.ArrayList(types.Typedef),
         macros: *std.ArrayList(types.Macro),
+        includes: *std.ArrayList(types.IncludeInfo),
         filename: []const u8,
     ) !void {
         const kind = node.kind();
@@ -126,13 +129,17 @@ pub const CParser = struct {
             if (try self.extractFunctionMacro(node, filename)) |macro| {
                 try macros.append(self.allocator, macro);
             }
+        } else if (std.mem.eql(u8, kind, "preproc_include")) {
+            if (self.extractInclude(node)) |inc| {
+                try includes.append(self.allocator, inc);
+            }
         }
 
         // Recurse into children
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {
-                try self.walkNode(child, functions, structs, enums, typedefs, macros, filename);
+                try self.walkNode(child, functions, structs, enums, typedefs, macros, includes, filename);
             }
         }
     }
@@ -799,6 +806,46 @@ pub const CParser = struct {
                 .line = start.row + 1,
                 .column = start.column + 1,
             },
+        };
+    }
+
+    /// Extracts include directive information
+    /// Handles both #include <...> and #include "..."
+    fn extractInclude(self: *Self, node: ts.Node) ?types.IncludeInfo {
+        var path: ?[]const u8 = null;
+        var is_system = false;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                if (std.mem.eql(u8, child_kind, "system_lib_string")) {
+                    // #include <...>
+                    const text = self.getNodeText(child);
+                    // Remove < and >
+                    if (text.len >= 2) {
+                        path = text[1 .. text.len - 1];
+                        is_system = true;
+                    }
+                } else if (std.mem.eql(u8, child_kind, "string_literal")) {
+                    // #include "..."
+                    const text = self.getNodeText(child);
+                    // Remove quotes
+                    if (text.len >= 2) {
+                        path = text[1 .. text.len - 1];
+                        is_system = false;
+                    }
+                }
+            }
+        }
+
+        if (path == null) return null;
+
+        const start = node.startPoint();
+        return types.IncludeInfo{
+            .path = path.?,
+            .is_system = is_system,
+            .line = start.row + 1,
         };
     }
 

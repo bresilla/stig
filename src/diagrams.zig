@@ -822,3 +822,196 @@ test "get children" {
 
     try std.testing.expectEqual(@as(usize, 2), children.len);
 }
+
+// =============================================================================
+// Include Dependency Graph
+// =============================================================================
+
+/// Include dependency graph generator
+pub const IncludeGraph = struct {
+    allocator: std.mem.Allocator,
+
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator) Self {
+        return Self{
+            .allocator = allocator,
+        };
+    }
+
+    /// Generates a Mermaid diagram showing include dependencies
+    pub fn generateMermaid(self: *Self, modules: []const types.Module, show_system: bool) ![]const u8 {
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(self.allocator);
+
+        try result.appendSlice(self.allocator, "```mermaid\n");
+        try result.appendSlice(self.allocator, "graph TD\n");
+
+        // Track which nodes we've seen to avoid duplicates
+        var seen_nodes = std.StringHashMap(void).init(self.allocator);
+        defer seen_nodes.deinit();
+
+        // Generate nodes and edges
+        for (modules) |module| {
+            const from_name = self.getBasename(module.name);
+
+            // Add the source file as a node if not seen
+            if (!seen_nodes.contains(from_name)) {
+                try seen_nodes.put(from_name, {});
+                try result.appendSlice(self.allocator, "    ");
+                try result.appendSlice(self.allocator, self.sanitizeNodeId(from_name));
+                try result.appendSlice(self.allocator, "[\"");
+                try result.appendSlice(self.allocator, from_name);
+                try result.appendSlice(self.allocator, "\"]\n");
+            }
+
+            // Add edges for each include
+            for (module.includes) |inc| {
+                // Skip system includes if requested
+                if (inc.is_system and !show_system) continue;
+
+                const to_name = self.getBasename(inc.path);
+
+                // Add the included file as a node if not seen
+                if (!seen_nodes.contains(to_name)) {
+                    try seen_nodes.put(to_name, {});
+                    try result.appendSlice(self.allocator, "    ");
+                    try result.appendSlice(self.allocator, self.sanitizeNodeId(to_name));
+
+                    if (inc.is_system) {
+                        try result.appendSlice(self.allocator, "{{\"");
+                        try result.appendSlice(self.allocator, to_name);
+                        try result.appendSlice(self.allocator, "\"}}\n");
+                    } else {
+                        try result.appendSlice(self.allocator, "[\"");
+                        try result.appendSlice(self.allocator, to_name);
+                        try result.appendSlice(self.allocator, "\"]\n");
+                    }
+                }
+
+                // Add edge
+                try result.appendSlice(self.allocator, "    ");
+                try result.appendSlice(self.allocator, self.sanitizeNodeId(from_name));
+                try result.appendSlice(self.allocator, " --> ");
+                try result.appendSlice(self.allocator, self.sanitizeNodeId(to_name));
+                try result.appendSlice(self.allocator, "\n");
+            }
+        }
+
+        try result.appendSlice(self.allocator, "```\n");
+
+        return result.toOwnedSlice(self.allocator);
+    }
+
+    /// Generates an ASCII tree showing include dependencies
+    pub fn generateAsciiTree(self: *Self, modules: []const types.Module, show_system: bool) ![]const u8 {
+        var result: std.ArrayList(u8) = .empty;
+        errdefer result.deinit(self.allocator);
+
+        for (modules) |module| {
+            const from_name = self.getBasename(module.name);
+            try result.appendSlice(self.allocator, from_name);
+            try result.appendSlice(self.allocator, "\n");
+
+            var non_system_count: usize = 0;
+            for (module.includes) |inc| {
+                if (!inc.is_system or show_system) {
+                    non_system_count += 1;
+                }
+            }
+
+            if (non_system_count == 0) continue;
+
+            var count: usize = 0;
+            for (module.includes) |inc| {
+                // Skip system includes if requested
+                if (inc.is_system and !show_system) continue;
+
+                count += 1;
+                const is_last = count == non_system_count;
+                const prefix = if (is_last) "└── " else "├── ";
+
+                try result.appendSlice(self.allocator, prefix);
+                if (inc.is_system) {
+                    try result.appendSlice(self.allocator, "<");
+                    try result.appendSlice(self.allocator, inc.path);
+                    try result.appendSlice(self.allocator, ">");
+                } else {
+                    try result.appendSlice(self.allocator, "\"");
+                    try result.appendSlice(self.allocator, inc.path);
+                    try result.appendSlice(self.allocator, "\"");
+                }
+                try result.appendSlice(self.allocator, "\n");
+            }
+
+            try result.appendSlice(self.allocator, "\n");
+        }
+
+        return result.toOwnedSlice(self.allocator);
+    }
+
+    /// Extracts basename from a path
+    fn getBasename(self: *Self, path: []const u8) []const u8 {
+        _ = self;
+        if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
+            return path[idx + 1 ..];
+        }
+        return path;
+    }
+
+    /// Sanitizes a filename to be a valid Mermaid node ID
+    fn sanitizeNodeId(self: *Self, name: []const u8) []const u8 {
+        _ = self;
+        // Mermaid handles most filenames well, so we'll just return as-is
+        return name;
+    }
+};
+
+// Tests for IncludeGraph
+test "include graph - mermaid generation" {
+    var graph = IncludeGraph.init(std.testing.allocator);
+
+    const modules = [_]types.Module{
+        .{
+            .name = "test/geometry.hpp",
+            .functions = &[_]types.Function{},
+            .structs = &[_]types.Struct{},
+            .enums = &[_]types.Enum{},
+            .typedefs = &[_]types.Typedef{},
+            .includes = &[_]types.IncludeInfo{
+                .{ .path = "vector.hpp", .is_system = false, .line = 1 },
+                .{ .path = "cmath", .is_system = true, .line = 2 },
+            },
+        },
+    };
+
+    const mermaid = try graph.generateMermaid(&modules, true);
+    defer std.testing.allocator.free(mermaid);
+
+    try std.testing.expect(std.mem.indexOf(u8, mermaid, "graph TD") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mermaid, "geometry.hpp") != null);
+}
+
+test "include graph - ascii tree generation" {
+    var graph = IncludeGraph.init(std.testing.allocator);
+
+    const modules = [_]types.Module{
+        .{
+            .name = "test/geometry.hpp",
+            .functions = &[_]types.Function{},
+            .structs = &[_]types.Struct{},
+            .enums = &[_]types.Enum{},
+            .typedefs = &[_]types.Typedef{},
+            .includes = &[_]types.IncludeInfo{
+                .{ .path = "vector.hpp", .is_system = false, .line = 1 },
+                .{ .path = "cmath", .is_system = true, .line = 2 },
+            },
+        },
+    };
+
+    const tree = try graph.generateAsciiTree(&modules, true);
+    defer std.testing.allocator.free(tree);
+
+    try std.testing.expect(std.mem.indexOf(u8, tree, "geometry.hpp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tree, "vector.hpp") != null);
+}

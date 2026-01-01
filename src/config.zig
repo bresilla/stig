@@ -9,6 +9,18 @@ pub const ExternalDocLink = struct {
     url_template: []const u8,
 };
 
+/// Module configuration for grouping headers into logical packages
+pub const ModuleConfig = struct {
+    /// Module identifier (used for directory name)
+    name: []const u8,
+    /// Glob patterns for matching files (e.g., "include/core/*.hpp")
+    patterns: []const []const u8,
+    /// Display title for the module
+    title: []const u8,
+    /// Optional description of the module
+    description: ?[]const u8 = null,
+};
+
 /// Stig configuration loaded from stig.toml
 pub const Config = struct {
     /// Project title for documentation
@@ -48,6 +60,8 @@ pub const Config = struct {
     coverage: CoverageOptions = .{},
     /// Lint options
     lint: LintOptions = .{},
+    /// Module definitions for organizing documentation into packages
+    modules: []const ModuleConfig = &[_]ModuleConfig{},
 
     /// Lint options for --lint mode
     pub const LintOptions = struct {
@@ -136,13 +150,23 @@ pub const Config = struct {
         markdown,
         mdbook,
         json,
+        html,
     };
 
     pub const Grouping = enum {
         by_header,
         by_prefix,
         flat,
+        by_module,
     };
+};
+
+/// TOML structure for [[modules]] array entries
+const TomlModuleEntry = struct {
+    name: ?[]const u8 = null,
+    patterns: ?[]const []const u8 = null,
+    title: ?[]const u8 = null,
+    description: ?[]const u8 = null,
 };
 
 /// TOML structure that maps to stig.toml file format
@@ -165,6 +189,9 @@ const TomlConfig = struct {
     blacklist_pattern: ?[]const []const u8 = null,
     extract_private: ?bool = null,
     extract_protected: ?bool = null,
+
+    // [[modules]] array for package organization
+    modules: ?[]const TomlModuleEntry = null,
 
     // [stig] section
     stig: ?StigSection = null,
@@ -205,6 +232,8 @@ const TomlConfig = struct {
 pub const ConfigLoader = struct {
     allocator: std.mem.Allocator,
     parsed: ?toml.Parsed(TomlConfig) = null,
+    /// Owned slice for converted module configs
+    module_configs: ?[]ModuleConfig = null,
 
     const Self = @This();
 
@@ -215,6 +244,9 @@ pub const ConfigLoader = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        if (self.module_configs) |mods| {
+            self.allocator.free(mods);
+        }
         if (self.parsed) |parsed| {
             parsed.deinit();
         }
@@ -251,7 +283,7 @@ pub const ConfigLoader = struct {
     }
 
     /// Converts TomlConfig to Config, applying precedence rules
-    fn buildConfig(_: *Self, tc: TomlConfig) Config {
+    fn buildConfig(self: *Self, tc: TomlConfig) Config {
         var config = Config{};
 
         // Title: root > stinger > book
@@ -344,6 +376,8 @@ pub const ConfigLoader = struct {
                 config.grouping = .by_prefix;
             } else if (std.mem.eql(u8, grp, "flat")) {
                 config.grouping = .flat;
+            } else if (std.mem.eql(u8, grp, "by_module") or std.mem.eql(u8, grp, "module")) {
+                config.grouping = .by_module;
             }
         }
 
@@ -382,6 +416,39 @@ pub const ConfigLoader = struct {
             config.extract_protected = ep;
         } else if (tc.stig) |s| {
             if (s.extract_protected) |ep| config.extract_protected = ep;
+        }
+
+        // Modules: convert from TomlModuleEntry to ModuleConfig
+        if (tc.modules) |toml_modules| {
+            if (toml_modules.len > 0) {
+                // Count valid modules
+                var valid_count: usize = 0;
+                for (toml_modules) |entry| {
+                    if (entry.name != null and entry.patterns != null and entry.title != null) {
+                        valid_count += 1;
+                    }
+                }
+
+                if (valid_count > 0) {
+                    const mods = self.allocator.alloc(ModuleConfig, valid_count) catch {
+                        return config;
+                    };
+                    var idx: usize = 0;
+                    for (toml_modules) |entry| {
+                        if (entry.name != null and entry.patterns != null and entry.title != null) {
+                            mods[idx] = ModuleConfig{
+                                .name = entry.name.?,
+                                .patterns = entry.patterns.?,
+                                .title = entry.title.?,
+                                .description = entry.description,
+                            };
+                            idx += 1;
+                        }
+                    }
+                    self.module_configs = mods;
+                    config.modules = mods;
+                }
+            }
         }
 
         return config;
