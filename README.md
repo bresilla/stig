@@ -1,18 +1,82 @@
 # Stig
 
-C/C++ documentation generator using tree-sitter parsing with mdbook output support
+Tree-sitter based C/C++ documentation generator with Standardese-compatible features and mdbook output
 
 ## Overview
 
 Stig is a documentation generator for C and C++ codebases that parses source files using tree-sitter and extracts documentation from Doxygen-style comments. It generates clean markdown documentation that can be viewed standalone or built into an mdbook.
 
-**Key Features:**
-- **Tree-sitter Parsing**: Accurate AST-based extraction of functions, structs, enums, typedefs, and macros
-- **Doxygen Support**: Parses `/** */`, `///`, `@param`, `@return`, `@brief` and other common tags
-- **mdbook Integration**: Generates complete mdbook structure or works as an mdbook preprocessor
-- **Watch Mode**: Auto-regenerates documentation on file changes with optional live preview
-- **Cross-References**: Automatic linking between types and functions in generated docs
-- **C and C++ Support**: Handles both C and C++ header files with appropriate parsers
+Unlike traditional documentation generators that rely on libclang, Stig uses tree-sitter for fast, accurate AST-based parsing. This makes it lightweight, portable, and easy to integrate into any build system. Stig aims for feature parity with Standardese while focusing exclusively on Markdown and mdbook output formats.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                              STIG                                    │
+├─────────────────┬─────────────────┬─────────────────┬───────────────┤
+│   Tree-sitter   │    Docstring    │     Cross-      │    Output     │
+│     Parser      │    Extractor    │   Reference     │   Generator   │
+│                 │                 │                 │               │
+│  ┌───────────┐  │  ┌───────────┐  │  ┌───────────┐  │  ┌─────────┐  │
+│  │  C/C++    │  │  │  Doxygen  │  │  │  Symbol   │  │  │Markdown │  │
+│  │  Grammar  │  │  │   Tags    │  │  │   Table   │  │  │  /Book  │  │
+│  └───────────┘  │  └───────────┘  │  └───────────┘  │  └─────────┘  │
+└─────────────────┴─────────────────┴─────────────────┴───────────────┘
+         │                 │                 │                │
+         └─────────────────┴─────────────────┴────────────────┘
+                                   │
+                    ┌──────────────▼──────────────┐
+                    │     stig.toml (Config)      │
+                    └─────────────────────────────┘
+```
+
+## Features
+
+### Parsing Capabilities
+
+- **Tree-sitter Parsing**: Accurate AST-based extraction of functions, structs, classes, enums, typedefs, and macros
+- **C++ Support**: Classes, inheritance, templates, namespaces, concepts, type aliases
+- **Attributes**: Parses `[[nodiscard]]`, `[[deprecated]]`, `[[maybe_unused]]` and custom attributes
+- **Friend Declarations**: Extracts friend functions and classes
+- **Variadic Templates**: Full support for parameter packs (`Args...`)
+
+### Docstring Tags
+
+**Standard Doxygen Tags:**
+- `@brief`, `@param`, `@return`, `@throws`, `@see`, `@note`, `@warning`
+- `@deprecated`, `@since`, `@author`, `@version`
+- `@pre`, `@post`, `@example`, `@code`/`@endcode`
+
+**Template & Return Value Tags:**
+- `@tparam` - Template parameter documentation
+- `@retval` - Specific return value documentation
+
+**C++ Standard-Style Sections:**
+- `@effects`, `@requires`, `@complexity`
+- `@remarks`, `@sync`/`@threadsafety`, `@invariant`
+
+**Entity Commands (Standardese-compatible):**
+- `@exclude` - Exclude entities from documentation (supports `@exclude return`, `@exclude target`)
+- `@group` - Group related functions together with custom headings
+- `@synopsis` - Override the displayed function signature
+- `@unique_name` - Custom link target names
+- `@module` - Logical module organization
+- `@entity` - Remote documentation for other entities
+- `@file` - File-level documentation
+- `@output_section` - Section headers in synopsis
+- `@copydoc` - Copy documentation from another entity
+- `@ingroup`/`@defgroup` - Group membership
+
+**Command Prefix:**
+- Both `@command` and `\command` syntax supported
+
+### Output & Integration
+
+- **mdbook Integration**: Generates complete mdbook structure or works as preprocessor
+- **Cross-References**: Automatic linking between types and functions
+- **External Links**: Configurable links to cppreference for `std::` types
+- **Watch Mode**: Auto-regenerates documentation on file changes
+- **Live Preview**: Optional mdbook serve integration
 
 ## Installation
 
@@ -30,13 +94,8 @@ The binary will be at `zig-out/bin/stig`.
 
 ### Development Environment (Nix + Devbox)
 
-For a reproducible development environment:
-
 ```bash
-# Install devbox if not already installed
 curl -fsSL https://get.jetpack.io/devbox | bash
-
-# Enter the development shell
 cd stig
 devbox shell
 ```
@@ -71,8 +130,6 @@ stig include/*.h -f mdbook -o docs/ --serve
 
 ### mdbook Preprocessor
 
-Stig can run as an mdbook preprocessor, allowing you to embed API documentation directly in your mdbook chapters.
-
 Add to your `book.toml`:
 
 ```toml
@@ -88,9 +145,9 @@ Use in markdown files:
 {{#stig struct MyStruct}}
 ```
 
-### Configuration File
+## Configuration
 
-Stig looks for `stig.toml` in the current directory. CLI arguments override config file settings.
+Stig looks for `stig.toml` in the current directory.
 
 ```toml
 title = "My Library API"
@@ -101,13 +158,41 @@ language = "en"
 generate_intro = true
 grouping = "by_header"  # by_header, by_prefix, or flat
 authors = ["Your Name"]
+
+# Filtering
+blacklist_namespace = ["detail", "internal", "impl"]
+blacklist_pattern = ["*_impl", "test_*"]
+extract_private = false
+extract_protected = true
+
+# Output customization
+[output_options]
+show_source_location = true
+show_access_specifiers = true
+code_language = "cpp"
+synopsis_style = "full"  # full, compact, minimal
+
+# Custom section names (for localization)
+[section_names]
+parameters = "Parameters"
+returns = "Returns"
+throws = "Throws"
+
+# External documentation links
+[[external_docs]]
+prefix = "std::"
+url_template = "https://en.cppreference.com/w/cpp/$$"
+
+[[external_docs]]
+prefix = "boost::"
+url_template = "https://www.boost.org/doc/libs/release/libs/$$/"
 ```
 
-## Supported Documentation Styles
+## Documentation Examples
 
-Stig extracts documentation from several comment styles:
+### Basic Function Documentation
 
-```c
+```cpp
 /**
  * @brief Adds two integers.
  * @param a First operand
@@ -115,42 +200,53 @@ Stig extracts documentation from several comment styles:
  * @return Sum of a and b
  */
 int add(int a, int b);
-
-/// Subtracts two integers.
-/// @param a Minuend
-/// @param b Subtrahend
-int subtract(int a, int b);
-
-struct Point {
-    int x;  /**< X coordinate */
-    int y;  ///< Y coordinate
-};
-
-enum Color {
-    RED = 0,    /**< Red color */
-    GREEN = 1,  ///< Green color
-    BLUE = 2
-};
 ```
 
-## Output Structure
+### Template Documentation
 
-When generating mdbook format, stig creates:
-
+```cpp
+/// @brief Generic container wrapper
+/// @tparam T The element type
+/// @tparam Allocator Memory allocator (default: std::allocator<T>)
+template<typename T, typename Allocator = std::allocator<T>>
+class Container { ... };
 ```
-docs/
-  book.toml
-  src/
-    SUMMARY.md
-    introduction.md
-    functions/
-      header1.md
-      header2.md
-    types/
-      header1.md
-      header2.md
-    macros/
-      header1.md
+
+### Grouping Functions
+
+```cpp
+/// @group getters Getter Functions
+/// @brief Gets the X coordinate
+int get_x();
+
+/// @group getters
+/// @brief Gets the Y coordinate
+int get_y();
+
+/// @group setters Setter Functions
+/// @brief Sets the X coordinate
+void set_x(int x);
+```
+
+### Synopsis Override
+
+```cpp
+/// @brief Process variadic arguments
+/// @synopsis void process(Args... args)
+template<typename... Args>
+void process(Args&&... args);
+```
+
+### Excluding Entities
+
+```cpp
+/// @exclude
+void internal_helper();  // Not in documentation
+
+/// @exclude return
+/// @brief Factory function
+/// @return Implementation-defined type
+auto create_widget();  // Return type shown as "/* see below */"
 ```
 
 ## CLI Reference
@@ -173,6 +269,26 @@ OPTIONS:
 
 SUBCOMMANDS:
     preprocessor    Run as mdbook preprocessor (reads JSON from stdin)
+```
+
+## Output Structure
+
+When generating mdbook format:
+
+```
+docs/
+  book.toml
+  src/
+    SUMMARY.md
+    introduction.md
+    functions/
+      header1.md
+      header2.md
+    types/
+      header1.md
+      header2.md
+    macros/
+      header1.md
 ```
 
 ## Requirements
