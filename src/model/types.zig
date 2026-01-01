@@ -63,6 +63,18 @@ pub const DocString = struct {
     tparams: []const ParamDoc = &[_]ParamDoc{},
     /// Return value documentation (@retval)
     retvals: []const RetvalDoc = &[_]RetvalDoc{},
+    /// Effects description (@effects) - C++ standard style
+    effects: ?[]const u8 = null,
+    /// Requirements description (@requires) - semantic preconditions
+    requires: ?[]const u8 = null,
+    /// Complexity description (@complexity) - time/space complexity
+    complexity: ?[]const u8 = null,
+    /// Remarks (@remarks) - additional remarks
+    remarks: []const []const u8 = &[_][]const u8{},
+    /// Thread safety (@sync, @threadsafety)
+    sync: ?[]const u8 = null,
+    /// Class invariants (@invariant)
+    invariants: []const []const u8 = &[_][]const u8{},
 };
 
 /// Function parameter

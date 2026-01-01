@@ -146,7 +146,7 @@ pub const DocstringExtractor = struct {
         var current_pos: usize = 0;
 
         // Tags that end the details section (without prefix - we check both @ and \)
-        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post" };
+        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures" };
 
         while (lines.next()) |line| {
             const line_start = current_pos;
@@ -231,6 +231,8 @@ pub const DocstringExtractor = struct {
         var examples: std.ArrayList([]const u8) = .empty;
         var preconditions: std.ArrayList([]const u8) = .empty;
         var postconditions: std.ArrayList([]const u8) = .empty;
+        var remarks: std.ArrayList([]const u8) = .empty;
+        var invariants: std.ArrayList([]const u8) = .empty;
 
         var lines = std.mem.splitScalar(u8, raw, '\n');
         while (lines.next()) |line| {
@@ -346,6 +348,36 @@ pub const DocstringExtractor = struct {
             else if (startsWithCommand(trimmed, "post ")) {
                 try postconditions.append(self.allocator, trimmed[6..]);
             }
+            // @ensures (alias for @post)
+            else if (startsWithCommand(trimmed, "ensures ")) {
+                try postconditions.append(self.allocator, trimmed[9..]);
+            }
+            // @effects - C++ standard style
+            else if (startsWithCommand(trimmed, "effects ")) {
+                doc.effects = trimmed[9..];
+            }
+            // @requires - semantic preconditions (different from C++20 requires)
+            else if (startsWithCommand(trimmed, "requires ")) {
+                doc.requires = trimmed[10..];
+            }
+            // @complexity - time/space complexity
+            else if (startsWithCommand(trimmed, "complexity ")) {
+                doc.complexity = trimmed[12..];
+            }
+            // @remarks - additional remarks
+            else if (startsWithCommand(trimmed, "remarks ")) {
+                try remarks.append(self.allocator, trimmed[9..]);
+            }
+            // @sync or @threadsafety - thread safety
+            else if (startsWithCommand(trimmed, "sync ")) {
+                doc.sync = trimmed[6..];
+            } else if (startsWithCommand(trimmed, "threadsafety ")) {
+                doc.sync = trimmed[14..];
+            }
+            // @invariant - class invariants
+            else if (startsWithCommand(trimmed, "invariant ")) {
+                try invariants.append(self.allocator, trimmed[11..]);
+            }
         }
 
         // Convert ArrayLists to slices
@@ -378,6 +410,12 @@ pub const DocstringExtractor = struct {
         }
         if (postconditions.items.len > 0) {
             doc.postconditions = try postconditions.toOwnedSlice(self.allocator);
+        }
+        if (remarks.items.len > 0) {
+            doc.remarks = try remarks.toOwnedSlice(self.allocator);
+        }
+        if (invariants.items.len > 0) {
+            doc.invariants = try invariants.toOwnedSlice(self.allocator);
         }
 
         return doc;

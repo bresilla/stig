@@ -484,6 +484,49 @@ pub const MarkdownGenerator = struct {
                 try self.writeString("\n");
             }
 
+            // C++ Standard-style sections
+            if (doc.effects) |effects| {
+                try self.writeString("*Effects:* ");
+                try self.writeString(effects);
+                try self.writeString("\n\n");
+            }
+
+            if (doc.requires) |requires| {
+                try self.writeString("*Requires:* ");
+                try self.writeString(requires);
+                try self.writeString("\n\n");
+            }
+
+            if (doc.complexity) |complexity| {
+                try self.writeString("*Complexity:* ");
+                try self.writeString(complexity);
+                try self.writeString("\n\n");
+            }
+
+            if (doc.remarks.len > 0) {
+                for (doc.remarks) |remark| {
+                    try self.writeString("*Remarks:* ");
+                    try self.writeString(remark);
+                    try self.writeString("\n\n");
+                }
+            }
+
+            if (doc.sync) |sync| {
+                try self.writeString("*Thread Safety:* ");
+                try self.writeString(sync);
+                try self.writeString("\n\n");
+            }
+
+            if (doc.invariants.len > 0) {
+                try self.writeString("**Invariants:**\n");
+                for (doc.invariants) |inv| {
+                    try self.writeString("- ");
+                    try self.writeString(inv);
+                    try self.writeString("\n");
+                }
+                try self.writeString("\n");
+            }
+
             if (doc.deprecated) |dep| {
                 try self.writeString("> **Deprecated:** ");
                 try self.writeString(dep);
@@ -926,6 +969,17 @@ pub const MarkdownGenerator = struct {
                     try self.writeSymbolLink(ref);
                 }
                 try self.writeString("\n\n");
+            }
+
+            // Invariants (class invariants from @invariant tags)
+            if (doc.invariants.len > 0) {
+                try self.writeString("**Invariants:**\n");
+                for (doc.invariants) |inv| {
+                    try self.writeString("- ");
+                    try self.writeString(inv);
+                    try self.writeString("\n");
+                }
+                try self.writeString("\n");
             }
         }
 
