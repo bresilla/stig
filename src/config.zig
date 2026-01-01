@@ -117,6 +117,11 @@ const TomlConfig = struct {
     generate_intro: ?bool = null,
     grouping: ?[]const u8 = null,
     authors: ?[]const []const u8 = null,
+    // Filtering options
+    blacklist_namespace: ?[]const []const u8 = null,
+    blacklist_pattern: ?[]const []const u8 = null,
+    extract_private: ?bool = null,
+    extract_protected: ?bool = null,
 
     // [stig] section
     stig: ?StigSection = null,
@@ -139,6 +144,11 @@ const TomlConfig = struct {
         generate_intro: ?bool = null,
         grouping: ?[]const u8 = null,
         authors: ?[]const []const u8 = null,
+        // Filtering options
+        blacklist_namespace: ?[]const []const u8 = null,
+        blacklist_pattern: ?[]const []const u8 = null,
+        extract_private: ?bool = null,
+        extract_protected: ?bool = null,
     };
 
     const BookSection = struct {
@@ -299,6 +309,34 @@ pub const ConfigLoader = struct {
             if (s.authors) |a| config.authors = a;
         } else if (tc.book) |b| {
             if (b.authors) |a| config.authors = a;
+        }
+
+        // Blacklist namespace: root > stinger
+        if (tc.blacklist_namespace) |bl| {
+            config.blacklist_namespace = bl;
+        } else if (tc.stig) |s| {
+            if (s.blacklist_namespace) |bl| config.blacklist_namespace = bl;
+        }
+
+        // Blacklist pattern: root > stinger
+        if (tc.blacklist_pattern) |bl| {
+            config.blacklist_pattern = bl;
+        } else if (tc.stig) |s| {
+            if (s.blacklist_pattern) |bl| config.blacklist_pattern = bl;
+        }
+
+        // Extract private: root > stinger
+        if (tc.extract_private) |ep| {
+            config.extract_private = ep;
+        } else if (tc.stig) |s| {
+            if (s.extract_private) |ep| config.extract_private = ep;
+        }
+
+        // Extract protected: root > stinger
+        if (tc.extract_protected) |ep| {
+            config.extract_protected = ep;
+        } else if (tc.stig) |s| {
+            if (s.extract_protected) |ep| config.extract_protected = ep;
         }
 
         return config;
