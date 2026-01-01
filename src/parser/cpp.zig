@@ -509,15 +509,19 @@ pub const CppParser = struct {
         var fields: std.ArrayList(types.ClassField) = .empty;
         var nested_classes: std.ArrayList(types.Class) = .empty;
         var nested_enums: std.ArrayList(types.Enum) = .empty;
+        var base_classes: std.ArrayList(types.BaseClass) = .empty;
         var current_access: types.AccessSpecifier = .private;
 
-        // First pass: find the class name
+        // First pass: find the class name and base classes
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {
-                if (std.mem.eql(u8, child.kind(), "type_identifier")) {
+                const child_kind = child.kind();
+                if (std.mem.eql(u8, child_kind, "type_identifier")) {
                     name = self.getNodeText(child);
-                    break;
+                } else if (std.mem.eql(u8, child_kind, "base_class_clause")) {
+                    // Extract base classes from the base_class_clause
+                    try self.extractBaseClasses(child, &base_classes);
                 }
             }
         }
@@ -549,6 +553,7 @@ pub const CppParser = struct {
             .fields = try fields.toOwnedSlice(self.allocator),
             .nested_classes = try nested_classes.toOwnedSlice(self.allocator),
             .nested_enums = try nested_enums.toOwnedSlice(self.allocator),
+            .base_classes = try base_classes.toOwnedSlice(self.allocator),
             .namespace = namespace,
             .location = types.SourceLocation{
                 .file = filename,
@@ -556,6 +561,64 @@ pub const CppParser = struct {
                 .column = start.column + 1,
             },
         };
+    }
+
+    /// Extracts base classes from a base_class_clause node
+    /// Handles: class Derived : public Base, protected Other, private virtual Third { }
+    fn extractBaseClasses(self: *Self, node: ts.Node, base_classes: *std.ArrayList(types.BaseClass)) !void {
+        // The base_class_clause structure:
+        // - ":" punctuation
+        // - access_specifier (text: "public", "protected", "private")
+        // - optional "virtual" keyword
+        // - type_identifier/qualified_identifier/template_type
+        // - "," for additional base classes
+
+        var i: u32 = 0;
+        var current_access: types.AccessSpecifier = .private;
+        var current_virtual: bool = false;
+
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                const child_text = self.getNodeText(child);
+
+                // Skip punctuation
+                if (std.mem.eql(u8, child_kind, ":") or std.mem.eql(u8, child_kind, ",")) {
+                    // Reset for next base class after comma
+                    if (std.mem.eql(u8, child_kind, ",")) {
+                        current_access = .private;
+                        current_virtual = false;
+                    }
+                    continue;
+                }
+
+                // Check for access specifier (node kind is "access_specifier", text is the actual specifier)
+                if (std.mem.eql(u8, child_kind, "access_specifier")) {
+                    if (std.mem.eql(u8, child_text, "public")) {
+                        current_access = .public;
+                    } else if (std.mem.eql(u8, child_text, "protected")) {
+                        current_access = .protected;
+                    } else if (std.mem.eql(u8, child_text, "private")) {
+                        current_access = .private;
+                    }
+                } else if (std.mem.eql(u8, child_kind, "virtual")) {
+                    current_virtual = true;
+                } else if (std.mem.eql(u8, child_kind, "type_identifier") or
+                    std.mem.eql(u8, child_kind, "qualified_identifier") or
+                    std.mem.eql(u8, child_kind, "template_type"))
+                {
+                    // Found a base class type
+                    try base_classes.append(self.allocator, types.BaseClass{
+                        .name = child_text,
+                        .access = current_access,
+                        .is_virtual = current_virtual,
+                    });
+                    // Reset for next base class
+                    current_access = .private;
+                    current_virtual = false;
+                }
+            }
+        }
     }
 
     /// Extracts a class definition with an optional docstring override (for templates)

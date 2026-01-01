@@ -768,11 +768,49 @@ pub const MarkdownGenerator = struct {
         try self.formatTemplateParamList(class.template_params);
         try self.writeString("`\n\n");
 
+        // Inheritance line (before code block)
+        if (class.base_classes.len > 0) {
+            try self.writeString("**Inherits from:** ");
+            for (class.base_classes, 0..) |base, i| {
+                if (i > 0) try self.writeString(", ");
+                try self.writeTypeWithLink(base.name);
+                try self.writeString(" (");
+                switch (base.access) {
+                    .public => try self.writeString("public"),
+                    .protected => try self.writeString("protected"),
+                    .private => try self.writeString("private"),
+                }
+                if (base.is_virtual) {
+                    try self.writeString(" virtual");
+                }
+                try self.writeString(")");
+            }
+            try self.writeString("\n\n");
+        }
+
         // Code block with class definition
         try self.writeString("```cpp\n");
         try self.formatTemplateSignature(class.template_params);
         try self.writeString("class ");
         try self.writeString(class.name);
+
+        // Add base classes to synopsis
+        if (class.base_classes.len > 0) {
+            try self.writeString(" : ");
+            for (class.base_classes, 0..) |base, i| {
+                if (i > 0) try self.writeString(", ");
+                switch (base.access) {
+                    .public => try self.writeString("public "),
+                    .protected => try self.writeString("protected "),
+                    .private => try self.writeString("private "),
+                }
+                if (base.is_virtual) {
+                    try self.writeString("virtual ");
+                }
+                try self.writeString(base.name);
+            }
+        }
+
         try self.writeString(" {\n");
 
         // Group fields and methods by access specifier

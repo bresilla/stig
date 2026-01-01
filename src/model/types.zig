@@ -132,6 +132,16 @@ pub const AccessSpecifier = enum {
     private,
 };
 
+/// Base class information for inheritance
+pub const BaseClass = struct {
+    /// Name of the base class (may include template parameters)
+    name: []const u8,
+    /// Access specifier for inheritance (public, protected, private)
+    access: AccessSpecifier = .private,
+    /// Whether this is virtual inheritance
+    is_virtual: bool = false,
+};
+
 /// Kind of method (regular, constructor, destructor, etc.)
 pub const MethodKind = enum {
     regular,
@@ -185,7 +195,7 @@ pub const Class = struct {
     doc: ?DocString = null,
     location: SourceLocation = .{ .file = "", .line = 0, .column = 0 },
     namespace: ?[]const u8 = null,
-    base_classes: []const []const u8 = &[_][]const u8{},
+    base_classes: []const BaseClass = &[_]BaseClass{},
     template_params: []const TemplateParam = &[_]TemplateParam{},
     requires_clause: ?[]const u8 = null,
 };
