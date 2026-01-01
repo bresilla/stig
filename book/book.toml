@@ -1,0 +1,10 @@
+[book]
+title = "Stig Documentation"
+authors = ["bresilla"]
+language = "en"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/bresilla/stig"
