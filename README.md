@@ -159,33 +159,31 @@ generate_intro = true
 grouping = "by_header"  # by_header, by_prefix, or flat
 authors = ["Your Name"]
 
-# Filtering
+# Filtering (actively applied)
 blacklist_namespace = ["detail", "internal", "impl"]
 blacklist_pattern = ["*_impl", "test_*"]
 extract_private = false
 extract_protected = true
+```
 
-# Output customization
-[output_options]
-show_source_location = true
-show_access_specifiers = true
-code_language = "cpp"
-synopsis_style = "full"  # full, compact, minimal
+### Filtering Behavior
 
-# Custom section names (for localization)
-[section_names]
-parameters = "Parameters"
-returns = "Returns"
-throws = "Throws"
+**Namespace Blacklist:** Entities in blacklisted namespaces are automatically excluded from documentation. By default, `detail`, `internal`, and `impl` namespaces are blacklisted.
 
-# External documentation links
-[[external_docs]]
-prefix = "std::"
-url_template = "https://en.cppreference.com/w/cpp/$$"
+```cpp
+namespace mylib::detail {
+    void helper();  // Excluded from docs
+}
 
-[[external_docs]]
-prefix = "boost::"
-url_template = "https://www.boost.org/doc/libs/release/libs/$$/"
+namespace mylib {
+    void public_api();  // Included in docs
+}
+```
+
+**Pattern Blacklist:** Entity names matching glob patterns (with `*` and `?` wildcards) are excluded.
+
+```toml
+blacklist_pattern = ["*_impl", "test_*", "internal_*"]
 ```
 
 ## Documentation Examples
@@ -247,6 +245,29 @@ void internal_helper();  // Not in documentation
 /// @brief Factory function
 /// @return Implementation-defined type
 auto create_widget();  // Return type shown as "/* see below */"
+```
+
+### File-Level Documentation
+
+```cpp
+/**
+ * @file geometry.hpp
+ * @brief Core geometry types and algorithms.
+ * @author John Doe
+ * @since 1.0.0
+ */
+```
+
+### Output Sections
+
+```cpp
+/// @output_section Getter Functions
+int get_x();
+int get_y();
+
+/// @output_section Setter Functions
+void set_x(int x);
+void set_y(int y);
 ```
 
 ## CLI Reference
