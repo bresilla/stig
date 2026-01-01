@@ -107,6 +107,8 @@ pub const DocString = struct {
     unique_name_override: ?[]const u8 = null,
     /// Module membership (@module) - logical module organization
     module: ?[]const u8 = null,
+    /// Entity target (@entity) - remote documentation for another entity
+    entity_target: ?[]const u8 = null,
 };
 
 /// Function parameter
