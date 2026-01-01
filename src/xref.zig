@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("model/types.zig");
+const config = @import("config.zig");
 
 /// Type of symbol for cross-referencing
 pub const SymbolKind = enum {
@@ -27,6 +28,8 @@ pub const SymbolInfo = struct {
 pub const SymbolTable = struct {
     allocator: std.mem.Allocator,
     symbols: std.StringHashMap(SymbolInfo),
+    /// External documentation link configuration
+    external_docs: []const config.ExternalDocLink = &[_]config.ExternalDocLink{},
 
     const Self = @This();
 
@@ -34,6 +37,15 @@ pub const SymbolTable = struct {
         return Self{
             .allocator = allocator,
             .symbols = std.StringHashMap(SymbolInfo).init(allocator),
+        };
+    }
+
+    /// Initialize with external documentation configuration
+    pub fn initWithConfig(allocator: std.mem.Allocator, cfg: config.Config) Self {
+        return Self{
+            .allocator = allocator,
+            .symbols = std.StringHashMap(SymbolInfo).init(allocator),
+            .external_docs = cfg.external_docs,
         };
     }
 
@@ -181,6 +193,73 @@ pub const SymbolTable = struct {
         // For now, return a simple anchor link
         // In mdbook format, this would be more complex with relative paths
         return info.anchor;
+    }
+
+    /// Checks if a symbol matches an external documentation prefix
+    /// Returns the external URL if matched, null otherwise
+    pub fn getExternalLink(self: *Self, symbol_name: []const u8) ?[]const u8 {
+        for (self.external_docs) |ext| {
+            if (std.mem.startsWith(u8, symbol_name, ext.prefix)) {
+                // Extract the symbol part after the prefix
+                const symbol_part = symbol_name[ext.prefix.len..];
+
+                // Replace $$ in template with symbol part
+                // For now, just return the template (full implementation would allocate)
+                _ = symbol_part;
+                return ext.url_template;
+            }
+        }
+        return null;
+    }
+
+    /// Generates an external documentation URL for a symbol
+    /// Allocates memory for the result
+    pub fn generateExternalUrl(self: *Self, symbol_name: []const u8) !?[]const u8 {
+        for (self.external_docs) |ext| {
+            if (std.mem.startsWith(u8, symbol_name, ext.prefix)) {
+                const symbol_part = symbol_name[ext.prefix.len..];
+
+                // Count how many $$ replacements we need
+                var replacement_count: usize = 0;
+                var i: usize = 0;
+                while (i < ext.url_template.len - 1) : (i += 1) {
+                    if (ext.url_template[i] == '$' and ext.url_template[i + 1] == '$') {
+                        replacement_count += 1;
+                        i += 1;
+                    }
+                }
+
+                if (replacement_count == 0) {
+                    // No replacements, just return the template
+                    return try self.allocator.dupe(u8, ext.url_template);
+                }
+
+                // Calculate result size
+                const result_len = ext.url_template.len - (replacement_count * 2) + (replacement_count * symbol_part.len);
+                var result = try self.allocator.alloc(u8, result_len);
+
+                // Build result with replacements
+                var src_idx: usize = 0;
+                var dst_idx: usize = 0;
+                while (src_idx < ext.url_template.len) {
+                    if (src_idx < ext.url_template.len - 1 and
+                        ext.url_template[src_idx] == '$' and
+                        ext.url_template[src_idx + 1] == '$')
+                    {
+                        @memcpy(result[dst_idx..][0..symbol_part.len], symbol_part);
+                        dst_idx += symbol_part.len;
+                        src_idx += 2;
+                    } else {
+                        result[dst_idx] = ext.url_template[src_idx];
+                        dst_idx += 1;
+                        src_idx += 1;
+                    }
+                }
+
+                return result;
+            }
+        }
+        return null;
     }
 
     pub const OutputFormat = enum {

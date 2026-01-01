@@ -1,6 +1,14 @@
 const std = @import("std");
 const toml = @import("toml");
 
+/// External documentation link configuration
+pub const ExternalDocLink = struct {
+    /// Prefix to match (e.g., "std::")
+    prefix: []const u8,
+    /// URL template with $$ for symbol substitution
+    url_template: []const u8,
+};
+
 /// Stig configuration loaded from stig.toml
 pub const Config = struct {
     /// Project title for documentation
@@ -19,6 +27,11 @@ pub const Config = struct {
     grouping: Grouping = .by_header,
     /// Authors list
     authors: []const []const u8 = &[_][]const u8{},
+    /// External documentation links
+    external_docs: []const ExternalDocLink = &[_]ExternalDocLink{
+        // Default: std:: links to cppreference
+        .{ .prefix = "std::", .url_template = "https://en.cppreference.com/w/cpp/$$" },
+    },
 
     pub const Format = enum {
         markdown,
