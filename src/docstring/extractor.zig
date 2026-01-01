@@ -146,7 +146,7 @@ pub const DocstringExtractor = struct {
         var current_pos: usize = 0;
 
         // Tags that end the details section (without prefix - we check both @ and \)
-        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude" };
+        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude", "synopsis" };
 
         while (lines.next()) |line| {
             const line_start = current_pos;
@@ -397,6 +397,10 @@ pub const DocstringExtractor = struct {
                     // Unknown argument, treat as full exclude
                     doc.exclude = .full;
                 }
+            }
+            // @synopsis - override the displayed synopsis
+            else if (startsWithCommand(trimmed, "synopsis ")) {
+                doc.synopsis_override = trimmed[10..];
             }
         }
 

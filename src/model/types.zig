@@ -91,6 +91,8 @@ pub const DocString = struct {
     ingroup: ?[]const u8 = null,
     /// Exclusion mode (@exclude)
     exclude: ExcludeMode = .none,
+    /// Synopsis override (@synopsis) - replaces generated synopsis
+    synopsis_override: ?[]const u8 = null,
 };
 
 /// Function parameter

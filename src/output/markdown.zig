@@ -495,18 +495,8 @@ pub const MarkdownGenerator = struct {
         return result;
     }
 
-    fn writeFunction(self: *Self, func: types.Function) !void {
-        // Check for return_type exclusion mode
-        const hide_return_type = func.doc != null and func.doc.?.exclude == .return_type;
-
-        // Function name as heading (with template params if present)
-        try self.writeString("### `");
-        try self.writeString(func.name);
-        try self.formatTemplateParamList(func.template_params);
-        try self.writeString("`\n\n");
-
-        // Code block with signature (including attributes)
-        try self.writeString("```cpp\n");
+    /// Writes the generated function signature (used when no @synopsis override)
+    fn writeGeneratedSignature(self: *Self, func: types.Function, hide_return_type: bool) !void {
         // Write attributes on their own line if present
         if (func.attributes.len > 0) {
             try self.writeAttributeList(func.attributes);
@@ -530,6 +520,34 @@ pub const MarkdownGenerator = struct {
             try self.writeString(param.name);
         }
         try self.writeString(");\n```\n\n");
+    }
+
+    fn writeFunction(self: *Self, func: types.Function) !void {
+        // Check for return_type exclusion mode
+        const hide_return_type = func.doc != null and func.doc.?.exclude == .return_type;
+
+        // Function name as heading (with template params if present)
+        try self.writeString("### `");
+        try self.writeString(func.name);
+        try self.formatTemplateParamList(func.template_params);
+        try self.writeString("`\n\n");
+
+        // Code block with signature (including attributes)
+        try self.writeString("```cpp\n");
+
+        // Check for synopsis override - use custom synopsis instead of generated one
+        if (func.doc) |doc| {
+            if (doc.synopsis_override) |synopsis| {
+                try self.writeString(synopsis);
+                try self.writeString("\n```\n\n");
+            } else {
+                // Generate normal signature
+                try self.writeGeneratedSignature(func, hide_return_type);
+            }
+        } else {
+            // No doc, generate normal signature
+            try self.writeGeneratedSignature(func, hide_return_type);
+        }
 
         // Render attributes as documentation section
         try self.writeAttributesSection(func.attributes);

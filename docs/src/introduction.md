@@ -10,4 +10,4 @@ This documentation covers:
 
 ## Source Files
 
-- `/tmp/test_exclude.hpp`
+- `test/fixtures/test_synopsis.hpp`
