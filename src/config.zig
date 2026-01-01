@@ -32,6 +32,10 @@ pub const Config = struct {
         // Default: std:: links to cppreference
         .{ .prefix = "std::", .url_template = "https://en.cppreference.com/w/cpp/$$" },
     },
+    /// Blacklisted namespace names (entities in these namespaces are excluded)
+    blacklist_namespace: []const []const u8 = &[_][]const u8{ "detail", "internal", "impl" },
+    /// Blacklisted entity name patterns (glob patterns: * and ?)
+    blacklist_pattern: []const []const u8 = &[_][]const u8{},
 
     pub const Format = enum {
         markdown,
