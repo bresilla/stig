@@ -110,6 +110,22 @@ pub const MarkdownGenerator = struct {
             }
         }
 
+        // Type Aliases section (C++)
+        if (module.type_aliases.len > 0) {
+            try self.writeString("## Type Aliases\n\n");
+            for (module.type_aliases) |alias| {
+                try self.writeTypeAlias(alias);
+            }
+        }
+
+        // Concepts section (C++20)
+        if (module.concepts.len > 0) {
+            try self.writeString("## Concepts\n\n");
+            for (module.concepts) |concept| {
+                try self.writeConcept(concept);
+            }
+        }
+
         return self.buffer.items;
     }
 
@@ -385,6 +401,41 @@ pub const MarkdownGenerator = struct {
                 try self.writeString(") ");
                 try self.writeString(ret);
                 try self.writeString("\n\n");
+            }
+
+            // Exceptions
+            if (doc.exceptions.len > 0) {
+                try self.writeString("**Throws:**\n");
+                for (doc.exceptions) |exc| {
+                    try self.writeString("- `");
+                    try self.writeString(exc.exception_type);
+                    try self.writeString("`: ");
+                    try self.writeString(exc.description);
+                    try self.writeString("\n");
+                }
+                try self.writeString("\n");
+            }
+
+            // Preconditions
+            if (doc.preconditions.len > 0) {
+                try self.writeString("**Preconditions:**\n");
+                for (doc.preconditions) |pre| {
+                    try self.writeString("- ");
+                    try self.writeString(pre);
+                    try self.writeString("\n");
+                }
+                try self.writeString("\n");
+            }
+
+            // Postconditions
+            if (doc.postconditions.len > 0) {
+                try self.writeString("**Postconditions:**\n");
+                for (doc.postconditions) |post| {
+                    try self.writeString("- ");
+                    try self.writeString(post);
+                    try self.writeString("\n");
+                }
+                try self.writeString("\n");
             }
 
             if (doc.deprecated) |dep| {
@@ -798,6 +849,159 @@ pub const MarkdownGenerator = struct {
             try self.writeString("\n");
         }
 
+        // Nested Types section
+        if (class.nested_classes.len > 0 or class.nested_enums.len > 0) {
+            try self.writeString("**Nested Types:**\n\n");
+
+            // Nested classes
+            if (class.nested_classes.len > 0) {
+                try self.writeString("*Classes:*\n");
+                for (class.nested_classes) |nested_class| {
+                    try self.writeString("- `");
+                    try self.writeString(nested_class.name);
+                    try self.writeString("`");
+                    if (nested_class.doc) |doc| {
+                        if (doc.brief) |brief| {
+                            try self.writeString(" - ");
+                            try self.writeString(brief);
+                        }
+                    }
+                    try self.writeString("\n");
+                }
+                try self.writeString("\n");
+            }
+
+            // Nested enums
+            if (class.nested_enums.len > 0) {
+                try self.writeString("*Enums:*\n");
+                for (class.nested_enums) |nested_enum| {
+                    try self.writeString("- `");
+                    try self.writeString(nested_enum.name);
+                    try self.writeString("`");
+                    // Show enum values
+                    if (nested_enum.values.len > 0) {
+                        try self.writeString(" - ");
+                        for (nested_enum.values, 0..) |val, i| {
+                            if (i > 0) try self.writeString(", ");
+                            try self.writeString(val.name);
+                        }
+                    }
+                    try self.writeString("\n");
+                }
+                try self.writeString("\n");
+            }
+        }
+
+        try self.writeString("---\n\n");
+    }
+
+    fn writeConcept(self: *Self, concept: types.Concept) !void {
+        // Concept name as heading
+        try self.writeString("### `");
+        try self.writeString(concept.name);
+        // Add template parameters to heading if present
+        if (concept.template_params.len > 0) {
+            try self.writeString("&lt;");
+            for (concept.template_params, 0..) |param, i| {
+                if (i > 0) try self.writeString(", ");
+                try self.writeString(param.name);
+            }
+            try self.writeString("&gt;");
+        }
+        try self.writeString("`\n\n");
+
+        // Code block with definition
+        try self.writeString("```cpp\n");
+        // Add template declaration
+        if (concept.template_params.len > 0) {
+            try self.writeString("template<");
+            for (concept.template_params, 0..) |param, i| {
+                if (i > 0) try self.writeString(", ");
+                try self.writeString(param.kind);
+                try self.writeString(" ");
+                try self.writeString(param.name);
+            }
+            try self.writeString(">\n");
+        }
+        try self.writeString("concept ");
+        try self.writeString(concept.name);
+        try self.writeString(" = ");
+        try self.writeString(concept.constraint);
+        try self.writeString(";\n```\n\n");
+
+        // Documentation
+        if (concept.docstring) |doc| {
+            if (doc.brief) |brief| {
+                try self.writeString(brief);
+                try self.writeString("\n\n");
+            }
+
+            if (doc.details) |details| {
+                try self.writeString(details);
+                try self.writeString("\n\n");
+            }
+
+            // See also
+            if (doc.see_also.len > 0) {
+                try self.writeString("**See also:** ");
+                for (doc.see_also, 0..) |ref, i| {
+                    if (i > 0) try self.writeString(", ");
+                    try self.writeSymbolLink(ref);
+                }
+                try self.writeString("\n\n");
+            }
+        }
+
+        try self.writeString("---\n\n");
+    }
+
+    fn writeTypeAlias(self: *Self, alias: types.TypeAlias) !void {
+        // Type alias name as heading
+        try self.writeString("### `");
+        try self.writeString(alias.name);
+        // Add template parameters to heading if present
+        if (alias.template_params.len > 0) {
+            try self.writeString("&lt;");
+            for (alias.template_params, 0..) |param, i| {
+                if (i > 0) try self.writeString(", ");
+                try self.writeString(param.name);
+            }
+            try self.writeString("&gt;");
+        }
+        try self.writeString("`\n\n");
+
+        // Code block with definition
+        try self.writeString("```cpp\n");
+        // Add template declaration if present
+        if (alias.template_params.len > 0) {
+            try self.writeString("template<");
+            for (alias.template_params, 0..) |param, i| {
+                if (i > 0) try self.writeString(", ");
+                try self.writeString(param.kind);
+                try self.writeString(" ");
+                try self.writeString(param.name);
+            }
+            try self.writeString(">\n");
+        }
+        try self.writeString("using ");
+        try self.writeString(alias.name);
+        try self.writeString(" = ");
+        try self.writeString(alias.underlying_type);
+        try self.writeString(";\n```\n\n");
+
+        // "Alias for" line with link to underlying type
+        try self.writeString("Alias for ");
+        try self.writeTypeWithLink(alias.underlying_type);
+        try self.writeString("\n\n");
+
+        // Documentation
+        if (alias.docstring) |doc| {
+            if (doc.brief) |brief| {
+                try self.writeString(brief);
+                try self.writeString("\n\n");
+            }
+        }
+
         try self.writeString("---\n\n");
     }
 };
@@ -1161,4 +1365,60 @@ test "struct fields show type with cross-reference links" {
 
     // Should contain a link to Color in the fields section
     try std.testing.expect(std.mem.indexOf(u8, output, "`fill_color` ([Color](#color))") != null);
+}
+
+test "generate markdown for type alias" {
+    var gen = MarkdownGenerator.init(std.testing.allocator);
+    defer gen.deinit();
+
+    const module = types.Module{
+        .name = "test.hpp",
+        .functions = &[_]types.Function{},
+        .structs = &[_]types.Struct{},
+        .enums = &[_]types.Enum{},
+        .typedefs = &[_]types.Typedef{},
+        .type_aliases = &[_]types.TypeAlias{
+            .{
+                .name = "Vec2f",
+                .underlying_type = "Vec2<f32>",
+            },
+        },
+    };
+
+    const output = try gen.generate(module);
+    try std.testing.expect(std.mem.indexOf(u8, output, "## Type Aliases") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "### `Vec2f`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "using Vec2f = Vec2<f32>;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Alias for Vec2&lt;f32&gt;") != null);
+}
+
+test "generate markdown for type alias with cross-reference" {
+    var symbol_table = xref.SymbolTable.init(std.testing.allocator);
+    defer symbol_table.deinit();
+
+    // Register the underlying type
+    try symbol_table.register("Vec2", .class_type, "vector.hpp");
+
+    var gen = MarkdownGenerator.init(std.testing.allocator);
+    defer gen.deinit();
+    gen.setSymbolTable(&symbol_table);
+
+    const module = types.Module{
+        .name = "test.hpp",
+        .functions = &[_]types.Function{},
+        .structs = &[_]types.Struct{},
+        .enums = &[_]types.Enum{},
+        .typedefs = &[_]types.Typedef{},
+        .type_aliases = &[_]types.TypeAlias{
+            .{
+                .name = "Vec2f",
+                .underlying_type = "Vec2<f32>",
+            },
+        },
+    };
+
+    const output = try gen.generate(module);
+
+    // Should contain a link to Vec2 in the "Alias for" line
+    try std.testing.expect(std.mem.indexOf(u8, output, "[Vec2](#vec2)&lt;f32&gt;") != null);
 }

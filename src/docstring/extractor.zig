@@ -121,7 +121,7 @@ pub const DocstringExtractor = struct {
         var current_pos: usize = 0;
 
         // Tags that end the details section
-        const end_tags = [_][]const u8{ "@param", "@return", "@returns", "@deprecated", "@note", "@warning", "@see", "@sa", "@since", "@author", "@version", "@example" };
+        const end_tags = [_][]const u8{ "@param", "@return", "@returns", "@deprecated", "@note", "@warning", "@see", "@sa", "@since", "@author", "@version", "@example", "@pre", "@post" };
 
         while (lines.next()) |line| {
             const line_start = current_pos;
@@ -197,10 +197,13 @@ pub const DocstringExtractor = struct {
 
         // Parse all Doxygen tags
         var params: std.ArrayList(types.ParamDoc) = .empty;
+        var exceptions: std.ArrayList(types.ExceptionDoc) = .empty;
         var notes: std.ArrayList([]const u8) = .empty;
         var warnings: std.ArrayList([]const u8) = .empty;
         var see_also: std.ArrayList([]const u8) = .empty;
         var examples: std.ArrayList([]const u8) = .empty;
+        var preconditions: std.ArrayList([]const u8) = .empty;
+        var postconditions: std.ArrayList([]const u8) = .empty;
 
         var lines = std.mem.splitScalar(u8, raw, '\n');
         while (lines.next()) |line| {
@@ -263,11 +266,38 @@ pub const DocstringExtractor = struct {
             else if (std.mem.startsWith(u8, trimmed, "@version ")) {
                 doc.version = trimmed[9..];
             }
+            // @throw / @exception
+            else if (std.mem.startsWith(u8, trimmed, "@throw ") or
+                std.mem.startsWith(u8, trimmed, "@exception "))
+            {
+                const prefix_len: usize = if (std.mem.startsWith(u8, trimmed, "@exception ")) 11 else 7;
+                const rest = trimmed[prefix_len..];
+                var parts = std.mem.splitScalar(u8, rest, ' ');
+                if (parts.next()) |exception_type| {
+                    const desc_start = prefix_len + exception_type.len + 1;
+                    const description = if (desc_start < trimmed.len) trimmed[desc_start..] else "";
+                    try exceptions.append(self.allocator, types.ExceptionDoc{
+                        .exception_type = exception_type,
+                        .description = description,
+                    });
+                }
+            }
+            // @pre (precondition)
+            else if (std.mem.startsWith(u8, trimmed, "@pre ")) {
+                try preconditions.append(self.allocator, trimmed[5..]);
+            }
+            // @post (postcondition)
+            else if (std.mem.startsWith(u8, trimmed, "@post ")) {
+                try postconditions.append(self.allocator, trimmed[6..]);
+            }
         }
 
         // Convert ArrayLists to slices
         if (params.items.len > 0) {
             doc.params = try params.toOwnedSlice(self.allocator);
+        }
+        if (exceptions.items.len > 0) {
+            doc.exceptions = try exceptions.toOwnedSlice(self.allocator);
         }
         if (notes.items.len > 0) {
             doc.notes = try notes.toOwnedSlice(self.allocator);
@@ -280,6 +310,12 @@ pub const DocstringExtractor = struct {
         }
         if (examples.items.len > 0) {
             doc.examples = try examples.toOwnedSlice(self.allocator);
+        }
+        if (preconditions.items.len > 0) {
+            doc.preconditions = try preconditions.toOwnedSlice(self.allocator);
+        }
+        if (postconditions.items.len > 0) {
+            doc.postconditions = try postconditions.toOwnedSlice(self.allocator);
         }
 
         return doc;
@@ -589,4 +625,47 @@ test "extract details with code block" {
     // Details should contain the code block
     try std.testing.expect(std.mem.indexOf(u8, doc.details.?, "```c") != null);
     try std.testing.expect(std.mem.indexOf(u8, doc.details.?, "int x = 42") != null);
+}
+
+test "parse throw tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Validates input.
+        \\* @throw std::invalid_argument if input is negative
+    );
+    defer std.testing.allocator.free(doc.exceptions);
+
+    try std.testing.expectEqualStrings("Validates input.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 1), doc.exceptions.len);
+    try std.testing.expectEqualStrings("std::invalid_argument", doc.exceptions[0].exception_type);
+    try std.testing.expectEqualStrings("if input is negative", doc.exceptions[0].description);
+}
+
+test "parse exception tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Accesses element.
+        \\* @exception std::out_of_range if index exceeds bounds
+    );
+    defer std.testing.allocator.free(doc.exceptions);
+
+    try std.testing.expectEqualStrings("Accesses element.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 1), doc.exceptions.len);
+    try std.testing.expectEqualStrings("std::out_of_range", doc.exceptions[0].exception_type);
+    try std.testing.expectEqualStrings("if index exceeds bounds", doc.exceptions[0].description);
+}
+
+test "parse multiple exception tags" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Processes data.
+        \\* @throw std::invalid_argument if input is negative
+        \\* @exception std::out_of_range if index exceeds bounds
+    );
+    defer std.testing.allocator.free(doc.exceptions);
+
+    try std.testing.expectEqualStrings("Processes data.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 2), doc.exceptions.len);
+    try std.testing.expectEqualStrings("std::invalid_argument", doc.exceptions[0].exception_type);
+    try std.testing.expectEqualStrings("std::out_of_range", doc.exceptions[1].exception_type);
 }

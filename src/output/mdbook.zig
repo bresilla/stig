@@ -186,6 +186,7 @@ pub const MdbookGenerator = struct {
         var has_typedefs = false;
         var has_macros = false;
         var has_classes = false;
+        var has_concepts = false;
 
         for (modules) |module| {
             if (module.functions.len > 0) has_functions = true;
@@ -194,6 +195,7 @@ pub const MdbookGenerator = struct {
             if (module.typedefs.len > 0) has_typedefs = true;
             if (module.macros.len > 0) has_macros = true;
             if (module.classes.len > 0) has_classes = true;
+            if (module.concepts.len > 0) has_concepts = true;
         }
 
         // Functions section
@@ -212,11 +214,11 @@ pub const MdbookGenerator = struct {
             try content.appendSlice(self.allocator, "\n");
         }
 
-        // Types section (includes structs, enums, typedefs, and classes)
-        if (has_structs or has_enums or has_typedefs or has_classes) {
+        // Types section (includes structs, enums, typedefs, classes, and concepts)
+        if (has_structs or has_enums or has_typedefs or has_classes or has_concepts) {
             try content.appendSlice(self.allocator, "# Types\n\n");
             for (modules) |module| {
-                if (module.structs.len > 0 or module.enums.len > 0 or module.typedefs.len > 0 or module.classes.len > 0) {
+                if (module.structs.len > 0 or module.enums.len > 0 or module.typedefs.len > 0 or module.classes.len > 0 or module.concepts.len > 0) {
                     const basename = self.getBasename(module.name);
                     try content.appendSlice(self.allocator, "- [");
                     try content.appendSlice(self.allocator, basename);
@@ -340,8 +342,8 @@ pub const MdbookGenerator = struct {
                 try file.writeAll(markdown);
             }
 
-            // Generate types page if there are types (structs, enums, typedefs, or classes)
-            if (module.structs.len > 0 or module.enums.len > 0 or module.typedefs.len > 0 or module.classes.len > 0) {
+            // Generate types page if there are types (structs, enums, typedefs, classes, or concepts)
+            if (module.structs.len > 0 or module.enums.len > 0 or module.typedefs.len > 0 or module.classes.len > 0 or module.concepts.len > 0) {
                 const types_module = types.Module{
                     .name = module.name,
                     .functions = &[_]types.Function{},
@@ -349,6 +351,7 @@ pub const MdbookGenerator = struct {
                     .enums = module.enums,
                     .typedefs = module.typedefs,
                     .classes = module.classes,
+                    .concepts = module.concepts,
                 };
 
                 // Set current file context for relative link generation

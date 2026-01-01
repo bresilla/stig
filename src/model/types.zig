@@ -13,6 +13,12 @@ pub const ParamDoc = struct {
     description: []const u8,
 };
 
+/// Documentation for an exception/throw
+pub const ExceptionDoc = struct {
+    exception_type: []const u8,
+    description: []const u8,
+};
+
 /// Parsed docstring with structured information
 pub const DocString = struct {
     /// Raw docstring text
@@ -23,6 +29,8 @@ pub const DocString = struct {
     details: ?[]const u8 = null,
     /// Parameter documentation
     params: []const ParamDoc = &[_]ParamDoc{},
+    /// Exception/throw documentation
+    exceptions: []const ExceptionDoc = &[_]ExceptionDoc{},
     /// Return value documentation
     returns: ?[]const u8 = null,
     /// Example code blocks
@@ -35,6 +43,10 @@ pub const DocString = struct {
     deprecated: ?[]const u8 = null,
     /// See-also references (@see, @sa)
     see_also: []const []const u8 = &[_][]const u8{},
+    /// Preconditions (@pre)
+    preconditions: []const []const u8 = &[_][]const u8{},
+    /// Postconditions (@post)
+    postconditions: []const []const u8 = &[_][]const u8{},
     /// Since version (@since)
     since: ?[]const u8 = null,
     /// Author information (@author)
@@ -59,6 +71,9 @@ pub const Function = struct {
     location: SourceLocation,
     is_static: bool = false,
     is_inline: bool = false,
+    is_constexpr: bool = false,
+    is_consteval: bool = false,
+    is_noexcept: bool = false,
 };
 
 /// Struct field
@@ -115,6 +130,17 @@ pub const AccessSpecifier = enum {
     private,
 };
 
+/// Kind of method (regular, constructor, destructor, etc.)
+pub const MethodKind = enum {
+    regular,
+    constructor,
+    copy_constructor,
+    move_constructor,
+    destructor,
+    operator_overload,
+    conversion_operator,
+};
+
 /// C++ class method
 pub const Method = struct {
     name: []const u8,
@@ -122,11 +148,21 @@ pub const Method = struct {
     params: []const Parameter,
     doc: ?DocString = null,
     access: AccessSpecifier = .private,
+    kind: MethodKind = .regular,
+    /// For operator_overload: the operator symbol (e.g., "+", "[]", "==")
+    /// For conversion_operator: the target type (e.g., "bool", "int", "std::string")
+    operator_symbol: ?[]const u8 = null,
     is_virtual: bool = false,
     is_static: bool = false,
     is_const: bool = false,
     is_override: bool = false,
     is_pure_virtual: bool = false,
+    is_defaulted: bool = false,
+    is_deleted: bool = false,
+    is_constexpr: bool = false,
+    is_consteval: bool = false,
+    is_explicit: bool = false,
+    is_noexcept: bool = false,
 };
 
 /// C++ class field with access specifier
@@ -142,6 +178,8 @@ pub const Class = struct {
     name: []const u8,
     methods: []const Method = &[_]Method{},
     fields: []const ClassField = &[_]ClassField{},
+    nested_classes: []const Class = &[_]Class{},
+    nested_enums: []const Enum = &[_]Enum{},
     doc: ?DocString = null,
     location: SourceLocation = .{ .file = "", .line = 0, .column = 0 },
     namespace: ?[]const u8 = null,
@@ -152,6 +190,30 @@ pub const Class = struct {
 pub const Namespace = struct {
     name: []const u8,
     doc: ?DocString = null,
+};
+
+/// C++ type alias (using Name = Type)
+pub const TypeAlias = struct {
+    name: []const u8,
+    underlying_type: []const u8,
+    docstring: ?DocString = null,
+    namespace: ?[]const u8 = null,
+    template_params: []const TemplateParam = &[_]TemplateParam{},
+};
+
+/// Template parameter (typename T, class U, etc.)
+pub const TemplateParam = struct {
+    name: []const u8,
+    kind: []const u8 = "typename", // "typename", "class", or a type for non-type params
+};
+
+/// C++20 concept definition
+pub const Concept = struct {
+    name: []const u8,
+    constraint: []const u8, // The constraint expression
+    template_params: []const TemplateParam = &[_]TemplateParam{},
+    docstring: ?DocString = null,
+    namespace: ?[]const u8 = null,
 };
 
 /// A parsed module (typically one header file)
@@ -165,4 +227,6 @@ pub const Module = struct {
     // C++ specific
     classes: []const Class = &[_]Class{},
     namespaces: []const Namespace = &[_]Namespace{},
+    type_aliases: []const TypeAlias = &[_]TypeAlias{},
+    concepts: []const Concept = &[_]Concept{},
 };
