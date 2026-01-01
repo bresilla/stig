@@ -1,12 +1,15 @@
 # Summary
 
-- [Introduction](./introduction.md)
+[Introduction](./introduction.md)
 
-# Functions
+# User Guide
 
-- [test_code_blocks.h](./functions/test_code_blocks.md)
+- [Getting Started](./getting-started.md)
+- [Configuration](./configuration.md)
+- [CLI Reference](./cli.md)
 
-# Reference
+# Features
 
-- [Symbol Index](./INDEX.md)
-
+- [Docstring Formats](./docstrings.md)
+- [C++ Support](./cpp-support.md)
+- [mdbook Integration](./mdbook.md)

@@ -11,3 +11,7 @@ zig-cache/
 docs/book/
 test/complex/book
 test/complex/docs
+
+# Test output directories
+test_*/
+.stig-cache/
