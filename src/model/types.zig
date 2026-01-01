@@ -209,6 +209,22 @@ pub const ClassField = struct {
     access: AccessSpecifier = .private,
 };
 
+/// Kind of friend declaration
+pub const FriendKind = enum {
+    class,
+    function,
+};
+
+/// C++ friend declaration
+pub const Friend = struct {
+    /// Kind of friend (class or function)
+    kind: FriendKind,
+    /// Name of the friend class or function
+    name: []const u8,
+    /// Full signature for friend functions (e.g., "void helper(Foo&)")
+    signature: ?[]const u8 = null,
+};
+
 /// C++ class definition
 pub const Class = struct {
     name: []const u8,
@@ -223,6 +239,7 @@ pub const Class = struct {
     template_params: []const TemplateParam = &[_]TemplateParam{},
     requires_clause: ?[]const u8 = null,
     attributes: []const Attribute = &[_]Attribute{},
+    friends: []const Friend = &[_]Friend{},
 };
 
 /// C++ namespace

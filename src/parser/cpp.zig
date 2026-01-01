@@ -511,6 +511,7 @@ pub const CppParser = struct {
         var nested_enums: std.ArrayList(types.Enum) = .empty;
         var base_classes: std.ArrayList(types.BaseClass) = .empty;
         var attributes: std.ArrayList(types.Attribute) = .empty;
+        var friends: std.ArrayList(types.Friend) = .empty;
         var current_access: types.AccessSpecifier = .private;
 
         // First pass: find the class name, base classes, and attributes
@@ -535,7 +536,7 @@ pub const CppParser = struct {
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {
                 if (std.mem.eql(u8, child.kind(), "field_declaration_list")) {
-                    try self.extractClassBody(child, &methods, &fields, &nested_classes, &nested_enums, &current_access, name, filename, namespace);
+                    try self.extractClassBody(child, &methods, &fields, &nested_classes, &nested_enums, &friends, &current_access, name, filename, namespace);
                 }
             }
         }
@@ -565,6 +566,7 @@ pub const CppParser = struct {
                 .column = start.column + 1,
             },
             .attributes = try attributes.toOwnedSlice(self.allocator),
+            .friends = try friends.toOwnedSlice(self.allocator),
         };
     }
 
@@ -646,6 +648,7 @@ pub const CppParser = struct {
         fields: *std.ArrayList(types.ClassField),
         nested_classes: *std.ArrayList(types.Class),
         nested_enums: *std.ArrayList(types.Enum),
+        friends: *std.ArrayList(types.Friend),
         current_access: *types.AccessSpecifier,
         class_name: ?[]const u8,
         filename: []const u8,
@@ -664,6 +667,11 @@ pub const CppParser = struct {
                         current_access.* = .protected;
                     } else if (std.mem.indexOf(u8, spec_text, "private") != null) {
                         current_access.* = .private;
+                    }
+                } else if (std.mem.eql(u8, child_kind, "friend_declaration")) {
+                    // Friend class or function declaration
+                    if (self.extractFriend(child)) |friend| {
+                        try friends.append(self.allocator, friend);
                     }
                 } else if (std.mem.eql(u8, child_kind, "function_definition") or
                     std.mem.eql(u8, child_kind, "declaration"))
@@ -706,6 +714,92 @@ pub const CppParser = struct {
                 }
             }
         }
+    }
+
+    /// Extracts a friend declaration (friend class or friend function)
+    fn extractFriend(self: *Self, node: ts.Node) ?types.Friend {
+        const full_text = self.getNodeText(node);
+
+        // Check if it's a friend class or friend function
+        var is_class = false;
+        var friend_name: ?[]const u8 = null;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "class") or std.mem.eql(u8, child_kind, "struct")) {
+                    is_class = true;
+                } else if (std.mem.eql(u8, child_kind, "type_identifier")) {
+                    // Friend class name (only if we've seen "class" or "struct")
+                    if (is_class and friend_name == null) {
+                        friend_name = self.getNodeText(child);
+                    }
+                } else if (std.mem.eql(u8, child_kind, "function_declarator")) {
+                    // Friend function - extract the function name
+                    friend_name = self.extractFunctionNameFromDeclarator(child);
+                } else if (std.mem.eql(u8, child_kind, "declaration")) {
+                    // Friend function might be wrapped in a declaration node
+                    friend_name = self.extractFunctionNameFromDeclaration(child);
+                }
+            }
+        }
+
+        if (friend_name == null) return null;
+
+        // Extract signature for friend functions (everything after "friend ")
+        var signature: ?[]const u8 = null;
+        if (!is_class) {
+            if (std.mem.indexOf(u8, full_text, "friend ")) |friend_pos| {
+                var sig = full_text[friend_pos + 7 ..];
+                // Remove trailing semicolon
+                if (std.mem.endsWith(u8, sig, ";")) {
+                    sig = sig[0 .. sig.len - 1];
+                }
+                sig = std.mem.trim(u8, sig, " \t\n\r");
+                if (sig.len > 0) {
+                    signature = sig;
+                }
+            }
+        }
+
+        return types.Friend{
+            .kind = if (is_class) .class else .function,
+            .name = friend_name.?,
+            .signature = signature,
+        };
+    }
+
+    /// Extracts function name from a function_declarator node
+    fn extractFunctionNameFromDeclarator(self: *Self, node: ts.Node) ?[]const u8 {
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                if (std.mem.eql(u8, child_kind, "identifier") or
+                    std.mem.eql(u8, child_kind, "operator_name") or
+                    std.mem.eql(u8, child_kind, "qualified_identifier"))
+                {
+                    return self.getNodeText(child);
+                }
+            }
+        }
+        return null;
+    }
+
+    /// Extracts function name from a declaration node (for friend functions)
+    fn extractFunctionNameFromDeclaration(self: *Self, node: ts.Node) ?[]const u8 {
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                if (std.mem.eql(u8, child_kind, "function_declarator")) {
+                    return self.extractFunctionNameFromDeclarator(child);
+                }
+            }
+        }
+        return null;
     }
 
     /// Extracts a method

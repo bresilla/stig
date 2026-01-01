@@ -1165,6 +1165,56 @@ pub const MarkdownGenerator = struct {
             }
         }
 
+        // Friends section
+        if (class.friends.len > 0) {
+            try self.writeString("**Friends:**\n\n");
+
+            // Friend classes
+            var has_friend_classes = false;
+            for (class.friends) |friend| {
+                if (friend.kind == .class) {
+                    has_friend_classes = true;
+                    break;
+                }
+            }
+            if (has_friend_classes) {
+                try self.writeString("*Classes:*\n");
+                for (class.friends) |friend| {
+                    if (friend.kind == .class) {
+                        try self.writeString("- ");
+                        try self.writeTypeWithLink(friend.name);
+                        try self.writeString("\n");
+                    }
+                }
+                try self.writeString("\n");
+            }
+
+            // Friend functions
+            var has_friend_functions = false;
+            for (class.friends) |friend| {
+                if (friend.kind == .function) {
+                    has_friend_functions = true;
+                    break;
+                }
+            }
+            if (has_friend_functions) {
+                try self.writeString("*Functions:*\n");
+                for (class.friends) |friend| {
+                    if (friend.kind == .function) {
+                        try self.writeString("- `");
+                        if (friend.signature) |sig| {
+                            try self.writeString(sig);
+                        } else {
+                            try self.writeString(friend.name);
+                            try self.writeString("()");
+                        }
+                        try self.writeString("`\n");
+                    }
+                }
+                try self.writeString("\n");
+            }
+        }
+
         try self.writeString("---\n\n");
     }
 

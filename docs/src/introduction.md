@@ -6,8 +6,7 @@ Welcome to the API documentation.
 
 This documentation covers:
 
-- **3** functions
 
 ## Source Files
 
-- `/tmp/test_attributes.hpp`
+- `/tmp/test_friends2.hpp`
