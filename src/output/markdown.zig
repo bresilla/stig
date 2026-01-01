@@ -702,8 +702,20 @@ pub const MarkdownGenerator = struct {
             }
         }
 
-        // Write ungrouped functions
+        // Write ungrouped functions with output_section support
+        var current_section: ?[]const u8 = null;
         for (ungrouped.items) |func| {
+            // Check for output_section change
+            const func_section = if (func.doc) |doc| doc.output_section else null;
+            if (func_section) |section| {
+                if (current_section == null or !std.mem.eql(u8, current_section.?, section)) {
+                    // New section - write section header
+                    try self.writeString("### ");
+                    try self.writeString(section);
+                    try self.writeString("\n\n");
+                    current_section = section;
+                }
+            }
             try self.writeFunction(func);
         }
     }
