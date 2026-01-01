@@ -6,8 +6,8 @@ Welcome to the API documentation.
 
 This documentation covers:
 
-- **1** functions
+- **3** functions
 
 ## Source Files
 
-- `/tmp/test_std_sections.hpp`
+- `/tmp/test_attributes.hpp`

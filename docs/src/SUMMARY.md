@@ -4,9 +4,9 @@
 
 # Functions
 
-- [test_std_sections.hpp](./functions/test_std_sections.md)
+- [test_attributes.hpp](./functions/test_attributes.md)
 
 # Types
 
-- [test_std_sections.hpp](./types/test_std_sections.md)
+- [test_attributes.hpp](./types/test_attributes.md)
 

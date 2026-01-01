@@ -510,9 +510,10 @@ pub const CppParser = struct {
         var nested_classes: std.ArrayList(types.Class) = .empty;
         var nested_enums: std.ArrayList(types.Enum) = .empty;
         var base_classes: std.ArrayList(types.BaseClass) = .empty;
+        var attributes: std.ArrayList(types.Attribute) = .empty;
         var current_access: types.AccessSpecifier = .private;
 
-        // First pass: find the class name and base classes
+        // First pass: find the class name, base classes, and attributes
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {
@@ -522,6 +523,9 @@ pub const CppParser = struct {
                 } else if (std.mem.eql(u8, child_kind, "base_class_clause")) {
                     // Extract base classes from the base_class_clause
                     try self.extractBaseClasses(child, &base_classes);
+                } else if (std.mem.eql(u8, child_kind, "attribute_declaration")) {
+                    // Parse C++ attributes like [[nodiscard]], [[deprecated("msg")]]
+                    try self.parseAttributeDeclaration(child, &attributes);
                 }
             }
         }
@@ -560,6 +564,7 @@ pub const CppParser = struct {
                 .line = start.row + 1,
                 .column = start.column + 1,
             },
+            .attributes = try attributes.toOwnedSlice(self.allocator),
         };
     }
 
@@ -708,6 +713,7 @@ pub const CppParser = struct {
         var name: ?[]const u8 = null;
         var return_type: ?[]const u8 = null;
         var params: std.ArrayList(types.Parameter) = .empty;
+        var attributes: std.ArrayList(types.Attribute) = .empty;
         var is_virtual = false;
         var is_static = false;
         var is_const = false;
@@ -730,6 +736,9 @@ pub const CppParser = struct {
                     is_virtual = true;
                 } else if (std.mem.eql(u8, child_kind, "explicit_function_specifier")) {
                     is_explicit = true;
+                } else if (std.mem.eql(u8, child_kind, "attribute_declaration")) {
+                    // Parse C++ attributes like [[nodiscard]], [[deprecated("msg")]]
+                    try self.parseAttributeDeclaration(child, &attributes);
                 } else if (std.mem.eql(u8, child_kind, "storage_class_specifier")) {
                     const spec_text = self.getNodeText(child);
                     if (std.mem.eql(u8, spec_text, "static")) {
@@ -823,6 +832,7 @@ pub const CppParser = struct {
             .is_consteval = is_consteval,
             .is_explicit = is_explicit,
             .is_noexcept = is_noexcept,
+            .attributes = try attributes.toOwnedSlice(self.allocator),
         };
     }
 
@@ -1014,6 +1024,7 @@ pub const CppParser = struct {
         var is_constexpr = false;
         var is_consteval = false;
         var is_noexcept = false;
+        var attributes: std.ArrayList(types.Attribute) = .empty;
 
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
@@ -1026,6 +1037,9 @@ pub const CppParser = struct {
                     } else if (std.mem.eql(u8, spec_text, "consteval")) {
                         is_consteval = true;
                     }
+                } else if (std.mem.eql(u8, child_kind, "attribute_declaration")) {
+                    // Parse C++ attributes like [[nodiscard]], [[deprecated("msg")]]
+                    try self.parseAttributeDeclaration(child, &attributes);
                 } else if (std.mem.eql(u8, child_kind, "type_identifier") or
                     std.mem.eql(u8, child_kind, "primitive_type"))
                 {
@@ -1072,6 +1086,7 @@ pub const CppParser = struct {
             .is_constexpr = is_constexpr,
             .is_consteval = is_consteval,
             .is_noexcept = is_noexcept,
+            .attributes = try attributes.toOwnedSlice(self.allocator),
         };
     }
 
@@ -1395,6 +1410,100 @@ pub const CppParser = struct {
                 .column = start.column + 1,
             },
         };
+    }
+
+    /// Extracts C++ attributes from attribute_declaration nodes
+    /// Handles [[nodiscard]], [[deprecated("reason")]], [[maybe_unused]], etc.
+    fn extractAttributes(self: *Self, node: ts.Node) ![]const types.Attribute {
+        var attrs: std.ArrayList(types.Attribute) = .empty;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "attribute_declaration")) {
+                    // Parse the attribute_declaration node
+                    try self.parseAttributeDeclaration(child, &attrs);
+                }
+            }
+        }
+
+        return try attrs.toOwnedSlice(self.allocator);
+    }
+
+    /// Parses a single attribute_declaration node (e.g., [[nodiscard]] or [[deprecated("msg")]])
+    fn parseAttributeDeclaration(self: *Self, node: ts.Node, attrs: *std.ArrayList(types.Attribute)) !void {
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "attribute")) {
+                    // Parse individual attribute
+                    if (self.parseAttribute(child)) |attr| {
+                        try attrs.append(self.allocator, attr);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Parses a single attribute node (e.g., nodiscard or deprecated("msg"))
+    fn parseAttribute(self: *Self, node: ts.Node) ?types.Attribute {
+        var name: ?[]const u8 = null;
+        var argument: ?[]const u8 = null;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "identifier")) {
+                    if (name == null) {
+                        name = self.getNodeText(child);
+                    }
+                } else if (std.mem.eql(u8, child_kind, "argument_list")) {
+                    // Extract the argument from the argument list
+                    argument = self.extractAttributeArgument(child);
+                }
+            }
+        }
+
+        // If no children found, the attribute text might be directly in the node
+        if (name == null) {
+            const text = self.getNodeText(node);
+            if (text.len > 0) {
+                name = text;
+            }
+        }
+
+        if (name == null) return null;
+
+        return types.Attribute{
+            .name = name.?,
+            .argument = argument,
+        };
+    }
+
+    /// Extracts the argument from an attribute argument list
+    fn extractAttributeArgument(self: *Self, node: ts.Node) ?[]const u8 {
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "string_literal")) {
+                    // Get the string content without quotes
+                    const text = self.getNodeText(child);
+                    if (text.len >= 2 and text[0] == '"' and text[text.len - 1] == '"') {
+                        return text[1 .. text.len - 1];
+                    }
+                    return text;
+                }
+            }
+        }
+        return null;
     }
 
     /// Extracts a type alias (using Name = Type)

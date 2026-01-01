@@ -321,6 +321,70 @@ pub const MarkdownGenerator = struct {
         try self.writeString("&gt;");
     }
 
+    /// Writes C++ attributes in [[attr]] format for code blocks
+    /// e.g., [[nodiscard]] [[deprecated("msg")]]
+    fn writeAttributeList(self: *Self, attributes: []const types.Attribute) !void {
+        for (attributes, 0..) |attr, i| {
+            if (i > 0) try self.writeString(" ");
+            try self.writeString("[[");
+            try self.writeString(attr.name);
+            if (attr.argument) |arg| {
+                try self.writeString("(\"");
+                try self.writeString(arg);
+                try self.writeString("\")");
+            }
+            try self.writeString("]]");
+        }
+    }
+
+    /// Writes attributes as a documentation section
+    /// Handles special attributes like [[deprecated]] and [[nodiscard]]
+    fn writeAttributesSection(self: *Self, attributes: []const types.Attribute) !void {
+        if (attributes.len == 0) return;
+
+        // Check for deprecated attribute - render as deprecation notice
+        for (attributes) |attr| {
+            if (std.mem.eql(u8, attr.name, "deprecated")) {
+                try self.writeString("> **Deprecated**");
+                if (attr.argument) |arg| {
+                    try self.writeString(": ");
+                    try self.writeString(arg);
+                }
+                try self.writeString("\n\n");
+            }
+        }
+
+        // Collect other attributes for display
+        var has_other_attrs = false;
+        for (attributes) |attr| {
+            if (!std.mem.eql(u8, attr.name, "deprecated")) {
+                has_other_attrs = true;
+                break;
+            }
+        }
+
+        if (has_other_attrs) {
+            try self.writeString("**Attributes:** ");
+            var first = true;
+            for (attributes) |attr| {
+                if (std.mem.eql(u8, attr.name, "deprecated")) continue;
+
+                if (!first) try self.writeString(", ");
+                first = false;
+
+                try self.writeString("`[[");
+                try self.writeString(attr.name);
+                if (attr.argument) |arg| {
+                    try self.writeString("(\"");
+                    try self.writeString(arg);
+                    try self.writeString("\")");
+                }
+                try self.writeString("]]`");
+            }
+            try self.writeString("\n\n");
+        }
+    }
+
     /// Gets the basename of a file path without extension
     /// e.g., "include/spatial/geometry.hpp" -> "geometry"
     fn getFileBasename(self: *Self, path: []const u8) []const u8 {
@@ -347,8 +411,13 @@ pub const MarkdownGenerator = struct {
         try self.formatTemplateParamList(func.template_params);
         try self.writeString("`\n\n");
 
-        // Code block with signature
+        // Code block with signature (including attributes)
         try self.writeString("```cpp\n");
+        // Write attributes on their own line if present
+        if (func.attributes.len > 0) {
+            try self.writeAttributeList(func.attributes);
+            try self.writeString("\n");
+        }
         try self.formatTemplateSignature(func.template_params);
         try self.writeString(func.return_type);
         try self.writeString(" ");
@@ -362,6 +431,9 @@ pub const MarkdownGenerator = struct {
             try self.writeString(param.name);
         }
         try self.writeString(");\n```\n\n");
+
+        // Render attributes as documentation section
+        try self.writeAttributesSection(func.attributes);
 
         // Documentation
         if (func.doc) |doc| {
@@ -862,6 +934,11 @@ pub const MarkdownGenerator = struct {
 
         // Code block with class definition
         try self.writeString("```cpp\n");
+        // Write attributes on their own line if present
+        if (class.attributes.len > 0) {
+            try self.writeAttributeList(class.attributes);
+            try self.writeString("\n");
+        }
         try self.formatTemplateSignature(class.template_params);
         try self.writeString("class ");
         try self.writeString(class.name);
@@ -948,6 +1025,9 @@ pub const MarkdownGenerator = struct {
         }
 
         try self.writeString("};\n```\n\n");
+
+        // Render attributes as documentation section
+        try self.writeAttributesSection(class.attributes);
 
         // Documentation
         if (class.doc) |doc| {

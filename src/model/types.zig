@@ -98,6 +98,7 @@ pub const Function = struct {
     is_noexcept: bool = false,
     template_params: []const TemplateParam = &[_]TemplateParam{},
     requires_clause: ?[]const u8 = null,
+    attributes: []const Attribute = &[_]Attribute{},
 };
 
 /// Struct field
@@ -197,6 +198,7 @@ pub const Method = struct {
     is_consteval: bool = false,
     is_explicit: bool = false,
     is_noexcept: bool = false,
+    attributes: []const Attribute = &[_]Attribute{},
 };
 
 /// C++ class field with access specifier
@@ -220,6 +222,7 @@ pub const Class = struct {
     base_classes: []const BaseClass = &[_]BaseClass{},
     template_params: []const TemplateParam = &[_]TemplateParam{},
     requires_clause: ?[]const u8 = null,
+    attributes: []const Attribute = &[_]Attribute{},
 };
 
 /// C++ namespace
@@ -241,6 +244,14 @@ pub const TypeAlias = struct {
 pub const TemplateParam = struct {
     name: []const u8,
     kind: []const u8 = "typename", // "typename", "class", or a type for non-type params
+};
+
+/// C++ attribute (e.g., [[nodiscard]], [[deprecated("reason")]])
+pub const Attribute = struct {
+    /// Attribute name (e.g., "nodiscard", "deprecated", "maybe_unused")
+    name: []const u8,
+    /// Optional argument (e.g., "Use the return value" for [[nodiscard("...")]])
+    argument: ?[]const u8 = null,
 };
 
 /// C++20 concept definition
