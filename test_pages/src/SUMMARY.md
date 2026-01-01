@@ -4,7 +4,7 @@
 
 # Functions
 
-- [test_page.h](./functions/test_page.md)
+- [test_page.hpp](./functions/test_page.md)
 
 # Reference
 

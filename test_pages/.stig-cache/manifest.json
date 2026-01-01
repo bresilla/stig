@@ -2,9 +2,9 @@
   "version": 1,
   "stig_version": "0.1.0",
   "entries": {
-    "test_page.h": {
+    "test_page.hpp": {
       "hash": "4a4c8d5351b8674c7626c539cfcf7657ff9aa0a0125e902667d3660f133e2075",
-      "mtime": 1767283470378072580,
+      "mtime": 1767283849170676223,
       "size": 749
     }
   }

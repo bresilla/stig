@@ -263,8 +263,33 @@ pub const MdbookGenerator = struct {
             try content.appendSlice(self.allocator, "\n");
         }
 
-        // TODO: Custom Pages section (non-mainpage pages from @page)
-        // Requires module.pages field to be added to Module struct
+        // Custom Pages section (non-mainpage pages from @page)
+        var has_pages = false;
+        for (modules) |module| {
+            for (module.pages) |page| {
+                if (!page.is_mainpage) {
+                    has_pages = true;
+                    break;
+                }
+            }
+            if (has_pages) break;
+        }
+
+        if (has_pages) {
+            try content.appendSlice(self.allocator, "# Pages\n\n");
+            for (modules) |module| {
+                for (module.pages) |page| {
+                    if (!page.is_mainpage) {
+                        try content.appendSlice(self.allocator, "- [");
+                        try content.appendSlice(self.allocator, page.title);
+                        try content.appendSlice(self.allocator, "](./pages/");
+                        try content.appendSlice(self.allocator, page.id);
+                        try content.appendSlice(self.allocator, ".md)\n");
+                    }
+                }
+            }
+            try content.appendSlice(self.allocator, "\n");
+        }
 
         // Reference section for Symbol Index
         try content.appendSlice(self.allocator, "# Reference\n\n");

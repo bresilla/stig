@@ -1,13 +1,9 @@
-# API Reference
+# MyLibrary Documentation
 
-Welcome to the API documentation.
+Welcome to MyLibrary!
 
-## Overview
+This library provides high-performance geometry operations.
 
-This documentation covers:
+## Getting Started
 
-- **1** functions
-
-## Source Files
-
-- `test_page.h`
+See the examples page for usage.
