@@ -44,6 +44,48 @@ pub const Config = struct {
     section_names: SectionNames = .{},
     /// Output customization options
     output_options: OutputOptions = .{},
+    /// Coverage analysis options
+    coverage: CoverageOptions = .{},
+    /// Lint options
+    lint: LintOptions = .{},
+
+    /// Lint options for --lint mode
+    pub const LintOptions = struct {
+        /// Enable linting
+        enabled: bool = true,
+        /// Treat warnings as errors
+        treat_warnings_as_errors: bool = false,
+        /// Maximum length for @brief descriptions
+        max_brief_length: u32 = 80,
+        /// Require @brief for all documented entities
+        require_brief: bool = true,
+        /// Require @param for all parameters
+        require_param_docs: bool = true,
+        /// Require @return for non-void functions
+        require_return_docs: bool = true,
+        /// Require @tparam for template parameters
+        require_tparam_docs: bool = true,
+        /// Check cross-references (@see, @copydoc)
+        check_cross_references: bool = true,
+        /// Require period at end of @brief
+        require_brief_period: bool = false,
+        /// Patterns to exclude from linting
+        exclude_patterns: []const []const u8 = &[_][]const u8{},
+    };
+
+    /// Coverage analysis options for --coverage mode
+    pub const CoverageOptions = struct {
+        /// Minimum coverage percentage threshold (0-100)
+        min_coverage: u8 = 80,
+        /// Patterns to exclude from coverage analysis (glob patterns)
+        exclude_patterns: []const []const u8 = &[_][]const u8{},
+        /// Require @param documentation for all parameters
+        require_param_docs: bool = true,
+        /// Require @return documentation for non-void functions
+        require_return_docs: bool = true,
+        /// Require @tparam documentation for template parameters
+        require_tparam_docs: bool = true,
+    };
 
     /// Output formatting options
     pub const OutputOptions = struct {
@@ -93,6 +135,7 @@ pub const Config = struct {
     pub const Format = enum {
         markdown,
         mdbook,
+        json,
     };
 
     pub const Grouping = enum {
@@ -246,6 +289,8 @@ pub const ConfigLoader = struct {
                 config.format = .markdown;
             } else if (std.mem.eql(u8, fmt, "mdbook")) {
                 config.format = .mdbook;
+            } else if (std.mem.eql(u8, fmt, "json")) {
+                config.format = .json;
             }
         }
 

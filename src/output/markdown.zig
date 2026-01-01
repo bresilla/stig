@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("../model/types.zig");
 const xref = @import("../xref.zig");
 const config = @import("../config.zig");
+const snippet_mod = @import("../snippet.zig");
 
 /// Markdown output generator with optional cross-reference support
 pub const MarkdownGenerator = struct {
@@ -15,6 +16,8 @@ pub const MarkdownGenerator = struct {
     output_format: xref.SymbolTable.OutputFormat = .markdown,
     /// Configuration for filtering and output options
     cfg: config.Config = .{},
+    /// Optional snippet extractor for @snippet tags
+    snippet_extractor: ?*snippet_mod.SnippetExtractor = null,
 
     const Self = @This();
 
@@ -61,6 +64,11 @@ pub const MarkdownGenerator = struct {
     /// Sets the configuration
     pub fn setConfig(self: *Self, cfg_: config.Config) void {
         self.cfg = cfg_;
+    }
+
+    /// Sets the snippet extractor for @snippet tag support
+    pub fn setSnippetExtractor(self: *Self, extractor: *snippet_mod.SnippetExtractor) void {
+        self.snippet_extractor = extractor;
     }
 
     /// Checks if an entity name should be excluded based on namespace blacklist
@@ -1025,6 +1033,42 @@ pub const MarkdownGenerator = struct {
                 }
             }
 
+            // Snippets (@snippet external code inclusion)
+            if (doc.snippets.len > 0) {
+                // Only write Examples header if we didn't already have examples
+                if (doc.examples.len == 0) {
+                    try self.writeString("**Examples:**\n\n");
+                }
+                for (doc.snippets) |snippet_ref| {
+                    if (self.snippet_extractor) |extractor| {
+                        if (extractor.extract(snippet_ref)) |code| {
+                            const lang = snippet_mod.SnippetExtractor.getLanguage(snippet_ref);
+                            try self.writeString("```");
+                            try self.writeString(lang);
+                            try self.writeString("\n");
+                            try self.writeString(code);
+                            try self.writeString("\n```\n\n");
+                        } else |err| {
+                            // Show error placeholder
+                            try self.writeString("```\n// Snippet not found: ");
+                            try self.writeString(snippet_ref.file);
+                            try self.writeString(" [");
+                            try self.writeString(snippet_ref.anchor);
+                            try self.writeString("]\n// Error: ");
+                            try self.writeString(snippet_mod.SnippetExtractor.errorDescription(err));
+                            try self.writeString("\n```\n\n");
+                        }
+                    } else {
+                        // No extractor available, show reference
+                        try self.writeString("```\n// See: ");
+                        try self.writeString(snippet_ref.file);
+                        try self.writeString(" [");
+                        try self.writeString(snippet_ref.anchor);
+                        try self.writeString("]\n```\n\n");
+                    }
+                }
+            }
+
             // See also - with cross-reference links
             if (doc.see_also.len > 0) {
                 try self.writeString("**See also:** ");
@@ -1040,6 +1084,28 @@ pub const MarkdownGenerator = struct {
                 try self.writeString("**Since:** ");
                 try self.writeString(since);
                 try self.writeString("\n\n");
+            }
+
+            // TODOs
+            if (doc.todos.len > 0) {
+                try self.writeString("> **TODO:**\n");
+                for (doc.todos) |todo| {
+                    try self.writeString("> - ");
+                    try self.writeString(todo.description);
+                    try self.writeString("\n");
+                }
+                try self.writeString("\n");
+            }
+
+            // Bugs
+            if (doc.bugs.len > 0) {
+                try self.writeString("> **Known Bugs:**\n");
+                for (doc.bugs) |bug| {
+                    try self.writeString("> - ");
+                    try self.writeString(bug.description);
+                    try self.writeString("\n");
+                }
+                try self.writeString("\n");
             }
         }
 
@@ -1288,6 +1354,28 @@ pub const MarkdownGenerator = struct {
                 }
                 try self.writeString("\n\n");
             }
+
+            // TODOs
+            if (doc.todos.len > 0) {
+                try self.writeString("> **TODO:**\n");
+                for (doc.todos) |todo| {
+                    try self.writeString("> - ");
+                    try self.writeString(todo.description);
+                    try self.writeString("\n");
+                }
+                try self.writeString("\n");
+            }
+
+            // Bugs
+            if (doc.bugs.len > 0) {
+                try self.writeString("> **Known Bugs:**\n");
+                for (doc.bugs) |bug| {
+                    try self.writeString("> - ");
+                    try self.writeString(bug.description);
+                    try self.writeString("\n");
+                }
+                try self.writeString("\n");
+            }
         }
 
         try self.writeString("---\n\n");
@@ -1445,6 +1533,28 @@ pub const MarkdownGenerator = struct {
                 for (doc.invariants) |inv| {
                     try self.writeString("- ");
                     try self.writeString(inv);
+                    try self.writeString("\n");
+                }
+                try self.writeString("\n");
+            }
+
+            // TODOs
+            if (doc.todos.len > 0) {
+                try self.writeString("> **TODO:**\n");
+                for (doc.todos) |todo| {
+                    try self.writeString("> - ");
+                    try self.writeString(todo.description);
+                    try self.writeString("\n");
+                }
+                try self.writeString("\n");
+            }
+
+            // Bugs
+            if (doc.bugs.len > 0) {
+                try self.writeString("> **Known Bugs:**\n");
+                for (doc.bugs) |bug| {
+                    try self.writeString("> - ");
+                    try self.writeString(bug.description);
                     try self.writeString("\n");
                 }
                 try self.writeString("\n");

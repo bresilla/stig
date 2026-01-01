@@ -115,6 +115,12 @@ pub const DocString = struct {
     output_section: ?[]const u8 = null,
     /// Copy documentation from another entity (@copydoc)
     copydoc_target: ?[]const u8 = null,
+    /// TODO items (@todo)
+    todos: []const TodoItem = &[_]TodoItem{},
+    /// Known bugs (@bug)
+    bugs: []const BugItem = &[_]BugItem{},
+    /// External code snippets (@snippet)
+    snippets: []const SnippetRef = &[_]SnippetRef{},
 };
 
 /// Function parameter
@@ -330,6 +336,40 @@ pub const Group = struct {
     name: []const u8,
     /// Brief description
     brief: ?[]const u8 = null,
+};
+
+/// TODO item from @todo tag
+pub const TodoItem = struct {
+    /// Description of the TODO
+    description: []const u8,
+    /// Source file where this appears (filled in by caller)
+    source_file: []const u8 = "",
+    /// Line number (filled in by caller)
+    line: u32 = 0,
+    /// Entity name (function/class) where it appears (filled in by caller)
+    entity_name: []const u8 = "",
+};
+
+/// Bug item from @bug tag
+pub const BugItem = struct {
+    /// Description of the bug
+    description: []const u8,
+    /// Source file where this appears (filled in by caller)
+    source_file: []const u8 = "",
+    /// Line number (filled in by caller)
+    line: u32 = 0,
+    /// Entity name (function/class) where it appears (filled in by caller)
+    entity_name: []const u8 = "",
+};
+
+/// Reference to an external code snippet (@snippet)
+pub const SnippetRef = struct {
+    /// Path to the snippet file (e.g., "examples/vector_usage.cpp")
+    file: []const u8,
+    /// Anchor name to extract (e.g., "basic_example")
+    anchor: []const u8,
+    /// Optional language override for syntax highlighting (default inferred from extension)
+    language: ?[]const u8 = null,
 };
 
 /// A parsed module (typically one header file)

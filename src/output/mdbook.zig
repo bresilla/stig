@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("../model/types.zig");
 const MarkdownGenerator = @import("markdown.zig").MarkdownGenerator;
 const xref = @import("../xref.zig");
+const snippet = @import("../snippet.zig");
 
 /// Configuration for mdbook generation
 pub const MdbookConfig = struct {
@@ -35,6 +36,8 @@ pub const MdbookGenerator = struct {
     markdown_gen: MarkdownGenerator,
     /// Symbol table for cross-reference resolution
     symbol_table: xref.SymbolTable,
+    /// Snippet extractor for @snippet tags
+    snippet_extractor: snippet.SnippetExtractor,
 
     const Self = @This();
 
@@ -44,6 +47,7 @@ pub const MdbookGenerator = struct {
             .config = .{},
             .markdown_gen = MarkdownGenerator.init(allocator),
             .symbol_table = xref.SymbolTable.init(allocator),
+            .snippet_extractor = snippet.SnippetExtractor.init(allocator),
         };
     }
 
@@ -53,12 +57,14 @@ pub const MdbookGenerator = struct {
             .config = config,
             .markdown_gen = MarkdownGenerator.init(allocator),
             .symbol_table = xref.SymbolTable.init(allocator),
+            .snippet_extractor = snippet.SnippetExtractor.init(allocator),
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.markdown_gen.deinit();
         self.symbol_table.deinit();
+        self.snippet_extractor.deinit();
     }
 
     /// Generates the complete mdbook structure to the output directory
@@ -71,6 +77,7 @@ pub const MdbookGenerator = struct {
         // Configure markdown generator with cross-reference support
         self.markdown_gen.setSymbolTable(&self.symbol_table);
         self.markdown_gen.setOutputFormat(.mdbook);
+        self.markdown_gen.setSnippetExtractor(&self.snippet_extractor);
 
         // Create output directory structure
         try self.createDirectoryStructure(output_dir);
@@ -92,6 +99,10 @@ pub const MdbookGenerator = struct {
             .by_prefix => try self.generateByPrefix(output_dir, modules),
             .flat => try self.generateFlat(output_dir, modules),
         }
+
+        // Generate TODO.md and BUGS.md if there are any todos or bugs
+        try self.generateTodoPage(output_dir, modules);
+        try self.generateBugsPage(output_dir, modules);
     }
 
     /// Creates the directory structure for mdbook
@@ -242,6 +253,21 @@ pub const MdbookGenerator = struct {
                     try content.appendSlice(self.allocator, self.sanitizeFilename(basename));
                     try content.appendSlice(self.allocator, ".md)\n");
                 }
+            }
+            try content.appendSlice(self.allocator, "\n");
+        }
+
+        // Appendix section for TODOs and Bugs
+        const has_todos = self.hasTodos(modules);
+        const has_bugs = self.hasBugs(modules);
+
+        if (has_todos or has_bugs) {
+            try content.appendSlice(self.allocator, "# Appendix\n\n");
+            if (has_todos) {
+                try content.appendSlice(self.allocator, "- [TODO List](./TODO.md)\n");
+            }
+            if (has_bugs) {
+                try content.appendSlice(self.allocator, "- [Known Bugs](./BUGS.md)\n");
             }
             try content.appendSlice(self.allocator, "\n");
         }
@@ -485,6 +511,352 @@ pub const MdbookGenerator = struct {
             return name[0 .. name.len - 4];
         }
         return name;
+    }
+
+    /// Collected TODO item with filled-in metadata
+    const CollectedTodo = struct {
+        description: []const u8,
+        source_file: []const u8,
+        line: u32,
+        entity_name: []const u8,
+    };
+
+    /// Collected Bug item with filled-in metadata
+    const CollectedBug = struct {
+        description: []const u8,
+        source_file: []const u8,
+        line: u32,
+        entity_name: []const u8,
+    };
+
+    /// Collects all TODO items from all modules
+    fn collectTodos(self: *Self, modules: []const types.Module) ![]CollectedTodo {
+        var all_todos: std.ArrayList(CollectedTodo) = .empty;
+        errdefer all_todos.deinit(self.allocator);
+
+        for (modules) |module| {
+            // Collect from functions
+            for (module.functions) |func| {
+                if (func.doc) |doc| {
+                    for (doc.todos) |todo| {
+                        try all_todos.append(self.allocator, CollectedTodo{
+                            .description = todo.description,
+                            .source_file = module.name,
+                            .line = func.location.line,
+                            .entity_name = func.name,
+                        });
+                    }
+                }
+            }
+            // Collect from classes
+            for (module.classes) |class| {
+                if (class.doc) |doc| {
+                    for (doc.todos) |todo| {
+                        try all_todos.append(self.allocator, CollectedTodo{
+                            .description = todo.description,
+                            .source_file = module.name,
+                            .line = class.location.line,
+                            .entity_name = class.name,
+                        });
+                    }
+                }
+                // Collect from methods
+                for (class.methods) |method| {
+                    if (method.doc) |doc| {
+                        for (doc.todos) |todo| {
+                            try all_todos.append(self.allocator, CollectedTodo{
+                                .description = todo.description,
+                                .source_file = module.name,
+                                .line = 0, // Methods don't have location
+                                .entity_name = method.name,
+                            });
+                        }
+                    }
+                }
+            }
+            // Collect from structs
+            for (module.structs) |s| {
+                if (s.doc) |doc| {
+                    for (doc.todos) |todo| {
+                        try all_todos.append(self.allocator, CollectedTodo{
+                            .description = todo.description,
+                            .source_file = module.name,
+                            .line = s.location.line,
+                            .entity_name = s.name,
+                        });
+                    }
+                }
+            }
+            // Collect from macros
+            for (module.macros) |macro| {
+                if (macro.doc) |doc| {
+                    for (doc.todos) |todo| {
+                        try all_todos.append(self.allocator, CollectedTodo{
+                            .description = todo.description,
+                            .source_file = module.name,
+                            .line = macro.location.line,
+                            .entity_name = macro.name,
+                        });
+                    }
+                }
+            }
+        }
+        return try all_todos.toOwnedSlice(self.allocator);
+    }
+
+    /// Collects all Bug items from all modules
+    fn collectBugs(self: *Self, modules: []const types.Module) ![]CollectedBug {
+        var all_bugs: std.ArrayList(CollectedBug) = .empty;
+        errdefer all_bugs.deinit(self.allocator);
+
+        for (modules) |module| {
+            // Collect from functions
+            for (module.functions) |func| {
+                if (func.doc) |doc| {
+                    for (doc.bugs) |bug| {
+                        try all_bugs.append(self.allocator, CollectedBug{
+                            .description = bug.description,
+                            .source_file = module.name,
+                            .line = func.location.line,
+                            .entity_name = func.name,
+                        });
+                    }
+                }
+            }
+            // Collect from classes
+            for (module.classes) |class| {
+                if (class.doc) |doc| {
+                    for (doc.bugs) |bug| {
+                        try all_bugs.append(self.allocator, CollectedBug{
+                            .description = bug.description,
+                            .source_file = module.name,
+                            .line = class.location.line,
+                            .entity_name = class.name,
+                        });
+                    }
+                }
+                // Collect from methods
+                for (class.methods) |method| {
+                    if (method.doc) |doc| {
+                        for (doc.bugs) |bug| {
+                            try all_bugs.append(self.allocator, CollectedBug{
+                                .description = bug.description,
+                                .source_file = module.name,
+                                .line = 0, // Methods don't have location
+                                .entity_name = method.name,
+                            });
+                        }
+                    }
+                }
+            }
+            // Collect from structs
+            for (module.structs) |s| {
+                if (s.doc) |doc| {
+                    for (doc.bugs) |bug| {
+                        try all_bugs.append(self.allocator, CollectedBug{
+                            .description = bug.description,
+                            .source_file = module.name,
+                            .line = s.location.line,
+                            .entity_name = s.name,
+                        });
+                    }
+                }
+            }
+            // Collect from macros
+            for (module.macros) |macro| {
+                if (macro.doc) |doc| {
+                    for (doc.bugs) |bug| {
+                        try all_bugs.append(self.allocator, CollectedBug{
+                            .description = bug.description,
+                            .source_file = module.name,
+                            .line = macro.location.line,
+                            .entity_name = macro.name,
+                        });
+                    }
+                }
+            }
+        }
+        return try all_bugs.toOwnedSlice(self.allocator);
+    }
+
+    /// Generates TODO.md page
+    fn generateTodoPage(self: *Self, output_dir: []const u8, modules: []const types.Module) !void {
+        const todos = try self.collectTodos(modules);
+        defer self.allocator.free(todos);
+
+        if (todos.len == 0) return;
+
+        var content: std.ArrayList(u8) = .empty;
+        defer content.deinit(self.allocator);
+
+        try content.appendSlice(self.allocator, "# TODO List\n\n");
+        try content.appendSlice(self.allocator, "This page lists all TODO items found in the codebase.\n\n");
+
+        // Group by source file
+        var current_file: []const u8 = "";
+        var current_entity: []const u8 = "";
+
+        for (todos) |todo| {
+            // New file section
+            if (!std.mem.eql(u8, todo.source_file, current_file)) {
+                current_file = todo.source_file;
+                current_entity = "";
+                try content.appendSlice(self.allocator, "## ");
+                try content.appendSlice(self.allocator, self.getBasename(current_file));
+                try content.appendSlice(self.allocator, "\n\n");
+            }
+
+            // New entity section
+            if (!std.mem.eql(u8, todo.entity_name, current_entity)) {
+                current_entity = todo.entity_name;
+                try content.appendSlice(self.allocator, "### `");
+                try content.appendSlice(self.allocator, current_entity);
+                try content.appendSlice(self.allocator, "()`");
+                if (todo.line > 0) {
+                    try content.appendSlice(self.allocator, " (line ");
+                    var line_buf: [16]u8 = undefined;
+                    const line_str = try std.fmt.bufPrint(&line_buf, "{d}", .{todo.line});
+                    try content.appendSlice(self.allocator, line_str);
+                    try content.appendSlice(self.allocator, ")");
+                }
+                try content.appendSlice(self.allocator, "\n\n");
+            }
+
+            // TODO item as checkbox
+            try content.appendSlice(self.allocator, "- [ ] ");
+            try content.appendSlice(self.allocator, todo.description);
+            try content.appendSlice(self.allocator, "\n");
+        }
+
+        // Write file
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "{s}/src/TODO.md", .{output_dir});
+        const file = try std.fs.cwd().createFile(path, .{});
+        defer file.close();
+        try file.writeAll(content.items);
+    }
+
+    /// Generates BUGS.md page
+    fn generateBugsPage(self: *Self, output_dir: []const u8, modules: []const types.Module) !void {
+        const bugs = try self.collectBugs(modules);
+        defer self.allocator.free(bugs);
+
+        if (bugs.len == 0) return;
+
+        var content: std.ArrayList(u8) = .empty;
+        defer content.deinit(self.allocator);
+
+        try content.appendSlice(self.allocator, "# Known Bugs\n\n");
+        try content.appendSlice(self.allocator, "This page lists all known bugs found in the codebase.\n\n");
+
+        // Group by source file
+        var current_file: []const u8 = "";
+        var current_entity: []const u8 = "";
+
+        for (bugs) |bug| {
+            // New file section
+            if (!std.mem.eql(u8, bug.source_file, current_file)) {
+                current_file = bug.source_file;
+                current_entity = "";
+                try content.appendSlice(self.allocator, "## ");
+                try content.appendSlice(self.allocator, self.getBasename(current_file));
+                try content.appendSlice(self.allocator, "\n\n");
+            }
+
+            // New entity section
+            if (!std.mem.eql(u8, bug.entity_name, current_entity)) {
+                current_entity = bug.entity_name;
+                try content.appendSlice(self.allocator, "### `");
+                try content.appendSlice(self.allocator, current_entity);
+                try content.appendSlice(self.allocator, "()`");
+                if (bug.line > 0) {
+                    try content.appendSlice(self.allocator, " (line ");
+                    var line_buf: [16]u8 = undefined;
+                    const line_str = try std.fmt.bufPrint(&line_buf, "{d}", .{bug.line});
+                    try content.appendSlice(self.allocator, line_str);
+                    try content.appendSlice(self.allocator, ")");
+                }
+                try content.appendSlice(self.allocator, "\n\n");
+            }
+
+            // Bug item
+            try content.appendSlice(self.allocator, "- ");
+            try content.appendSlice(self.allocator, bug.description);
+            try content.appendSlice(self.allocator, "\n");
+        }
+
+        // Write file
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "{s}/src/BUGS.md", .{output_dir});
+        const file = try std.fs.cwd().createFile(path, .{});
+        defer file.close();
+        try file.writeAll(content.items);
+    }
+
+    /// Checks if modules have any todos
+    fn hasTodos(self: *Self, modules: []const types.Module) bool {
+        _ = self;
+        for (modules) |module| {
+            for (module.functions) |func| {
+                if (func.doc) |doc| {
+                    if (doc.todos.len > 0) return true;
+                }
+            }
+            for (module.classes) |class| {
+                if (class.doc) |doc| {
+                    if (doc.todos.len > 0) return true;
+                }
+                for (class.methods) |method| {
+                    if (method.doc) |doc| {
+                        if (doc.todos.len > 0) return true;
+                    }
+                }
+            }
+            for (module.structs) |s| {
+                if (s.doc) |doc| {
+                    if (doc.todos.len > 0) return true;
+                }
+            }
+            for (module.macros) |macro| {
+                if (macro.doc) |doc| {
+                    if (doc.todos.len > 0) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// Checks if modules have any bugs
+    fn hasBugs(self: *Self, modules: []const types.Module) bool {
+        _ = self;
+        for (modules) |module| {
+            for (module.functions) |func| {
+                if (func.doc) |doc| {
+                    if (doc.bugs.len > 0) return true;
+                }
+            }
+            for (module.classes) |class| {
+                if (class.doc) |doc| {
+                    if (doc.bugs.len > 0) return true;
+                }
+                for (class.methods) |method| {
+                    if (method.doc) |doc| {
+                        if (doc.bugs.len > 0) return true;
+                    }
+                }
+            }
+            for (module.structs) |s| {
+                if (s.doc) |doc| {
+                    if (doc.bugs.len > 0) return true;
+                }
+            }
+            for (module.macros) |macro| {
+                if (macro.doc) |doc| {
+                    if (doc.bugs.len > 0) return true;
+                }
+            }
+        }
+        return false;
     }
 
     /// Generates mdbook structure and returns the output directory path

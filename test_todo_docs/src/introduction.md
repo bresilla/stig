@@ -6,8 +6,8 @@ Welcome to the API documentation.
 
 This documentation covers:
 
-- **8** functions
+- **3** functions
 
 ## Source Files
 
-- `test/fixtures/test_snippet.h`
+- `test/fixtures/test_todo_bug.h`

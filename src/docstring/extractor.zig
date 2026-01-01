@@ -146,7 +146,7 @@ pub const DocstringExtractor = struct {
         var current_pos: usize = 0;
 
         // Tags that end the details section (without prefix - we check both @ and \)
-        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude", "synopsis", "group", "unique_name", "module", "entity", "file", "output_section", "copydoc" };
+        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude", "synopsis", "group", "unique_name", "module", "entity", "file", "output_section", "copydoc", "todo", "bug", "snippet" };
 
         while (lines.next()) |line| {
             const line_start = current_pos;
@@ -233,6 +233,9 @@ pub const DocstringExtractor = struct {
         var postconditions: std.ArrayList([]const u8) = .empty;
         var remarks: std.ArrayList([]const u8) = .empty;
         var invariants: std.ArrayList([]const u8) = .empty;
+        var todos: std.ArrayList(types.TodoItem) = .empty;
+        var bugs: std.ArrayList(types.BugItem) = .empty;
+        var snippets: std.ArrayList(types.SnippetRef) = .empty;
 
         var lines = std.mem.splitScalar(u8, raw, '\n');
         while (lines.next()) |line| {
@@ -470,6 +473,38 @@ pub const DocstringExtractor = struct {
                     doc.copydoc_target = target;
                 }
             }
+            // @todo or \todo - TODO item
+            else if (startsWithCommand(trimmed, "todo ")) {
+                const desc = std.mem.trim(u8, trimmed[6..], " \t");
+                if (desc.len > 0) {
+                    try todos.append(self.allocator, types.TodoItem{
+                        .description = desc,
+                    });
+                }
+            }
+            // @bug or \bug - known bug
+            else if (startsWithCommand(trimmed, "bug ")) {
+                const desc = std.mem.trim(u8, trimmed[5..], " \t");
+                if (desc.len > 0) {
+                    try bugs.append(self.allocator, types.BugItem{
+                        .description = desc,
+                    });
+                }
+            }
+            // @snippet or \snippet <file> <anchor> [language]
+            else if (startsWithCommand(trimmed, "snippet ")) {
+                const rest = std.mem.trim(u8, trimmed[9..], " \t");
+                var parts = std.mem.splitScalar(u8, rest, ' ');
+                if (parts.next()) |file| {
+                    const anchor = parts.next() orelse "";
+                    const language = parts.next();
+                    try snippets.append(self.allocator, types.SnippetRef{
+                        .file = file,
+                        .anchor = anchor,
+                        .language = language,
+                    });
+                }
+            }
         }
 
         // Convert ArrayLists to slices
@@ -508,6 +543,15 @@ pub const DocstringExtractor = struct {
         }
         if (invariants.items.len > 0) {
             doc.invariants = try invariants.toOwnedSlice(self.allocator);
+        }
+        if (todos.items.len > 0) {
+            doc.todos = try todos.toOwnedSlice(self.allocator);
+        }
+        if (bugs.items.len > 0) {
+            doc.bugs = try bugs.toOwnedSlice(self.allocator);
+        }
+        if (snippets.items.len > 0) {
+            doc.snippets = try snippets.toOwnedSlice(self.allocator);
         }
 
         return doc;
@@ -919,4 +963,84 @@ test "parse backslash command prefix" {
     try std.testing.expectEqualStrings("File handle", doc.returns.?);
     try std.testing.expectEqual(@as(usize, 1), doc.notes.len);
     try std.testing.expectEqualStrings("Thread-safe", doc.notes[0]);
+}
+
+test "parse todo tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Sorts the array.
+        \\* @todo Implement parallel sorting for large arrays
+        \\* @todo Add support for custom comparators
+    );
+    defer std.testing.allocator.free(doc.todos);
+
+    try std.testing.expectEqualStrings("Sorts the array.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 2), doc.todos.len);
+    try std.testing.expectEqualStrings("Implement parallel sorting for large arrays", doc.todos[0].description);
+    try std.testing.expectEqualStrings("Add support for custom comparators", doc.todos[1].description);
+}
+
+test "parse bug tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Processes the data.
+        \\* @bug Does not handle empty arrays correctly (issue #123)
+        \\* @bug Memory leak when exceptions occur
+    );
+    defer std.testing.allocator.free(doc.bugs);
+
+    try std.testing.expectEqualStrings("Processes the data.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 2), doc.bugs.len);
+    try std.testing.expectEqualStrings("Does not handle empty arrays correctly (issue #123)", doc.bugs[0].description);
+    try std.testing.expectEqualStrings("Memory leak when exceptions occur", doc.bugs[1].description);
+}
+
+test "parse todo and bug with backslash prefix" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Function description.
+        \\* \todo First todo item
+        \\* \bug First bug item
+    );
+    defer {
+        std.testing.allocator.free(doc.todos);
+        std.testing.allocator.free(doc.bugs);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), doc.todos.len);
+    try std.testing.expectEqualStrings("First todo item", doc.todos[0].description);
+    try std.testing.expectEqual(@as(usize, 1), doc.bugs.len);
+    try std.testing.expectEqualStrings("First bug item", doc.bugs[0].description);
+}
+
+test "parse snippet tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Example function.
+        \\* @snippet examples/test.cpp basic_example
+        \\* @snippet examples/test.cpp advanced_example cpp
+    );
+    defer std.testing.allocator.free(doc.snippets);
+
+    try std.testing.expectEqualStrings("Example function.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 2), doc.snippets.len);
+    try std.testing.expectEqualStrings("examples/test.cpp", doc.snippets[0].file);
+    try std.testing.expectEqualStrings("basic_example", doc.snippets[0].anchor);
+    try std.testing.expect(doc.snippets[0].language == null);
+    try std.testing.expectEqualStrings("examples/test.cpp", doc.snippets[1].file);
+    try std.testing.expectEqualStrings("advanced_example", doc.snippets[1].anchor);
+    try std.testing.expectEqualStrings("cpp", doc.snippets[1].language.?);
+}
+
+test "parse snippet with backslash prefix" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Example function.
+        \\* \snippet examples/test.cpp my_example
+    );
+    defer std.testing.allocator.free(doc.snippets);
+
+    try std.testing.expectEqual(@as(usize, 1), doc.snippets.len);
+    try std.testing.expectEqualStrings("examples/test.cpp", doc.snippets[0].file);
+    try std.testing.expectEqualStrings("my_example", doc.snippets[0].anchor);
 }

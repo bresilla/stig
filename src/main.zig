@@ -6,12 +6,16 @@ const CppParser = @import("parser/cpp.zig").CppParser;
 const MarkdownGenerator = @import("output/markdown.zig").MarkdownGenerator;
 const MdbookGenerator = @import("output/mdbook.zig").MdbookGenerator;
 const MdbookConfig = @import("output/mdbook.zig").MdbookConfig;
+const JsonGenerator = @import("output/json.zig").JsonGenerator;
 const xref = @import("xref.zig");
 const cli = @import("cli.zig");
 const config_mod = @import("config.zig");
 const types = @import("model/types.zig");
 const preprocessor = @import("preprocessor.zig");
 const Watcher = @import("watch.zig").Watcher;
+const coverage = @import("coverage.zig");
+const snippet = @import("snippet.zig");
+const lint = @import("lint.zig");
 
 pub fn main() !void {
     // Get allocator - disable safety checks to avoid leak warnings
@@ -229,6 +233,72 @@ pub fn main() !void {
         try modules.append(allocator, data.module);
     }
 
+    // Coverage mode - generate coverage report and exit
+    if (args.coverage_mode) {
+        const coverage_config = coverage.CoverageConfig{
+            .min_coverage = config.coverage.min_coverage,
+            .require_param_docs = config.coverage.require_param_docs,
+            .require_return_docs = config.coverage.require_return_docs,
+            .require_tparam_docs = config.coverage.require_tparam_docs,
+            .exclude_patterns = config.coverage.exclude_patterns,
+        };
+
+        var report = try coverage.analyze(allocator, modules.items, coverage_config);
+        defer report.deinit();
+
+        // Print report to stderr (use debug.print for simplicity)
+        coverage.printReport(report);
+
+        // Exit with code 1 if coverage is below threshold
+        if (report.overallPercentage() < @as(f64, @floatFromInt(coverage_config.min_coverage))) {
+            std.debug.print("Coverage ({d:.0}%) is below minimum threshold ({d}%)\n", .{
+                report.overallPercentage(),
+                coverage_config.min_coverage,
+            });
+            std.process.exit(1);
+        }
+        return;
+    }
+
+    // Lint mode - check documentation quality and exit
+    if (args.lint_mode) {
+        // Build symbol table for cross-reference validation
+        var symbol_table = xref.SymbolTable.init(allocator);
+        defer symbol_table.deinit();
+        try symbol_table.buildFromModules(modules.items);
+
+        const lint_config = lint.LintConfig{
+            .enabled = config.lint.enabled,
+            .treat_warnings_as_errors = config.lint.treat_warnings_as_errors,
+            .max_brief_length = config.lint.max_brief_length,
+            .require_brief = config.lint.require_brief,
+            .require_param_docs = config.lint.require_param_docs,
+            .require_return_docs = config.lint.require_return_docs,
+            .require_tparam_docs = config.lint.require_tparam_docs,
+            .check_cross_references = config.lint.check_cross_references,
+            .require_brief_period = config.lint.require_brief_period,
+            .exclude_patterns = config.lint.exclude_patterns,
+        };
+
+        var linter = lint.Linter.init(allocator, lint_config);
+        linter.setSymbolTable(&symbol_table);
+
+        var report = try linter.lint(modules.items);
+        defer report.deinit();
+
+        // Print report
+        lint.printReport(report);
+
+        // Exit with appropriate code
+        if (report.hasErrors()) {
+            std.process.exit(1);
+        }
+        if (lint_config.treat_warnings_as_errors and report.hasWarnings()) {
+            std.process.exit(2);
+        }
+        return;
+    }
+
     // Generate output based on format
     switch (args.output_format) {
         .mdbook => {
@@ -257,6 +327,10 @@ pub fn main() !void {
             defer symbol_table.deinit();
             try symbol_table.buildFromModules(modules.items);
 
+            // Initialize snippet extractor for @snippet tags
+            var snippet_extractor = snippet.SnippetExtractor.init(allocator);
+            defer snippet_extractor.deinit();
+
             // Generate single markdown output
             var output_buffer: std.ArrayList(u8) = .empty;
             defer output_buffer.deinit(allocator);
@@ -268,6 +342,8 @@ pub fn main() !void {
                 // Enable cross-reference support
                 gen.setSymbolTable(&symbol_table);
                 gen.setOutputFormat(.markdown);
+                // Enable snippet extraction
+                gen.setSnippetExtractor(&snippet_extractor);
 
                 const markdown = try gen.generate(module);
                 try output_buffer.appendSlice(allocator, markdown);
@@ -296,6 +372,41 @@ pub fn main() !void {
                 defer stdout.flush() catch {};
 
                 try stdout.writeAll(output_buffer.items);
+            }
+        },
+        .json => {
+            // Generate JSON output
+            var json_gen = JsonGenerator.init(allocator);
+            defer json_gen.deinit();
+
+            const json_output = json_gen.generate(modules.items) catch |err| {
+                std.debug.print("Error generating JSON: {}\n", .{err});
+                return;
+            };
+
+            // Write output
+            if (args.output_file) |output_path| {
+                // Write to file
+                const file = std.fs.cwd().createFile(output_path, .{}) catch |err| {
+                    std.debug.print("Error: Cannot create output file '{s}': {}\n", .{ output_path, err });
+                    return;
+                };
+                defer file.close();
+
+                file.writeAll(json_output) catch |err| {
+                    std.debug.print("Error: Cannot write to file '{s}': {}\n", .{ output_path, err });
+                    return;
+                };
+
+                std.debug.print("Generated JSON documentation: {s}\n", .{output_path});
+            } else {
+                // Write to stdout
+                var buf: [8192]u8 = undefined;
+                var file_writer = std.fs.File.stdout().writer(&buf);
+                const stdout = &file_writer.interface;
+                defer stdout.flush() catch {};
+
+                try stdout.writeAll(json_output);
             }
         },
     }

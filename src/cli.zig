@@ -11,11 +11,14 @@ pub const OutputFormat = enum {
     markdown,
     /// mdbook directory structure
     mdbook,
+    /// JSON structured output
+    json,
 
     pub fn fromConfig(cfg_format: Config.Format) OutputFormat {
         return switch (cfg_format) {
             .markdown => .markdown,
             .mdbook => .mdbook,
+            .json => .json,
         };
     }
 };
@@ -32,6 +35,8 @@ pub const Args = struct {
     show_version: bool,
     watch_mode: bool,
     serve_mode: bool,
+    coverage_mode: bool,
+    lint_mode: bool,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Args) void {
@@ -55,6 +60,8 @@ pub const ArgParser = struct {
     version_ptr: ?*bool,
     watch_ptr: ?*bool,
     serve_ptr: ?*bool,
+    coverage_ptr: ?*bool,
+    lint_ptr: ?*bool,
 
     const Self = @This();
 
@@ -72,6 +79,8 @@ pub const ArgParser = struct {
             .version_ptr = null,
             .watch_ptr = null,
             .serve_ptr = null,
+            .coverage_ptr = null,
+            .lint_ptr = null,
         };
     }
 
@@ -94,7 +103,7 @@ pub const ArgParser = struct {
         self.output_ptr = try parser.string("o", "output", &output_opts);
 
         var format_opts = argonaut.Options{};
-        format_opts.help = "Output format: markdown, mdbook (default: markdown)";
+        format_opts.help = "Output format: markdown, mdbook, json (default: markdown)";
         // Don't set default - we'll check if it was explicitly set
         self.format_ptr = try parser.string("f", "format", &format_opts);
 
@@ -117,6 +126,14 @@ pub const ArgParser = struct {
         var serve_opts = argonaut.Options{};
         serve_opts.help = "Watch mode + spawn mdbook serve for live preview";
         self.serve_ptr = try parser.flag("", "serve", &serve_opts);
+
+        var coverage_opts = argonaut.Options{};
+        coverage_opts.help = "Generate documentation coverage report";
+        self.coverage_ptr = try parser.flag("C", "coverage", &coverage_opts);
+
+        var lint_opts = argonaut.Options{};
+        lint_opts.help = "Lint documentation for errors and warnings";
+        self.lint_ptr = try parser.flag("L", "lint", &lint_opts);
 
         var help_opts = argonaut.Options{};
         help_opts.help = "Show this help message";
@@ -144,6 +161,8 @@ pub const ArgParser = struct {
                 .show_version = false,
                 .watch_mode = false,
                 .serve_mode = false,
+                .coverage_mode = false,
+                .lint_mode = false,
                 .allocator = self.allocator,
             };
         }
@@ -161,6 +180,8 @@ pub const ArgParser = struct {
                 .show_version = true,
                 .watch_mode = false,
                 .serve_mode = false,
+                .coverage_mode = false,
+                .lint_mode = false,
                 .allocator = self.allocator,
             };
         }
@@ -176,6 +197,8 @@ pub const ArgParser = struct {
                 output_format = .mdbook;
             } else if (std.mem.eql(u8, format_str, "md") or std.mem.eql(u8, format_str, "markdown")) {
                 output_format = .markdown;
+            } else if (std.mem.eql(u8, format_str, "json")) {
+                output_format = .json;
             }
         }
 
@@ -191,9 +214,11 @@ pub const ArgParser = struct {
         const config_str = self.config_ptr.?.*;
         const config_file: ?[]const u8 = if (config_str.len > 0) config_str else null;
 
-        // Get watch/serve modes
+        // Get watch/serve/coverage/lint modes
         const watch_mode = self.watch_ptr.?.* or self.serve_ptr.?.*;
         const serve_mode = self.serve_ptr.?.*;
+        const coverage_mode = self.coverage_ptr.?.*;
+        const lint_mode = self.lint_ptr.?.*;
 
         // Get input files from remainder (positional arguments)
         const input_files = if (self.remainder) |rem|
@@ -212,6 +237,8 @@ pub const ArgParser = struct {
             .show_version = false,
             .watch_mode = watch_mode,
             .serve_mode = serve_mode,
+            .coverage_mode = coverage_mode,
+            .lint_mode = lint_mode,
             .allocator = self.allocator,
         };
     }
@@ -252,11 +279,13 @@ pub const ArgParser = struct {
             \\
             \\OPTIONS:
             \\    -o, --output <PATH>    Output file or directory (default: stdout)
-            \\    -f, --format <FMT>     Output format: markdown, mdbook (default: markdown)
+            \\    -f, --format <FMT>     Output format: markdown, mdbook, json (default: markdown)
             \\    --title <TITLE>        Book title (for mdbook format)
             \\    -c, --config <FILE>    Config file path (default: stig.toml)
             \\    -w, --watch            Watch for file changes and regenerate
             \\    --serve                Watch mode + spawn mdbook serve for live preview
+            \\    -C, --coverage         Generate documentation coverage report
+            \\    -L, --lint             Lint documentation for errors and warnings
             \\    -h, --help             Show this help message
             \\    -v, --version          Show version information
             \\
@@ -279,9 +308,13 @@ pub const ArgParser = struct {
             \\    stig src/*.h -o api.md              # Multiple files
             \\    stig src/*.h -f mdbook -o docs/     # Generate mdbook structure
             \\    stig src/*.h -f mdbook --title "My API"  # With custom title
+            \\    stig src/*.h -f json -o api.json   # Generate JSON output
+            \\    stig src/*.h -f json               # JSON to stdout
             \\    stig -c myconfig.toml               # Use custom config file
             \\    stig src/*.h -f mdbook -o docs/ --watch  # Watch mode
             \\    stig src/*.h -f mdbook -o docs/ --serve  # Watch + live preview
+            \\    stig --coverage src/*.h            # Generate coverage report
+            \\    stig --lint src/*.h               # Lint documentation
             \\
             \\MDBOOK PREPROCESSOR:
             \\    Add to book.toml:

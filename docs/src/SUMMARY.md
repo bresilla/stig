@@ -4,5 +4,9 @@
 
 # Functions
 
-- [test_group.hpp](./functions/test_group.md)
+- [test_snippet.h](./functions/test_snippet.md)
+
+# Macros
+
+- [test_snippet.h](./macros/test_snippet.md)
 
