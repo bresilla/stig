@@ -111,6 +111,8 @@ pub const DocString = struct {
     entity_target: ?[]const u8 = null,
     /// Whether this is file-level documentation (@file)
     is_file_doc: bool = false,
+    /// Output section header (@output_section) - adds section comment in synopsis
+    output_section: ?[]const u8 = null,
 };
 
 /// Function parameter

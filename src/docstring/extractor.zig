@@ -146,7 +146,7 @@ pub const DocstringExtractor = struct {
         var current_pos: usize = 0;
 
         // Tags that end the details section (without prefix - we check both @ and \)
-        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude", "synopsis", "group", "unique_name", "module", "entity", "file" };
+        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude", "synopsis", "group", "unique_name", "module", "entity", "file", "output_section" };
 
         while (lines.next()) |line| {
             const line_start = current_pos;
@@ -455,6 +455,13 @@ pub const DocstringExtractor = struct {
             // @file - file-level documentation
             else if (startsWithCommand(trimmed, "file")) {
                 doc.is_file_doc = true;
+            }
+            // @output_section - section header in synopsis
+            else if (startsWithCommand(trimmed, "output_section ")) {
+                const section = std.mem.trim(u8, trimmed[16..], " \t");
+                if (section.len > 0) {
+                    doc.output_section = section;
+                }
             }
         }
 
