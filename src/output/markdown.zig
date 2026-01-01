@@ -21,6 +21,8 @@ pub const MarkdownGenerator = struct {
     snippet_extractor: ?*snippet_mod.SnippetExtractor = null,
     /// All classes for inheritance diagram generation
     all_classes: ?[]const types.Class = null,
+    /// All pages for @ref resolution
+    all_pages: []const types.Page = &[_]types.Page{},
 
     const Self = @This();
 
@@ -156,16 +158,19 @@ pub const MarkdownGenerator = struct {
         // Clear buffer for fresh generation
         self.buffer.clearRetainingCapacity();
 
+        // Store pages for @ref resolution
+        self.all_pages = module.pages;
+
         try self.writeHeader(module.name);
 
         // File-level documentation (@file)
         if (module.file_doc) |file_doc| {
             if (file_doc.brief) |brief| {
-                try self.writeString(brief);
+                try self.writeTextWithRefs(brief, self.all_pages);
                 try self.writeString("\n\n");
             }
             if (file_doc.details) |details| {
-                try self.writeString(details);
+                try self.writeTextWithRefs(details, self.all_pages);
                 try self.writeString("\n\n");
             }
             if (file_doc.author) |author| {
@@ -383,6 +388,160 @@ pub const MarkdownGenerator = struct {
                 '&' => try self.buffer.appendSlice(self.allocator, "&amp;"),
                 else => try self.buffer.append(self.allocator, c),
             }
+        }
+    }
+
+    /// Writes text with @ref tags converted to markdown links
+    /// Processes inline @ref and \ref tags and converts them to [text](link) format
+    fn writeTextWithRefs(self: *Self, text: []const u8, pages: []const types.Page) !void {
+        // Check if text contains any @ref tags
+        if (!extractor_mod.DocstringExtractor.containsRef(text)) {
+            // No refs, just write as-is
+            try self.writeString(text);
+            return;
+        }
+
+        // Process text and replace @ref tags with markdown links
+        var pos: usize = 0;
+        while (pos < text.len) {
+            // Look for @ref or \ref
+            const at_ref = std.mem.indexOfPos(u8, text, pos, "@ref ");
+            const backslash_ref = std.mem.indexOfPos(u8, text, pos, "\\ref ");
+
+            const ref_pos = blk: {
+                if (at_ref != null and backslash_ref != null) {
+                    break :blk @min(at_ref.?, backslash_ref.?);
+                } else if (at_ref != null) {
+                    break :blk at_ref.?;
+                } else if (backslash_ref != null) {
+                    break :blk backslash_ref.?;
+                } else {
+                    // No more refs, write rest of text
+                    try self.writeString(text[pos..]);
+                    return;
+                }
+            };
+
+            // Write text before @ref
+            try self.writeString(text[pos..ref_pos]);
+
+            // Skip past "@ref " or "\ref "
+            pos = ref_pos + 5;
+
+            // Extract target and optional display text
+            const rest = text[pos..];
+            var target: []const u8 = "";
+            var display_text: ?[]const u8 = null;
+            var consumed: usize = 0;
+
+            // Check for quoted display text
+            if (std.mem.indexOf(u8, rest, "\"")) |quote_start| {
+                // Find closing quote
+                if (std.mem.indexOfPos(u8, rest, quote_start + 1, "\"")) |quote_end| {
+                    target = std.mem.trim(u8, rest[0..quote_start], " \t");
+                    display_text = rest[quote_start + 1 .. quote_end];
+                    consumed = quote_end + 1;
+                }
+            }
+
+            if (consumed == 0) {
+                // No display text - extract target until whitespace or certain punctuation
+                // Allow () for function references like "Class::method()"
+                var target_end: usize = 0;
+                var paren_depth: usize = 0;
+                for (rest, 0..) |c, i| {
+                    if (c == '(') {
+                        paren_depth += 1;
+                    } else if (c == ')') {
+                        if (paren_depth > 0) {
+                            paren_depth -= 1;
+                            // If we just closed all parens, include the ) and stop
+                            if (paren_depth == 0) {
+                                target_end = i + 1;
+                                break;
+                            }
+                        } else {
+                            // Unmatched ), stop here
+                            target_end = i;
+                            break;
+                        }
+                    } else if (paren_depth == 0 and (c == ' ' or c == '\t' or c == '\n' or c == ',' or c == '.' or c == ']' or c == ';')) {
+                        target_end = i;
+                        break;
+                    }
+                }
+
+                if (target_end == 0) {
+                    target_end = rest.len;
+                }
+
+                target = std.mem.trim(u8, rest[0..target_end], " \t");
+                consumed = target_end;
+            }
+
+            // Try to resolve the reference
+            if (self.symbol_table) |sym_table| {
+                var resolver = xref.XRefResolver.init(sym_table, self.current_file, self.output_format);
+                const ref_link = types.RefLink{
+                    .target = target,
+                    .display_text = display_text,
+                };
+
+                if (resolver.resolveRef(ref_link, pages)) |resolved| {
+                    // Generate markdown link based on output format
+                    const link_text = resolved.text;
+                    const link_target = try self.generateRefLink(resolved);
+                    defer self.allocator.free(link_target);
+
+                    try self.writeString("[");
+                    try self.writeString(link_text);
+                    try self.writeString("](");
+                    try self.writeString(link_target);
+                    try self.writeString(")");
+                } else {
+                    // Reference not found - render as code with warning comment
+                    try self.writeString("`");
+                    try self.writeString(target);
+                    try self.writeString("`");
+                    // TODO: Add warning to stderr or log
+                }
+            } else {
+                // No symbol table - render as code
+                try self.writeString("`");
+                try self.writeString(target);
+                try self.writeString("`");
+            }
+
+            pos += consumed;
+        }
+    }
+
+    /// Generates a link target for a resolved @ref
+    fn generateRefLink(self: *Self, resolved: xref.XRefResolver.RefLinkResult) ![]const u8 {
+        switch (resolved.kind) {
+            .symbol => {
+                // For symbols, link to the anchor in the target file
+                if (self.output_format == .mdbook) {
+                    // mdbook format: relative path to file + anchor
+                    // TODO: Calculate proper relative path
+                    return try std.fmt.allocPrint(self.allocator, "{s}.md#{s}", .{ resolved.target_file, resolved.anchor });
+                } else {
+                    // Single markdown file: just anchor
+                    return try std.fmt.allocPrint(self.allocator, "#{s}", .{resolved.anchor});
+                }
+            },
+            .page => {
+                // For pages, link to the page file
+                if (self.output_format == .mdbook) {
+                    return try std.fmt.allocPrint(self.allocator, "{s}.md", .{resolved.target_file});
+                } else {
+                    return try std.fmt.allocPrint(self.allocator, "#{s}", .{resolved.anchor});
+                }
+            },
+            .section, .anchor => {
+                // For sections/anchors, link to the anchor
+                return try std.fmt.allocPrint(self.allocator, "#{s}", .{resolved.anchor});
+            },
         }
     }
 
@@ -889,7 +1048,7 @@ pub const MarkdownGenerator = struct {
         // Write documentation (brief only for grouped functions to keep it compact)
         if (func.doc) |doc| {
             if (doc.brief) |brief| {
-                try self.writeString(brief);
+                try self.writeTextWithRefs(brief, self.all_pages);
                 try self.writeString("\n\n");
             }
 
@@ -900,7 +1059,7 @@ pub const MarkdownGenerator = struct {
                     try self.writeString("- `");
                     try self.writeString(param.name);
                     try self.writeString("`: ");
-                    try self.writeString(param.description);
+                    try self.writeTextWithRefs(param.description, self.all_pages);
                     try self.writeString("\n");
                 }
                 try self.writeString("\n");
@@ -909,7 +1068,7 @@ pub const MarkdownGenerator = struct {
             // Return value
             if (doc.returns) |ret| {
                 try self.writeString("**Returns:** ");
-                try self.writeString(ret);
+                try self.writeTextWithRefs(ret, self.all_pages);
                 try self.writeString("\n\n");
             }
         }
@@ -952,7 +1111,7 @@ pub const MarkdownGenerator = struct {
                 if (extractor_mod.DocstringExtractor.containsRef(brief)) {
                     try self.processRefs(brief);
                 } else {
-                    try self.writeString(brief);
+                    try self.writeTextWithRefs(brief, self.all_pages);
                 }
                 try self.writeString("\n\n");
             }
@@ -1013,7 +1172,7 @@ pub const MarkdownGenerator = struct {
                     if (extractor_mod.DocstringExtractor.containsRef(param.description)) {
                         try self.processRefs(param.description);
                     } else {
-                        try self.writeString(param.description);
+                        try self.writeTextWithRefs(param.description, self.all_pages);
                     }
                     try self.writeString("\n");
                 }
@@ -1030,7 +1189,7 @@ pub const MarkdownGenerator = struct {
                 if (extractor_mod.DocstringExtractor.containsRef(ret)) {
                     try self.processRefs(ret);
                 } else {
-                    try self.writeString(ret);
+                    try self.writeTextWithRefs(ret, self.all_pages);
                 }
                 try self.writeString("\n\n");
             }
@@ -1424,7 +1583,7 @@ pub const MarkdownGenerator = struct {
         // Documentation
         if (s.doc) |doc| {
             if (doc.brief) |brief| {
-                try self.writeString(brief);
+                try self.writeTextWithRefs(brief, self.all_pages);
                 try self.writeString("\n\n");
             }
         }
@@ -1476,7 +1635,7 @@ pub const MarkdownGenerator = struct {
         // Documentation
         if (e.doc) |doc| {
             if (doc.brief) |brief| {
-                try self.writeString(brief);
+                try self.writeTextWithRefs(brief, self.all_pages);
                 try self.writeString("\n\n");
             }
         }
@@ -1524,7 +1683,7 @@ pub const MarkdownGenerator = struct {
         // Documentation
         if (td.doc) |doc| {
             if (doc.brief) |brief| {
-                try self.writeString(brief);
+                try self.writeTextWithRefs(brief, self.all_pages);
                 try self.writeString("\n\n");
             }
         }
@@ -1562,7 +1721,7 @@ pub const MarkdownGenerator = struct {
         // Documentation
         if (macro.doc) |doc| {
             if (doc.brief) |brief| {
-                try self.writeString(brief);
+                try self.writeTextWithRefs(brief, self.all_pages);
                 try self.writeString("\n\n");
             }
 
@@ -1573,7 +1732,7 @@ pub const MarkdownGenerator = struct {
                     try self.writeString("- `");
                     try self.writeString(param.name);
                     try self.writeString("`: ");
-                    try self.writeString(param.description);
+                    try self.writeTextWithRefs(param.description, self.all_pages);
                     try self.writeString("\n");
                 }
                 try self.writeString("\n");
@@ -1765,12 +1924,12 @@ pub const MarkdownGenerator = struct {
         // Documentation
         if (class.doc) |doc| {
             if (doc.brief) |brief| {
-                try self.writeString(brief);
+                try self.writeTextWithRefs(brief, self.all_pages);
                 try self.writeString("\n\n");
             }
 
             if (doc.details) |details| {
-                try self.writeString(details);
+                try self.writeTextWithRefs(details, self.all_pages);
                 try self.writeString("\n\n");
             }
 
@@ -1911,7 +2070,7 @@ pub const MarkdownGenerator = struct {
                     if (method.doc) |doc| {
                         if (doc.brief) |brief| {
                             try self.writeString(": ");
-                            try self.writeString(brief);
+                            try self.writeTextWithRefs(brief, self.all_pages);
                         }
                     }
                     try self.writeString("\n");
@@ -1934,7 +2093,7 @@ pub const MarkdownGenerator = struct {
                     if (nested_class.doc) |doc| {
                         if (doc.brief) |brief| {
                             try self.writeString(" - ");
-                            try self.writeString(brief);
+                            try self.writeTextWithRefs(brief, self.all_pages);
                         }
                     }
                     try self.writeString("\n");
@@ -2180,12 +2339,12 @@ pub const MarkdownGenerator = struct {
         // Documentation
         if (concept.docstring) |doc| {
             if (doc.brief) |brief| {
-                try self.writeString(brief);
+                try self.writeTextWithRefs(brief, self.all_pages);
                 try self.writeString("\n\n");
             }
 
             if (doc.details) |details| {
-                try self.writeString(details);
+                try self.writeTextWithRefs(details, self.all_pages);
                 try self.writeString("\n\n");
             }
 
@@ -2245,7 +2404,7 @@ pub const MarkdownGenerator = struct {
         // Documentation
         if (alias.docstring) |doc| {
             if (doc.brief) |brief| {
-                try self.writeString(brief);
+                try self.writeTextWithRefs(brief, self.all_pages);
                 try self.writeString("\n\n");
             }
         }

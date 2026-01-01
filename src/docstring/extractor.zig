@@ -241,6 +241,7 @@ pub const DocstringExtractor = struct {
         var important: std.ArrayList([]const u8) = .empty;
         var dates: std.ArrayList(types.DateInfo) = .empty;
         var mermaid_diagrams: std.ArrayList(types.MermaidDiagram) = .empty;
+        var refs: std.ArrayList(types.RefLink) = .empty;
 
         // State for multi-line @mermaid/@endmermaid blocks
         var in_mermaid_block = false;
@@ -663,6 +664,35 @@ pub const DocstringExtractor = struct {
             else if (startsWithCommand(trimmed, "copyright ")) {
                 doc.copyright = trimmed[11..];
             }
+            // @ref or \ref - cross-reference: @ref target or @ref target "display text"
+            else if (startsWithCommand(trimmed, "ref ")) {
+                const rest = std.mem.trim(u8, trimmed[5..], " \t");
+                if (rest.len > 0) {
+                    // Parse: @ref target or @ref target "display text"
+                    // Check for quoted display text
+                    if (std.mem.indexOf(u8, rest, "\"")) |quote_start| {
+                        // Find closing quote
+                        if (std.mem.indexOfPos(u8, rest, quote_start + 1, "\"")) |quote_end| {
+                            const target = std.mem.trim(u8, rest[0..quote_start], " \t");
+                            const display_text = rest[quote_start + 1 .. quote_end];
+                            try refs.append(self.allocator, types.RefLink{
+                                .target = target,
+                                .display_text = display_text,
+                            });
+                        } else {
+                            // Unclosed quote, treat entire rest as target
+                            try refs.append(self.allocator, types.RefLink{
+                                .target = rest,
+                            });
+                        }
+                    } else {
+                        // No display text, just target
+                        try refs.append(self.allocator, types.RefLink{
+                            .target = rest,
+                        });
+                    }
+                }
+            }
         }
 
         // Convert ArrayLists to slices
@@ -730,6 +760,31 @@ pub const DocstringExtractor = struct {
             doc.code_blocks = try code_blocks.toOwnedSlice(self.allocator);
         }
 
+        // Extract inline @ref tags from brief and details
+        if (doc.brief) |brief| {
+            if (containsRef(brief)) {
+                const inline_refs = try self.extractInlineRefs(brief);
+                for (inline_refs) |ref| {
+                    try refs.append(self.allocator, ref);
+                }
+                self.allocator.free(inline_refs);
+            }
+        }
+
+        if (doc.details) |details| {
+            if (containsRef(details)) {
+                const inline_refs = try self.extractInlineRefs(details);
+                for (inline_refs) |ref| {
+                    try refs.append(self.allocator, ref);
+                }
+                self.allocator.free(inline_refs);
+            }
+        }
+
+        if (refs.items.len > 0) {
+            doc.refs = try refs.toOwnedSlice(self.allocator);
+        }
+
         return doc;
     }
 
@@ -791,6 +846,93 @@ pub const DocstringExtractor = struct {
     pub fn containsRef(text: []const u8) bool {
         return std.mem.indexOf(u8, text, "@ref ") != null or
             std.mem.indexOf(u8, text, "\\ref ") != null;
+    }
+
+    /// Extracts all @ref tags from text (for inline references in brief/details)
+    /// Returns a list of RefLink structs found in the text
+    pub fn extractInlineRefs(self: *Self, text: []const u8) ![]types.RefLink {
+        var refs_list: std.ArrayList(types.RefLink) = .empty;
+
+        var pos: usize = 0;
+        while (pos < text.len) {
+            // Look for @ref or \ref
+            const at_ref = std.mem.indexOfPos(u8, text, pos, "@ref ");
+            const backslash_ref = std.mem.indexOfPos(u8, text, pos, "\\ref ");
+
+            const ref_pos = blk: {
+                if (at_ref != null and backslash_ref != null) {
+                    break :blk @min(at_ref.?, backslash_ref.?);
+                } else if (at_ref != null) {
+                    break :blk at_ref.?;
+                } else if (backslash_ref != null) {
+                    break :blk backslash_ref.?;
+                } else {
+                    break;
+                }
+            };
+
+            // Skip past "@ref " or "\ref "
+            pos = ref_pos + 5;
+
+            // Extract target and optional display text
+            const rest = text[pos..];
+
+            // Check for quoted display text
+            if (std.mem.indexOf(u8, rest, "\"")) |quote_start| {
+                // Find closing quote
+                if (std.mem.indexOfPos(u8, rest, quote_start + 1, "\"")) |quote_end| {
+                    const target = std.mem.trim(u8, rest[0..quote_start], " \t");
+                    const display_text = rest[quote_start + 1 .. quote_end];
+                    try refs_list.append(self.allocator, types.RefLink{
+                        .target = target,
+                        .display_text = display_text,
+                    });
+                    pos += quote_end + 1;
+                    continue;
+                }
+            }
+
+            // No display text - extract target until whitespace or certain punctuation
+            // Allow () for function references like "Class::method()"
+            var target_end: usize = 0;
+            var paren_depth: usize = 0;
+            for (rest, 0..) |c, i| {
+                if (c == '(') {
+                    paren_depth += 1;
+                } else if (c == ')') {
+                    if (paren_depth > 0) {
+                        paren_depth -= 1;
+                        // If we just closed all parens, include the ) and stop
+                        if (paren_depth == 0) {
+                            target_end = i + 1;
+                            break;
+                        }
+                    } else {
+                        // Unmatched ), stop here
+                        target_end = i;
+                        break;
+                    }
+                } else if (paren_depth == 0 and (c == ' ' or c == '\t' or c == '\n' or c == ',' or c == '.' or c == ']' or c == ';')) {
+                    target_end = i;
+                    break;
+                }
+            }
+
+            if (target_end == 0) {
+                target_end = rest.len;
+            }
+
+            const target = std.mem.trim(u8, rest[0..target_end], " \t");
+            if (target.len > 0) {
+                try refs_list.append(self.allocator, types.RefLink{
+                    .target = target,
+                });
+            }
+
+            pos += target_end;
+        }
+
+        return try refs_list.toOwnedSlice(self.allocator);
     }
 
     /// Parses a @page or @mainpage docstring into a Page struct

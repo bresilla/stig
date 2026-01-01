@@ -1857,6 +1857,13 @@ pub const JsonGenerator = struct {
         try self.writeIndent();
         try self.writeKey("tests");
         try self.serializeTestRefs(doc.tests);
+        try self.writeChar(',');
+        try self.writeNewline();
+
+        // Refs (cross-references)
+        try self.writeIndent();
+        try self.writeKey("refs");
+        try self.serializeRefLinks(doc.refs);
         try self.writeNewline();
 
         self.indent_level -= 1;
@@ -1895,6 +1902,56 @@ pub const JsonGenerator = struct {
                 try self.writeChar('}');
 
                 if (i < tests.len - 1) {
+                    try self.writeChar(',');
+                }
+                try self.writeNewline();
+            }
+
+            self.indent_level -= 1;
+            try self.writeIndent();
+        }
+        try self.writeChar(']');
+    }
+
+    fn serializeRefLinks(self: *Self, refs: []const types.RefLink) !void {
+        try self.writeChar('[');
+        if (refs.len > 0) {
+            try self.writeNewline();
+            self.indent_level += 1;
+
+            for (refs, 0..) |ref, i| {
+                try self.writeIndent();
+                try self.writeChar('{');
+                try self.writeNewline();
+                self.indent_level += 1;
+
+                try self.writeIndent();
+                try self.writeKeyValue("target", ref.target);
+                try self.writeChar(',');
+                try self.writeNewline();
+
+                try self.writeIndent();
+                try self.writeKey("display_text");
+                if (ref.display_text) |text| {
+                    try self.writeJsonString(text);
+                } else {
+                    try self.writeString("null");
+                }
+                try self.writeChar(',');
+                try self.writeNewline();
+
+                try self.writeIndent();
+                try self.writeKey("kind");
+                try self.writeChar('"');
+                try self.writeString(@tagName(ref.kind));
+                try self.writeChar('"');
+                try self.writeNewline();
+
+                self.indent_level -= 1;
+                try self.writeIndent();
+                try self.writeChar('}');
+
+                if (i < refs.len - 1) {
                     try self.writeChar(',');
                 }
                 try self.writeNewline();

@@ -288,6 +288,35 @@ pub const SymbolTable = struct {
             for (module.classes) |class| {
                 const unique_name = if (class.doc) |doc| doc.unique_name_override else null;
                 try self.registerWithUniqueName(class.name, .class_type, module.name, unique_name);
+
+                // Register class methods with qualified names (Class::method)
+                for (class.methods) |method| {
+                    const method_unique_name = if (method.doc) |doc| doc.unique_name_override else null;
+
+                    // Build qualified name: ClassName::methodName
+                    const qualified_name = try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ class.name, method.name });
+                    defer self.allocator.free(qualified_name);
+
+                    try self.registerWithUniqueName(qualified_name, .function, module.name, method_unique_name);
+
+                    // Also register with signature for overload disambiguation
+                    const sig_name = try self.generateSignatureName(qualified_name, method.params);
+                    if (!std.mem.eql(u8, sig_name, qualified_name)) {
+                        if (!self.symbols.contains(sig_name)) {
+                            const anchor = try self.generateAnchor(qualified_name);
+                            try self.symbols.put(sig_name, SymbolInfo{
+                                .kind = .function,
+                                .source_file = module.name,
+                                .anchor = anchor,
+                                .name = qualified_name,
+                            });
+                        } else {
+                            self.allocator.free(sig_name);
+                        }
+                    } else {
+                        self.allocator.free(sig_name);
+                    }
+                }
             }
         }
     }
@@ -492,11 +521,52 @@ pub const XRefResolver = struct {
         };
     }
 
+    /// Resolves a @ref link to a LinkResult
+    /// Handles symbols, pages, sections, and anchors
+    /// Returns null if the reference cannot be resolved
+    pub fn resolveRef(self: *Self, ref: types.RefLink, pages: []const types.Page) ?RefLinkResult {
+        // First, try to resolve as a symbol
+        if (self.symbol_table.lookup(ref.target)) |info| {
+            return RefLinkResult{
+                .text = ref.display_text orelse ref.target,
+                .anchor = info.anchor,
+                .target_file = info.source_file,
+                .kind = .symbol,
+                .symbol_kind = info.kind,
+            };
+        }
+
+        // Try to resolve as a page (check if target matches a page ID)
+        for (pages) |page| {
+            if (std.mem.eql(u8, page.id, ref.target)) {
+                return RefLinkResult{
+                    .text = ref.display_text orelse page.title,
+                    .anchor = page.id,
+                    .target_file = page.id, // Page file is based on ID
+                    .kind = .page,
+                    .symbol_kind = null,
+                };
+            }
+        }
+
+        // TODO: Handle @section and @anchor references
+        // For now, return null if not found
+        return null;
+    }
+
     pub const LinkResult = struct {
         text: []const u8,
         anchor: []const u8,
         kind: SymbolKind,
         target_file: []const u8,
+    };
+
+    pub const RefLinkResult = struct {
+        text: []const u8,
+        anchor: []const u8,
+        target_file: []const u8,
+        kind: types.RefKind,
+        symbol_kind: ?SymbolKind,
     };
 };
 

@@ -55,6 +55,28 @@ pub const TestRef = struct {
     line: ?u32 = null,
 };
 
+/// Kind of reference target for @ref tag
+pub const RefKind = enum {
+    /// Reference to a symbol (function, class, etc.)
+    symbol,
+    /// Reference to a @page
+    page,
+    /// Reference to a @section
+    section,
+    /// Reference to an @anchor
+    anchor,
+};
+
+/// Cross-reference link from @ref tag
+pub const RefLink = struct {
+    /// Target identifier (e.g., "MyClass::method()", "page_examples")
+    target: []const u8,
+    /// Optional custom display text (e.g., "the overview")
+    display_text: ?[]const u8 = null,
+    /// Kind of reference (inferred during parsing or resolution)
+    kind: RefKind = .symbol,
+};
+
 /// Parsed docstring with structured information
 pub const DocString = struct {
     /// Raw docstring text
@@ -145,6 +167,8 @@ pub const DocString = struct {
     code_blocks: []const CodeBlock = &[_]CodeBlock{},
     /// Test references (@test)
     tests: []const TestRef = &[_]TestRef{},
+    /// Cross-references (@ref)
+    refs: []const RefLink = &[_]RefLink{},
 };
 
 /// Function parameter
