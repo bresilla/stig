@@ -146,7 +146,7 @@ pub const DocstringExtractor = struct {
         var current_pos: usize = 0;
 
         // Tags that end the details section (without prefix - we check both @ and \)
-        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude", "synopsis", "group", "unique_name" };
+        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude", "synopsis", "group", "unique_name", "module" };
 
         while (lines.next()) |line| {
             const line_start = current_pos;
@@ -436,6 +436,13 @@ pub const DocstringExtractor = struct {
                 const name = std.mem.trim(u8, trimmed[13..], " \t");
                 if (name.len > 0) {
                     doc.unique_name_override = name;
+                }
+            }
+            // @module - assign entity to a logical module
+            else if (startsWithCommand(trimmed, "module ")) {
+                const mod_name = std.mem.trim(u8, trimmed[8..], " \t");
+                if (mod_name.len > 0) {
+                    doc.module = mod_name;
                 }
             }
         }

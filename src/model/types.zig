@@ -105,6 +105,8 @@ pub const DocString = struct {
     group: ?GroupInfo = null,
     /// Unique name override (@unique_name) - custom link target name
     unique_name_override: ?[]const u8 = null,
+    /// Module membership (@module) - logical module organization
+    module: ?[]const u8 = null,
 };
 
 /// Function parameter
