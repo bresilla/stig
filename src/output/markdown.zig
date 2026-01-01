@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("../model/types.zig");
 const xref = @import("../xref.zig");
+const config = @import("../config.zig");
 
 /// Markdown output generator with optional cross-reference support
 pub const MarkdownGenerator = struct {
@@ -12,6 +13,8 @@ pub const MarkdownGenerator = struct {
     current_file: []const u8 = "",
     /// Output format (affects link generation)
     output_format: xref.SymbolTable.OutputFormat = .markdown,
+    /// Configuration for filtering and output options
+    cfg: config.Config = .{},
 
     const Self = @This();
 
@@ -55,6 +58,83 @@ pub const MarkdownGenerator = struct {
         self.output_format = format;
     }
 
+    /// Sets the configuration
+    pub fn setConfig(self: *Self, cfg_: config.Config) void {
+        self.cfg = cfg_;
+    }
+
+    /// Checks if an entity name should be excluded based on namespace blacklist
+    fn isBlacklistedNamespace(self: *Self, name: []const u8) bool {
+        for (self.cfg.blacklist_namespace) |blacklisted| {
+            // Check if name contains the blacklisted namespace
+            // e.g., "foo::detail::bar" should match "detail"
+            if (std.mem.indexOf(u8, name, blacklisted)) |idx| {
+                // Verify it's a proper namespace component (preceded by :: or start, followed by :: or end)
+                const before_ok = idx == 0 or (idx >= 2 and std.mem.eql(u8, name[idx - 2 .. idx], "::"));
+                const after_idx = idx + blacklisted.len;
+                const after_ok = after_idx >= name.len or (after_idx + 2 <= name.len and std.mem.eql(u8, name[after_idx .. after_idx + 2], "::"));
+                if (before_ok and after_ok) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// Checks if an entity name matches any blacklist pattern (glob with * and ?)
+    fn isBlacklistedPattern(self: *Self, name: []const u8) bool {
+        for (self.cfg.blacklist_pattern) |pattern| {
+            if (globMatch(pattern, name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Simple glob matching with * (any chars) and ? (single char)
+    fn globMatch(pattern: []const u8, text: []const u8) bool {
+        var pi: usize = 0;
+        var ti: usize = 0;
+        var star_pi: ?usize = null;
+        var star_ti: usize = 0;
+
+        while (ti < text.len) {
+            if (pi < pattern.len and (pattern[pi] == '?' or pattern[pi] == text[ti])) {
+                pi += 1;
+                ti += 1;
+            } else if (pi < pattern.len and pattern[pi] == '*') {
+                star_pi = pi;
+                star_ti = ti;
+                pi += 1;
+            } else if (star_pi) |sp| {
+                pi = sp + 1;
+                star_ti += 1;
+                ti = star_ti;
+            } else {
+                return false;
+            }
+        }
+
+        while (pi < pattern.len and pattern[pi] == '*') {
+            pi += 1;
+        }
+
+        return pi == pattern.len;
+    }
+
+    /// Checks if an entity should be excluded based on all blacklist rules
+    fn shouldExclude(self: *Self, name: []const u8, doc: ?types.DocString) bool {
+        // Check @exclude tag
+        if (doc) |d| {
+            if (d.exclude == .full) return true;
+        }
+        // Check namespace blacklist
+        if (self.isBlacklistedNamespace(name)) return true;
+        // Check pattern blacklist
+        if (self.isBlacklistedPattern(name)) return true;
+        return false;
+    }
+
     /// Generates markdown documentation for a module
     pub fn generate(self: *Self, module: types.Module) ![]const u8 {
         // Clear buffer for fresh generation
@@ -66,7 +146,7 @@ pub const MarkdownGenerator = struct {
         if (module.functions.len > 0) {
             var has_visible_funcs = false;
             for (module.functions) |func| {
-                if (func.doc == null or func.doc.?.exclude != .full) {
+                if (!self.shouldExclude(func.name, func.doc)) {
                     has_visible_funcs = true;
                     break;
                 }
@@ -81,7 +161,7 @@ pub const MarkdownGenerator = struct {
         if (module.structs.len > 0) {
             var has_visible_structs = false;
             for (module.structs) |s| {
-                if (s.doc == null or s.doc.?.exclude != .full) {
+                if (!self.shouldExclude(s.name, s.doc)) {
                     has_visible_structs = true;
                     break;
                 }
@@ -89,7 +169,7 @@ pub const MarkdownGenerator = struct {
             if (has_visible_structs) {
                 try self.writeString("## Structures\n\n");
                 for (module.structs) |s| {
-                    if (s.doc != null and s.doc.?.exclude == .full) continue;
+                    if (self.shouldExclude(s.name, s.doc)) continue;
                     try self.writeStruct(s);
                 }
             }
@@ -99,7 +179,7 @@ pub const MarkdownGenerator = struct {
         if (module.enums.len > 0) {
             var has_visible_enums = false;
             for (module.enums) |e| {
-                if (e.doc == null or e.doc.?.exclude != .full) {
+                if (!self.shouldExclude(e.name, e.doc)) {
                     has_visible_enums = true;
                     break;
                 }
@@ -107,7 +187,7 @@ pub const MarkdownGenerator = struct {
             if (has_visible_enums) {
                 try self.writeString("## Enumerations\n\n");
                 for (module.enums) |e| {
-                    if (e.doc != null and e.doc.?.exclude == .full) continue;
+                    if (self.shouldExclude(e.name, e.doc)) continue;
                     try self.writeEnum(e);
                 }
             }
@@ -117,7 +197,7 @@ pub const MarkdownGenerator = struct {
         if (module.typedefs.len > 0) {
             var has_visible_typedefs = false;
             for (module.typedefs) |td| {
-                if (td.doc == null or td.doc.?.exclude != .full) {
+                if (!self.shouldExclude(td.name, td.doc)) {
                     has_visible_typedefs = true;
                     break;
                 }
@@ -125,7 +205,7 @@ pub const MarkdownGenerator = struct {
             if (has_visible_typedefs) {
                 try self.writeString("## Type Definitions\n\n");
                 for (module.typedefs) |td| {
-                    if (td.doc != null and td.doc.?.exclude == .full) continue;
+                    if (self.shouldExclude(td.name, td.doc)) continue;
                     try self.writeTypedef(td);
                 }
             }
@@ -135,7 +215,7 @@ pub const MarkdownGenerator = struct {
         if (module.macros.len > 0) {
             var has_visible_macros = false;
             for (module.macros) |macro| {
-                if (macro.doc == null or macro.doc.?.exclude != .full) {
+                if (!self.shouldExclude(macro.name, macro.doc)) {
                     has_visible_macros = true;
                     break;
                 }
@@ -143,7 +223,7 @@ pub const MarkdownGenerator = struct {
             if (has_visible_macros) {
                 try self.writeString("## Macros\n\n");
                 for (module.macros) |macro| {
-                    if (macro.doc != null and macro.doc.?.exclude == .full) continue;
+                    if (self.shouldExclude(macro.name, macro.doc)) continue;
                     try self.writeMacro(macro);
                 }
             }
@@ -153,7 +233,7 @@ pub const MarkdownGenerator = struct {
         if (module.classes.len > 0) {
             var has_visible_classes = false;
             for (module.classes) |class| {
-                if (class.doc == null or class.doc.?.exclude != .full) {
+                if (!self.shouldExclude(class.name, class.doc)) {
                     has_visible_classes = true;
                     break;
                 }
@@ -161,7 +241,7 @@ pub const MarkdownGenerator = struct {
             if (has_visible_classes) {
                 try self.writeString("## Classes\n\n");
                 for (module.classes) |class| {
-                    if (class.doc != null and class.doc.?.exclude == .full) continue;
+                    if (self.shouldExclude(class.name, class.doc)) continue;
                     try self.writeClass(class);
                 }
             }
@@ -541,8 +621,8 @@ pub const MarkdownGenerator = struct {
 
         // Categorize functions
         for (functions) |func| {
-            // Skip fully excluded functions
-            if (func.doc != null and func.doc.?.exclude == .full) continue;
+            // Skip excluded functions (by @exclude, namespace blacklist, or pattern)
+            if (self.shouldExclude(func.name, func.doc)) continue;
 
             if (func.doc) |doc| {
                 if (doc.group) |group| {
