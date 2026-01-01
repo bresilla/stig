@@ -36,6 +36,10 @@ pub const Config = struct {
     blacklist_namespace: []const []const u8 = &[_][]const u8{ "detail", "internal", "impl" },
     /// Blacklisted entity name patterns (glob patterns: * and ?)
     blacklist_pattern: []const []const u8 = &[_][]const u8{},
+    /// Whether to extract private members (default: false)
+    extract_private: bool = false,
+    /// Whether to extract protected members (default: true)
+    extract_protected: bool = true,
 
     pub const Format = enum {
         markdown,
