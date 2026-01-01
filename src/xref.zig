@@ -58,6 +58,11 @@ pub const SymbolTable = struct {
     /// Registers a symbol in the table
     /// Also registers the short name (without namespace) for easier lookup
     pub fn register(self: *Self, name: []const u8, kind: SymbolKind, source_file: []const u8) !void {
+        try self.registerWithUniqueName(name, kind, source_file, null);
+    }
+
+    /// Registers a symbol with an optional unique name override for linking
+    pub fn registerWithUniqueName(self: *Self, name: []const u8, kind: SymbolKind, source_file: []const u8, unique_name: ?[]const u8) !void {
         const anchor = try self.generateAnchor(name);
         const info = SymbolInfo{
             .kind = kind,
@@ -75,6 +80,28 @@ pub const SymbolTable = struct {
             // Only register short name if not already taken
             if (!self.symbols.contains(short_name)) {
                 try self.symbols.put(short_name, info);
+            }
+        }
+
+        // Register with unique name override if provided
+        if (unique_name) |uname| {
+            // Handle relative names (starting with *)
+            if (std.mem.startsWith(u8, uname, "*")) {
+                // Relative name - prepend parent scope
+                if (std.mem.lastIndexOf(u8, name, "::")) |idx| {
+                    const parent_scope = name[0 .. idx + 2];
+                    const relative_part = uname[1..];
+                    const full_unique = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ parent_scope, relative_part });
+                    defer self.allocator.free(full_unique);
+                    if (!self.symbols.contains(full_unique)) {
+                        try self.symbols.put(try self.allocator.dupe(u8, full_unique), info);
+                    }
+                }
+            } else {
+                // Absolute unique name
+                if (!self.symbols.contains(uname)) {
+                    try self.symbols.put(uname, info);
+                }
             }
         }
     }
@@ -114,27 +141,32 @@ pub const SymbolTable = struct {
         for (modules) |module| {
             // Register functions
             for (module.functions) |func| {
-                try self.register(func.name, .function, module.name);
+                const unique_name = if (func.doc) |doc| doc.unique_name_override else null;
+                try self.registerWithUniqueName(func.name, .function, module.name, unique_name);
             }
 
             // Register structs
             for (module.structs) |s| {
-                try self.register(s.name, .struct_type, module.name);
+                const unique_name = if (s.doc) |doc| doc.unique_name_override else null;
+                try self.registerWithUniqueName(s.name, .struct_type, module.name, unique_name);
             }
 
             // Register enums
             for (module.enums) |e| {
-                try self.register(e.name, .enum_type, module.name);
+                const unique_name = if (e.doc) |doc| doc.unique_name_override else null;
+                try self.registerWithUniqueName(e.name, .enum_type, module.name, unique_name);
             }
 
             // Register typedefs
             for (module.typedefs) |td| {
-                try self.register(td.name, .typedef, module.name);
+                const unique_name = if (td.doc) |doc| doc.unique_name_override else null;
+                try self.registerWithUniqueName(td.name, .typedef, module.name, unique_name);
             }
 
             // Register classes (C++)
             for (module.classes) |class| {
-                try self.register(class.name, .class_type, module.name);
+                const unique_name = if (class.doc) |doc| doc.unique_name_override else null;
+                try self.registerWithUniqueName(class.name, .class_type, module.name, unique_name);
             }
         }
     }

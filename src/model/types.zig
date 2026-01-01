@@ -103,6 +103,8 @@ pub const DocString = struct {
     synopsis_override: ?[]const u8 = null,
     /// Group membership (@group) - groups related entities together
     group: ?GroupInfo = null,
+    /// Unique name override (@unique_name) - custom link target name
+    unique_name_override: ?[]const u8 = null,
 };
 
 /// Function parameter
