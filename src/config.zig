@@ -40,6 +40,29 @@ pub const Config = struct {
     extract_private: bool = false,
     /// Whether to extract protected members (default: true)
     extract_protected: bool = true,
+    /// Custom section names for localization/style
+    section_names: SectionNames = .{},
+
+    /// Customizable section names for documentation output
+    pub const SectionNames = struct {
+        parameters: []const u8 = "Parameters",
+        returns: []const u8 = "Returns",
+        throws: []const u8 = "Throws",
+        effects: []const u8 = "Effects",
+        requires: []const u8 = "Requires",
+        see_also: []const u8 = "See Also",
+        deprecated: []const u8 = "Deprecated",
+        notes: []const u8 = "Notes",
+        warnings: []const u8 = "Warnings",
+        template_parameters: []const u8 = "Template Parameters",
+        return_values: []const u8 = "Return Values",
+        preconditions: []const u8 = "Preconditions",
+        postconditions: []const u8 = "Postconditions",
+        complexity: []const u8 = "Complexity",
+        remarks: []const u8 = "Remarks",
+        thread_safety: []const u8 = "Thread Safety",
+        invariants: []const u8 = "Invariants",
+    };
 
     pub const Format = enum {
         markdown,
