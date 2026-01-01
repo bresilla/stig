@@ -146,7 +146,7 @@ pub const DocstringExtractor = struct {
         var current_pos: usize = 0;
 
         // Tags that end the details section (without prefix - we check both @ and \)
-        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude", "synopsis", "group", "unique_name", "module", "entity", "file", "output_section", "copydoc", "todo", "bug", "snippet", "attention", "important", "date", "copyright", "mermaid" };
+        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude", "synopsis", "group", "unique_name", "module", "entity", "file", "output_section", "copydoc", "todo", "bug", "snippet", "attention", "important", "date", "copyright", "mermaid", "code", "endcode" };
 
         while (lines.next()) |line| {
             const line_start = current_pos;
@@ -246,6 +246,13 @@ pub const DocstringExtractor = struct {
         var mermaid_content: std.ArrayList(u8) = .empty;
         var mermaid_caption: ?[]const u8 = null;
 
+        // State for multi-line @code/@endcode blocks
+        var code_blocks: std.ArrayList(types.CodeBlock) = .empty;
+        var in_code_block = false;
+        var code_content: std.ArrayList(u8) = .empty;
+        var code_language: ?[]const u8 = null;
+        var code_lineno: bool = false;
+
         var lines = std.mem.splitScalar(u8, raw, '\n');
         while (lines.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \t\r*");
@@ -285,6 +292,64 @@ pub const DocstringExtractor = struct {
                     try mermaid_content.append(self.allocator, '\n');
                 }
                 try mermaid_content.appendSlice(self.allocator, trimmed);
+                continue;
+            }
+
+            // Handle @code or \code with optional {.lang} or {.lang,lineno}
+            if (startsWithCommand(trimmed, "code")) {
+                // Make sure it's not @copydoc or similar
+                // Both @code and \code are 5 characters (prefix + "code")
+                const after_code = trimmed[5..];
+                // It must be end-of-string, or followed by { or whitespace
+                if (after_code.len == 0 or after_code[0] == '{' or after_code[0] == ' ' or after_code[0] == '\t') {
+                    in_code_block = true;
+                    code_content = .empty;
+                    code_language = null;
+                    code_lineno = false;
+
+                    // Parse options: @code{.cpp} or @code{.cpp,lineno}
+                    if (after_code.len > 0 and after_code[0] == '{') {
+                        // Find closing brace
+                        if (std.mem.indexOf(u8, after_code, "}")) |end| {
+                            const options = after_code[1..end];
+                            // Parse options
+                            var opts = std.mem.splitScalar(u8, options, ',');
+                            while (opts.next()) |opt| {
+                                const trimmed_opt = std.mem.trim(u8, opt, " \t");
+                                if (std.mem.startsWith(u8, trimmed_opt, ".")) {
+                                    code_language = trimmed_opt[1..];
+                                } else if (std.mem.eql(u8, trimmed_opt, "lineno") or std.mem.eql(u8, trimmed_opt, "linenos")) {
+                                    code_lineno = true;
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+            }
+
+            // Handle @endcode or \endcode
+            if (startsWithCommand(trimmed, "endcode")) {
+                if (in_code_block) {
+                    const content = try code_content.toOwnedSlice(self.allocator);
+                    try code_blocks.append(self.allocator, types.CodeBlock{
+                        .content = content,
+                        .language = code_language,
+                        .show_line_numbers = code_lineno,
+                    });
+                    in_code_block = false;
+                    code_language = null;
+                    code_lineno = false;
+                }
+                continue;
+            }
+
+            // If inside code block, collect content
+            if (in_code_block) {
+                if (code_content.items.len > 0) {
+                    try code_content.append(self.allocator, '\n');
+                }
+                try code_content.appendSlice(self.allocator, trimmed);
                 continue;
             }
 
@@ -642,6 +707,9 @@ pub const DocstringExtractor = struct {
         if (mermaid_diagrams.items.len > 0) {
             doc.mermaid_diagrams = try mermaid_diagrams.toOwnedSlice(self.allocator);
         }
+        if (code_blocks.items.len > 0) {
+            doc.code_blocks = try code_blocks.toOwnedSlice(self.allocator);
+        }
 
         return doc;
     }
@@ -685,6 +753,120 @@ pub const DocstringExtractor = struct {
         result = std.mem.trim(u8, result, " \t\n\r");
 
         return result;
+    }
+
+    /// Checks if a docstring contains @page or @mainpage command
+    pub fn containsPageCommand(_: *Self, text: []const u8) bool {
+        // Look for @page or @mainpage (or \page, \mainpage)
+        if (std.mem.indexOf(u8, text, "@page") != null or
+            std.mem.indexOf(u8, text, "\\page") != null or
+            std.mem.indexOf(u8, text, "@mainpage") != null or
+            std.mem.indexOf(u8, text, "\\mainpage") != null)
+        {
+            return true;
+        }
+        return false;
+    }
+
+    /// Parses a @page or @mainpage docstring into a Page struct
+    /// Format: @page page_id Page Title
+    ///         Content follows...
+    /// Or:     @mainpage Page Title
+    ///         Content follows...
+    pub fn parsePage(self: *Self, text: []const u8) !?types.Page {
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        var is_mainpage = false;
+        var page_id: ?[]const u8 = null;
+        var title: ?[]const u8 = null;
+        var content_lines: std.ArrayList([]const u8) = .empty;
+        defer content_lines.deinit(self.allocator);
+
+        var found_page_command = false;
+
+        while (lines.next()) |line| {
+            var trimmed = std.mem.trim(u8, line, " \t\r");
+
+            // Strip leading asterisks from multi-line comments
+            if (std.mem.startsWith(u8, trimmed, "* ")) {
+                trimmed = trimmed[2..];
+            } else if (std.mem.startsWith(u8, trimmed, "*")) {
+                trimmed = std.mem.trimLeft(u8, trimmed[1..], " ");
+            }
+
+            if (!found_page_command) {
+                // Look for @mainpage first (no page_id, just title)
+                if (startsWithCommand(trimmed, "mainpage")) {
+                    is_mainpage = true;
+                    found_page_command = true;
+                    page_id = "mainpage";
+
+                    // Rest of line after @mainpage is the title
+                    const after_cmd = std.mem.trimLeft(u8, trimmed[commandPrefixLen("mainpage")..], " \t");
+                    if (after_cmd.len > 0) {
+                        title = after_cmd;
+                    }
+                    continue;
+                }
+
+                // Look for @page page_id Title
+                if (startsWithCommand(trimmed, "page")) {
+                    found_page_command = true;
+
+                    // Parse: @page page_id Title text
+                    const after_cmd = std.mem.trimLeft(u8, trimmed[commandPrefixLen("page")..], " \t");
+
+                    // Split into page_id and title
+                    if (std.mem.indexOfScalar(u8, after_cmd, ' ')) |space_idx| {
+                        page_id = after_cmd[0..space_idx];
+                        title = std.mem.trimLeft(u8, after_cmd[space_idx + 1 ..], " \t");
+                        if (title.?.len == 0) title = null;
+                    } else {
+                        // Only page_id, no title
+                        page_id = after_cmd;
+                    }
+                    continue;
+                }
+
+                // Skip lines before finding the page command
+                continue;
+            }
+
+            // After finding page command, collect content lines
+            // Skip empty lines at the very beginning of content
+            if (content_lines.items.len == 0 and trimmed.len == 0) {
+                continue;
+            }
+
+            try content_lines.append(self.allocator, trimmed);
+        }
+
+        if (!found_page_command or page_id == null) {
+            return null;
+        }
+
+        // Join content lines
+        var content_buf: std.ArrayList(u8) = .empty;
+        defer content_buf.deinit(self.allocator);
+
+        for (content_lines.items, 0..) |content_line, idx| {
+            try content_buf.appendSlice(self.allocator, content_line);
+            if (idx < content_lines.items.len - 1) {
+                try content_buf.append(self.allocator, '\n');
+            }
+        }
+
+        // Trim trailing empty lines from content
+        const content = std.mem.trimRight(u8, content_buf.items, " \t\n\r");
+
+        // Allocate content string
+        const content_copy = try self.allocator.dupe(u8, content);
+
+        return types.Page{
+            .id = page_id.?,
+            .title = title orelse page_id.?,
+            .content = content_copy,
+            .is_mainpage = is_mainpage,
+        };
     }
 };
 

@@ -1,0 +1,10 @@
+[book]
+title = "API Reference"
+language = "en"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "stig_version": "0.1.0",
+  "entries": {
+    "test/fixtures/macros.h": {
+      "hash": "e74440757eb27fb41397082601c4ae6322e41f54144fee8844ccff7960e39803",
+      "mtime": 1767198421910068269,
+      "size": 2248
+    },
+    "test/fixtures/basic.h": {
+      "hash": "4f6a25ac4269318931d98d00844fa3f4d655af11573cc1209a1f117f7c21d8a8",
+      "mtime": 1767182727429502707,
+      "size": 810
+    },
+    "test/fixtures/complex.h": {
+      "hash": "8d520a5d659ee7c5a61ff112ab5c0e1877ec1592dd19c7e377348e419ca72f4d",
+      "mtime": 1767190507191217647,
+      "size": 7233
+    }
+  }
+}

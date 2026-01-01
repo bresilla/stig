@@ -75,6 +75,9 @@ pub const SymbolTable = struct {
 
     /// Registers a symbol with an optional unique name override for linking
     pub fn registerWithUniqueName(self: *Self, name: []const u8, kind: SymbolKind, source_file: []const u8, unique_name: ?[]const u8) !void {
+        // Skip if already registered (can happen with multiple modules)
+        if (self.symbols.contains(name)) return;
+
         const anchor = try self.generateAnchor(name);
         const info = SymbolInfo{
             .kind = kind,
@@ -254,8 +257,10 @@ pub const SymbolTable = struct {
                             .anchor = anchor,
                             .name = func.name,
                         });
+                        // Don't free sig_name - it's now owned by the hashmap
+                    } else {
+                        self.allocator.free(sig_name);
                     }
-                    self.allocator.free(sig_name);
                 } else {
                     self.allocator.free(sig_name);
                 }

@@ -4,7 +4,7 @@
 
 # Functions
 
-- [test_code_blocks.h](./functions/test_code_blocks.md)
+- [test_page.h](./functions/test_page.md)
 
 # Reference
 

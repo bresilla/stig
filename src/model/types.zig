@@ -131,6 +131,8 @@ pub const DocString = struct {
     copyright: ?[]const u8 = null,
     /// Mermaid diagrams (@mermaid/@endmermaid)
     mermaid_diagrams: []const MermaidDiagram = &[_]MermaidDiagram{},
+    /// Code blocks (@code/@endcode)
+    code_blocks: []const CodeBlock = &[_]CodeBlock{},
 };
 
 /// Function parameter
@@ -338,6 +340,18 @@ pub const Concept = struct {
     namespace: ?[]const u8 = null,
 };
 
+/// Custom documentation page from @page or @mainpage
+pub const Page = struct {
+    /// Page identifier (e.g., "examples" or "mainpage")
+    id: []const u8,
+    /// Page title (e.g., "Example Code")
+    title: []const u8,
+    /// Full content after title
+    content: []const u8,
+    /// true for @mainpage
+    is_mainpage: bool,
+};
+
 /// Doxygen-style group definition (@defgroup)
 pub const Group = struct {
     /// Group identifier (e.g., "math_utils")
@@ -398,6 +412,16 @@ pub const MermaidDiagram = struct {
     caption: ?[]const u8 = null,
 };
 
+/// Code block from @code/@endcode
+pub const CodeBlock = struct {
+    /// Code content
+    content: []const u8,
+    /// Language hint (e.g., "cpp", "python", etc.)
+    language: ?[]const u8 = null,
+    /// Whether to show line numbers
+    show_line_numbers: bool = false,
+};
+
 /// A parsed module (typically one header file)
 pub const Module = struct {
     name: []const u8,
@@ -414,4 +438,6 @@ pub const Module = struct {
     groups: []const Group = &[_]Group{},
     /// File-level documentation (@file)
     file_doc: ?DocString = null,
+    /// Custom pages (@page, @mainpage)
+    pages: []const Page = &[_]Page{},
 };

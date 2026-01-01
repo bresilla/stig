@@ -103,6 +103,12 @@ pub const MdbookGenerator = struct {
         // Generate TODO.md and BUGS.md if there are any todos or bugs
         try self.generateTodoPage(output_dir, modules);
         try self.generateBugsPage(output_dir, modules);
+
+        // Generate INDEX.md with alphabetical symbol listing
+        try self.generateIndex(output_dir, modules);
+
+        // Generate custom pages from @page and @mainpage
+        try self.generateCustomPages(output_dir, modules);
     }
 
     /// Creates the directory structure for mdbook
@@ -122,7 +128,7 @@ pub const MdbookGenerator = struct {
         };
 
         // Create subdirectories for organized content
-        const subdirs = [_][]const u8{ "functions", "types", "macros" };
+        const subdirs = [_][]const u8{ "functions", "types", "macros", "pages" };
         for (subdirs) |subdir| {
             var subdir_buf: [std.fs.max_path_bytes]u8 = undefined;
             const subdir_path = try std.fmt.bufPrint(&subdir_buf, "{s}/src/{s}", .{ output_dir, subdir });
@@ -257,6 +263,13 @@ pub const MdbookGenerator = struct {
             try content.appendSlice(self.allocator, "\n");
         }
 
+        // TODO: Custom Pages section (non-mainpage pages from @page)
+        // Requires module.pages field to be added to Module struct
+
+        // Reference section for Symbol Index
+        try content.appendSlice(self.allocator, "# Reference\n\n");
+        try content.appendSlice(self.allocator, "- [Symbol Index](./INDEX.md)\n\n");
+
         // Appendix section for TODOs and Bugs
         const has_todos = self.hasTodos(modules);
         const has_bugs = self.hasBugs(modules);
@@ -343,6 +356,16 @@ pub const MdbookGenerator = struct {
 
     /// Generates content organized by header file
     fn generateByHeader(self: *Self, output_dir: []const u8, modules: []const types.Module) !void {
+        // Collect all classes from all modules for inheritance diagrams
+        var all_classes: std.ArrayList(types.Class) = .empty;
+        defer all_classes.deinit(self.allocator);
+        for (modules) |mod| {
+            for (mod.classes) |class| {
+                try all_classes.append(self.allocator, class);
+            }
+        }
+        self.markdown_gen.setAllClasses(all_classes.items);
+
         for (modules) |module| {
             const basename = self.getBasename(module.name);
             const safe_name = self.sanitizeFilename(basename);
@@ -437,6 +460,9 @@ pub const MdbookGenerator = struct {
         var all_typedefs: std.ArrayList(types.Typedef) = .empty;
         defer all_typedefs.deinit(self.allocator);
 
+        var all_classes: std.ArrayList(types.Class) = .empty;
+        defer all_classes.deinit(self.allocator);
+
         for (modules) |module| {
             for (module.functions) |func| {
                 try all_functions.append(self.allocator, func);
@@ -450,7 +476,13 @@ pub const MdbookGenerator = struct {
             for (module.typedefs) |td| {
                 try all_typedefs.append(self.allocator, td);
             }
+            for (module.classes) |class| {
+                try all_classes.append(self.allocator, class);
+            }
         }
+
+        // Set all classes for inheritance diagrams
+        self.markdown_gen.setAllClasses(all_classes.items);
 
         // Generate functions page
         if (all_functions.items.len > 0) {
@@ -472,13 +504,14 @@ pub const MdbookGenerator = struct {
         }
 
         // Generate types page
-        if (all_structs.items.len > 0 or all_enums.items.len > 0 or all_typedefs.items.len > 0) {
+        if (all_structs.items.len > 0 or all_enums.items.len > 0 or all_typedefs.items.len > 0 or all_classes.items.len > 0) {
             const types_module = types.Module{
                 .name = "Types",
                 .functions = &[_]types.Function{},
                 .structs = all_structs.items,
                 .enums = all_enums.items,
                 .typedefs = all_typedefs.items,
+                .classes = all_classes.items,
             };
 
             const markdown = try self.markdown_gen.generate(types_module);
@@ -857,6 +890,277 @@ pub const MdbookGenerator = struct {
             }
         }
         return false;
+    }
+
+    /// Index entry for a symbol
+    const IndexEntry = struct {
+        name: []const u8,
+        qualified_name: []const u8,
+        kind: []const u8,
+        brief: ?[]const u8,
+        link: []const u8,
+        sort_key: u8,
+    };
+
+    /// Generates an alphabetical index of all symbols
+    fn generateIndex(self: *Self, output_dir: []const u8, modules: []const types.Module) !void {
+        var entries: std.ArrayList(IndexEntry) = .empty;
+        defer entries.deinit(self.allocator);
+
+        for (modules) |module| {
+            const basename = self.getBasename(module.name);
+            const safe_name = self.sanitizeFilename(basename);
+
+            // Functions
+            for (module.functions) |func| {
+                if (func.name.len == 0) continue;
+                const brief = if (func.doc) |doc| doc.brief else null;
+                const anchor = try self.toAnchor(func.name);
+                const link = try std.fmt.allocPrint(self.allocator, "functions/{s}.md#{s}", .{ safe_name, anchor });
+                const sort_key = std.ascii.toUpper(func.name[0]);
+                try entries.append(self.allocator, .{
+                    .name = func.name,
+                    .qualified_name = func.name,
+                    .kind = "function",
+                    .brief = brief,
+                    .link = link,
+                    .sort_key = sort_key,
+                });
+            }
+
+            // Classes
+            for (module.classes) |class| {
+                if (class.name.len == 0) continue;
+                const brief = if (class.doc) |doc| doc.brief else null;
+                const anchor = try self.toAnchor(class.name);
+                const link = try std.fmt.allocPrint(self.allocator, "types/{s}.md#{s}", .{ safe_name, anchor });
+                const sort_key = std.ascii.toUpper(class.name[0]);
+                try entries.append(self.allocator, .{
+                    .name = class.name,
+                    .qualified_name = class.name,
+                    .kind = "class",
+                    .brief = brief,
+                    .link = link,
+                    .sort_key = sort_key,
+                });
+
+                // Class methods (public only)
+                for (class.methods) |method| {
+                    if (method.access != .public) continue;
+                    if (method.name.len == 0) continue;
+                    const method_brief = if (method.doc) |doc| doc.brief else null;
+                    const qualified = try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ class.name, method.name });
+                    const class_anchor = try self.toAnchor(class.name);
+                    const method_link = try std.fmt.allocPrint(self.allocator, "types/{s}.md#{s}", .{ safe_name, class_anchor });
+                    const method_sort_key = std.ascii.toUpper(method.name[0]);
+                    try entries.append(self.allocator, .{
+                        .name = method.name,
+                        .qualified_name = qualified,
+                        .kind = "method",
+                        .brief = method_brief,
+                        .link = method_link,
+                        .sort_key = method_sort_key,
+                    });
+                }
+            }
+
+            // Structs
+            for (module.structs) |s| {
+                if (s.name.len == 0) continue;
+                const brief = if (s.doc) |doc| doc.brief else null;
+                const anchor = try self.toAnchor(s.name);
+                const link = try std.fmt.allocPrint(self.allocator, "types/{s}.md#{s}", .{ safe_name, anchor });
+                const sort_key = std.ascii.toUpper(s.name[0]);
+                try entries.append(self.allocator, .{
+                    .name = s.name,
+                    .qualified_name = s.name,
+                    .kind = "struct",
+                    .brief = brief,
+                    .link = link,
+                    .sort_key = sort_key,
+                });
+            }
+
+            // Enums
+            for (module.enums) |e| {
+                if (e.name.len == 0) continue;
+                const brief = if (e.doc) |doc| doc.brief else null;
+                const anchor = try self.toAnchor(e.name);
+                const link = try std.fmt.allocPrint(self.allocator, "types/{s}.md#{s}", .{ safe_name, anchor });
+                const sort_key = std.ascii.toUpper(e.name[0]);
+                try entries.append(self.allocator, .{
+                    .name = e.name,
+                    .qualified_name = e.name,
+                    .kind = "enum",
+                    .brief = brief,
+                    .link = link,
+                    .sort_key = sort_key,
+                });
+            }
+
+            // Macros
+            for (module.macros) |macro| {
+                if (macro.name.len == 0) continue;
+                const brief = if (macro.doc) |doc| doc.brief else null;
+                const anchor = try self.toAnchor(macro.name);
+                const link = try std.fmt.allocPrint(self.allocator, "macros/{s}.md#{s}", .{ safe_name, anchor });
+                const sort_key = std.ascii.toUpper(macro.name[0]);
+                try entries.append(self.allocator, .{
+                    .name = macro.name,
+                    .qualified_name = macro.name,
+                    .kind = "macro",
+                    .brief = brief,
+                    .link = link,
+                    .sort_key = sort_key,
+                });
+            }
+
+            // Typedefs
+            for (module.typedefs) |td| {
+                if (td.name.len == 0) continue;
+                const brief = if (td.doc) |doc| doc.brief else null;
+                const anchor = try self.toAnchor(td.name);
+                const link = try std.fmt.allocPrint(self.allocator, "types/{s}.md#{s}", .{ safe_name, anchor });
+                const sort_key = std.ascii.toUpper(td.name[0]);
+                try entries.append(self.allocator, .{
+                    .name = td.name,
+                    .qualified_name = td.name,
+                    .kind = "typedef",
+                    .brief = brief,
+                    .link = link,
+                    .sort_key = sort_key,
+                });
+            }
+
+            // Concepts
+            for (module.concepts) |concept| {
+                if (concept.name.len == 0) continue;
+                const brief = if (concept.docstring) |doc| doc.brief else null;
+                const anchor = try self.toAnchor(concept.name);
+                const link = try std.fmt.allocPrint(self.allocator, "types/{s}.md#{s}", .{ safe_name, anchor });
+                const sort_key = std.ascii.toUpper(concept.name[0]);
+                try entries.append(self.allocator, .{
+                    .name = concept.name,
+                    .qualified_name = concept.name,
+                    .kind = "concept",
+                    .brief = brief,
+                    .link = link,
+                    .sort_key = sort_key,
+                });
+            }
+        }
+
+        // Sort entries by sort_key then by qualified_name
+        std.mem.sort(IndexEntry, entries.items, {}, struct {
+            fn lessThan(_: void, a: IndexEntry, b: IndexEntry) bool {
+                if (a.sort_key != b.sort_key) return a.sort_key < b.sort_key;
+                return std.mem.lessThan(u8, a.qualified_name, b.qualified_name);
+            }
+        }.lessThan);
+
+        // Generate markdown content
+        var content: std.ArrayList(u8) = .empty;
+        defer content.deinit(self.allocator);
+
+        try content.appendSlice(self.allocator, "# Symbol Index\n\n");
+        try content.appendSlice(self.allocator, "This page lists all documented symbols alphabetically.\n\n");
+
+        var current_letter: u8 = 0;
+        for (entries.items) |entry| {
+            if (entry.sort_key != current_letter) {
+                current_letter = entry.sort_key;
+                try content.appendSlice(self.allocator, "\n## ");
+                try content.append(self.allocator, current_letter);
+                try content.appendSlice(self.allocator, "\n\n");
+            }
+
+            // Format: - [name](link) *(kind)* - brief
+            try content.appendSlice(self.allocator, "- [");
+            try content.appendSlice(self.allocator, entry.qualified_name);
+            try content.appendSlice(self.allocator, "](");
+            try content.appendSlice(self.allocator, entry.link);
+            try content.appendSlice(self.allocator, ") *");
+            try content.appendSlice(self.allocator, entry.kind);
+            try content.appendSlice(self.allocator, "*");
+            if (entry.brief) |brief| {
+                try content.appendSlice(self.allocator, " - ");
+                const max_len = 60;
+                if (brief.len > max_len) {
+                    try content.appendSlice(self.allocator, brief[0..max_len]);
+                    try content.appendSlice(self.allocator, "...");
+                } else {
+                    try content.appendSlice(self.allocator, brief);
+                }
+            }
+            try content.appendSlice(self.allocator, "\n");
+        }
+
+        // Write file
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "{s}/src/INDEX.md", .{output_dir});
+        const file = try std.fs.cwd().createFile(path, .{});
+        defer file.close();
+        try file.writeAll(content.items);
+    }
+
+    /// Converts a name to an anchor (lowercase for mdbook compatibility)
+    fn toAnchor(self: *Self, name: []const u8) ![]const u8 {
+        var result = try self.allocator.alloc(u8, name.len);
+        for (name, 0..) |c, i| {
+            result[i] = std.ascii.toLower(c);
+        }
+        return result;
+    }
+
+    /// Generates custom pages from @page and @mainpage tags
+    fn generateCustomPages(self: *Self, output_dir: []const u8, modules: []const types.Module) !void {
+        for (modules) |module| {
+            for (module.pages) |page| {
+                if (page.is_mainpage) {
+                    // Mainpage replaces introduction.md
+                    try self.generateMainpage(output_dir, page);
+                } else {
+                    // Regular page goes to pages/
+                    try self.generatePage(output_dir, page);
+                }
+            }
+        }
+    }
+
+    /// Generates the mainpage (replaces introduction.md)
+    fn generateMainpage(self: *Self, output_dir: []const u8, page: types.Page) !void {
+        var content: std.ArrayList(u8) = .empty;
+        defer content.deinit(self.allocator);
+
+        try content.appendSlice(self.allocator, "# ");
+        try content.appendSlice(self.allocator, page.title);
+        try content.appendSlice(self.allocator, "\n\n");
+        try content.appendSlice(self.allocator, page.content);
+        try content.appendSlice(self.allocator, "\n");
+
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "{s}/src/introduction.md", .{output_dir});
+        const file = try std.fs.cwd().createFile(path, .{});
+        defer file.close();
+        try file.writeAll(content.items);
+    }
+
+    /// Generates a custom page from @page tag
+    fn generatePage(self: *Self, output_dir: []const u8, page: types.Page) !void {
+        var content: std.ArrayList(u8) = .empty;
+        defer content.deinit(self.allocator);
+
+        try content.appendSlice(self.allocator, "# ");
+        try content.appendSlice(self.allocator, page.title);
+        try content.appendSlice(self.allocator, "\n\n");
+        try content.appendSlice(self.allocator, page.content);
+        try content.appendSlice(self.allocator, "\n");
+
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const path = try std.fmt.bufPrint(&path_buf, "{s}/src/pages/{s}.md", .{ output_dir, page.id });
+        const file = try std.fs.cwd().createFile(path, .{});
+        defer file.close();
+        try file.writeAll(content.items);
     }
 
     /// Generates mdbook structure and returns the output directory path

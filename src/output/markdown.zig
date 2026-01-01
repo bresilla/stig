@@ -18,6 +18,8 @@ pub const MarkdownGenerator = struct {
     cfg: config.Config = .{},
     /// Optional snippet extractor for @snippet tags
     snippet_extractor: ?*snippet_mod.SnippetExtractor = null,
+    /// All classes for inheritance diagram generation
+    all_classes: ?[]const types.Class = null,
 
     const Self = @This();
 
@@ -69,6 +71,11 @@ pub const MarkdownGenerator = struct {
     /// Sets the snippet extractor for @snippet tag support
     pub fn setSnippetExtractor(self: *Self, extractor: *snippet_mod.SnippetExtractor) void {
         self.snippet_extractor = extractor;
+    }
+
+    /// Sets all classes for inheritance diagram generation
+    pub fn setAllClasses(self: *Self, classes: []const types.Class) void {
+        self.all_classes = classes;
     }
 
     /// Checks if an entity name should be excluded based on namespace blacklist
@@ -1201,6 +1208,24 @@ pub const MarkdownGenerator = struct {
                     try self.writeString("\n```\n\n");
                 }
             }
+
+            // Code blocks
+            if (doc.code_blocks.len > 0) {
+                for (doc.code_blocks) |block| {
+                    try self.writeString("```");
+                    if (block.language) |lang| {
+                        try self.writeString(lang);
+                    } else {
+                        try self.writeString("cpp"); // default
+                    }
+                    if (block.show_line_numbers) {
+                        try self.writeString(",linenos");
+                    }
+                    try self.writeString("\n");
+                    try self.writeString(block.content);
+                    try self.writeString("\n```\n\n");
+                }
+            }
         }
 
         // Template parameters (merge parsed params with @tparam docs)
@@ -1502,6 +1527,11 @@ pub const MarkdownGenerator = struct {
             try self.writeString("\n\n");
         }
 
+        // Generate inheritance diagram if class participates in inheritance
+        if (self.all_classes) |classes| {
+            try self.writeInheritanceDiagram(class, classes);
+        }
+
         // Code block with class definition
         try self.writeString("```cpp\n");
         // Write attributes on their own line if present
@@ -1664,6 +1694,24 @@ pub const MarkdownGenerator = struct {
                     }
                     try self.writeString("```mermaid\n");
                     try self.writeString(diagram.content);
+                    try self.writeString("\n```\n\n");
+                }
+            }
+
+            // Code blocks
+            if (doc.code_blocks.len > 0) {
+                for (doc.code_blocks) |block| {
+                    try self.writeString("```");
+                    if (block.language) |lang| {
+                        try self.writeString(lang);
+                    } else {
+                        try self.writeString("cpp"); // default
+                    }
+                    if (block.show_line_numbers) {
+                        try self.writeString(",linenos");
+                    }
+                    try self.writeString("\n");
+                    try self.writeString(block.content);
                     try self.writeString("\n```\n\n");
                 }
             }
@@ -1833,6 +1881,133 @@ pub const MarkdownGenerator = struct {
         }
 
         try self.writeString("---\n\n");
+    }
+
+    /// Extracts the simple class name from a potentially qualified name
+    /// e.g., "spatial::Shape<T>" -> "Shape", "std::vector<int>" -> "vector"
+    fn extractSimpleClassName(name: []const u8) []const u8 {
+        var result = name;
+
+        // Strip namespace prefix (find last ::)
+        if (std.mem.lastIndexOf(u8, result, "::")) |idx| {
+            result = result[idx + 2 ..];
+        }
+
+        // Strip template parameters (find first <)
+        if (std.mem.indexOf(u8, result, "<")) |idx| {
+            result = result[0..idx];
+        }
+
+        return result;
+    }
+
+    /// Checks if a base class name matches a class name
+    /// Handles namespace prefixes and template parameters
+    fn baseClassMatches(base_name: []const u8, class_name: []const u8) bool {
+        const base_simple = extractSimpleClassName(base_name);
+        const class_simple = extractSimpleClassName(class_name);
+        return std.mem.eql(u8, base_simple, class_simple);
+    }
+
+    /// Generates a Mermaid class diagram showing inheritance hierarchy
+    fn writeInheritanceDiagram(self: *Self, class: types.Class, all_classes: []const types.Class) !void {
+        // Only generate if class has base classes or is a base for other classes
+        if (class.base_classes.len == 0) {
+            // Check if any class inherits from this one
+            var has_children = false;
+            for (all_classes) |other| {
+                for (other.base_classes) |base| {
+                    if (baseClassMatches(base.name, class.name)) {
+                        has_children = true;
+                        break;
+                    }
+                }
+                if (has_children) break;
+            }
+            if (!has_children) return;
+        }
+
+        try self.writeString("#### Inheritance Diagram\n\n");
+        try self.writeString("```mermaid\nclassDiagram\n");
+
+        // Write the current class
+        try self.writeClassNode(class);
+
+        // Write base classes
+        for (class.base_classes) |base| {
+            // Find base class in all_classes to get its details
+            var found_base = false;
+            for (all_classes) |base_class| {
+                if (baseClassMatches(base.name, base_class.name)) {
+                    try self.writeClassNode(base_class);
+                    found_base = true;
+                    break;
+                }
+            }
+            // If base class not found in our list, still add it as a simple node
+            if (!found_base) {
+                try self.writeString("    class ");
+                try self.writeString(base.name);
+                try self.writeString("\n");
+            }
+        }
+
+        // Write inheritance relationships for base classes
+        for (class.base_classes) |base| {
+            try self.writeString("    ");
+            try self.writeString(base.name);
+            try self.writeString(" <|-- ");
+            try self.writeString(extractSimpleClassName(class.name));
+            if (base.is_virtual) {
+                try self.writeString(" : virtual");
+            }
+            try self.writeString("\n");
+        }
+
+        // Write child classes (classes that inherit from this one)
+        for (all_classes) |other| {
+            // Skip if it's the same class
+            if (std.mem.eql(u8, other.name, class.name)) continue;
+
+            for (other.base_classes) |base| {
+                if (baseClassMatches(base.name, class.name)) {
+                    try self.writeClassNode(other);
+                    try self.writeString("    ");
+                    try self.writeString(extractSimpleClassName(class.name));
+                    try self.writeString(" <|-- ");
+                    try self.writeString(extractSimpleClassName(other.name));
+                    if (base.is_virtual) {
+                        try self.writeString(" : virtual");
+                    }
+                    try self.writeString("\n");
+                    break;
+                }
+            }
+        }
+
+        try self.writeString("```\n\n");
+    }
+
+    /// Writes a class node for the Mermaid diagram
+    fn writeClassNode(self: *Self, class: types.Class) !void {
+        try self.writeString("    class ");
+        // Use simple class name for Mermaid (avoids issues with :: in names)
+        try self.writeString(extractSimpleClassName(class.name));
+
+        // Check if abstract (has pure virtual methods)
+        var is_abstract = false;
+        for (class.methods) |method| {
+            if (method.is_pure_virtual) {
+                is_abstract = true;
+                break;
+            }
+        }
+
+        if (is_abstract) {
+            try self.writeString(" {\n        <<abstract>>\n    }\n");
+        } else {
+            try self.writeString("\n");
+        }
     }
 
     fn writeConcept(self: *Self, concept: types.Concept) !void {

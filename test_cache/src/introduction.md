@@ -7,7 +7,10 @@ Welcome to the API documentation.
 This documentation covers:
 
 - **2** functions
+- **1** structures
+- **1** enumerations
+- **1** type definitions
 
 ## Source Files
 
-- `test/fixtures/test_code_blocks.h`
+- `test/fixtures/basic.h`

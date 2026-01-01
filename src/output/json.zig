@@ -1790,11 +1790,65 @@ pub const JsonGenerator = struct {
         try self.writeIndent();
         try self.writeKey("mermaid_diagrams");
         try self.serializeMermaidDiagrams(doc.mermaid_diagrams);
+        try self.writeChar(',');
+        try self.writeNewline();
+
+        // Code blocks
+        try self.writeIndent();
+        try self.writeKey("code_blocks");
+        try self.serializeCodeBlocks(doc.code_blocks);
         try self.writeNewline();
 
         self.indent_level -= 1;
         try self.writeIndent();
         try self.writeChar('}');
+    }
+
+    fn serializeCodeBlocks(self: *Self, blocks: []const types.CodeBlock) !void {
+        try self.writeChar('[');
+        if (blocks.len > 0) {
+            try self.writeNewline();
+            self.indent_level += 1;
+
+            for (blocks, 0..) |block, i| {
+                try self.writeIndent();
+                try self.writeChar('{');
+                try self.writeNewline();
+                self.indent_level += 1;
+
+                try self.writeIndent();
+                try self.writeKeyValue("content", block.content);
+                try self.writeChar(',');
+                try self.writeNewline();
+
+                try self.writeIndent();
+                try self.writeKey("language");
+                if (block.language) |lang| {
+                    try self.writeJsonString(lang);
+                } else {
+                    try self.writeString("null");
+                }
+                try self.writeChar(',');
+                try self.writeNewline();
+
+                try self.writeIndent();
+                try self.writeKeyBool("show_line_numbers", block.show_line_numbers);
+                try self.writeNewline();
+
+                self.indent_level -= 1;
+                try self.writeIndent();
+                try self.writeChar('}');
+
+                if (i < blocks.len - 1) {
+                    try self.writeChar(',');
+                }
+                try self.writeNewline();
+            }
+
+            self.indent_level -= 1;
+            try self.writeIndent();
+        }
+        try self.writeChar(']');
     }
 
     fn serializeMermaidDiagrams(self: *Self, diagrams: []const types.MermaidDiagram) !void {
