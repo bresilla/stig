@@ -4,9 +4,5 @@
 
 # Functions
 
-- [test_variadic.hpp](./functions/test_variadic.md)
-
-# Types
-
-- [test_variadic.hpp](./types/test_variadic.md)
+- [test_ingroup.hpp](./functions/test_ingroup.md)
 

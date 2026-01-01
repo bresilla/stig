@@ -6,8 +6,8 @@ Welcome to the API documentation.
 
 This documentation covers:
 
-- **2** functions
+- **3** functions
 
 ## Source Files
 
-- `/tmp/test_variadic.hpp`
+- `/tmp/test_ingroup.hpp`

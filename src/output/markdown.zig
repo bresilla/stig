@@ -609,6 +609,13 @@ pub const MarkdownGenerator = struct {
                 try self.writeString("\n");
             }
 
+            // Group membership
+            if (doc.ingroup) |group| {
+                try self.writeString("**Group:** `");
+                try self.writeString(group);
+                try self.writeString("`\n\n");
+            }
+
             if (doc.deprecated) |dep| {
                 try self.writeString("> **Deprecated:** ");
                 try self.writeString(dep);

@@ -75,6 +75,8 @@ pub const DocString = struct {
     sync: ?[]const u8 = null,
     /// Class invariants (@invariant)
     invariants: []const []const u8 = &[_][]const u8{},
+    /// Group membership (@ingroup)
+    ingroup: ?[]const u8 = null,
 };
 
 /// Function parameter
@@ -282,6 +284,16 @@ pub const Concept = struct {
     namespace: ?[]const u8 = null,
 };
 
+/// Doxygen-style group definition (@defgroup)
+pub const Group = struct {
+    /// Group identifier (e.g., "math_utils")
+    id: []const u8,
+    /// Group display name (e.g., "Math Utilities")
+    name: []const u8,
+    /// Brief description
+    brief: ?[]const u8 = null,
+};
+
 /// A parsed module (typically one header file)
 pub const Module = struct {
     name: []const u8,
@@ -295,4 +307,5 @@ pub const Module = struct {
     namespaces: []const Namespace = &[_]Namespace{},
     type_aliases: []const TypeAlias = &[_]TypeAlias{},
     concepts: []const Concept = &[_]Concept{},
+    groups: []const Group = &[_]Group{},
 };

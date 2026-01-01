@@ -146,7 +146,7 @@ pub const DocstringExtractor = struct {
         var current_pos: usize = 0;
 
         // Tags that end the details section (without prefix - we check both @ and \)
-        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures" };
+        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup" };
 
         while (lines.next()) |line| {
             const line_start = current_pos;
@@ -377,6 +377,10 @@ pub const DocstringExtractor = struct {
             // @invariant - class invariants
             else if (startsWithCommand(trimmed, "invariant ")) {
                 try invariants.append(self.allocator, trimmed[11..]);
+            }
+            // @ingroup - group membership
+            else if (startsWithCommand(trimmed, "ingroup ")) {
+                doc.ingroup = trimmed[9..];
             }
         }
 
