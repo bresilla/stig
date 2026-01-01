@@ -19,6 +19,12 @@ pub const ExceptionDoc = struct {
     description: []const u8,
 };
 
+/// Documentation for a return value (@retval)
+pub const RetvalDoc = struct {
+    value: []const u8,
+    description: []const u8,
+};
+
 /// Parsed docstring with structured information
 pub const DocString = struct {
     /// Raw docstring text
@@ -55,6 +61,8 @@ pub const DocString = struct {
     version: ?[]const u8 = null,
     /// Template parameter documentation (@tparam)
     tparams: []const ParamDoc = &[_]ParamDoc{},
+    /// Return value documentation (@retval)
+    retvals: []const RetvalDoc = &[_]RetvalDoc{},
 };
 
 /// Function parameter

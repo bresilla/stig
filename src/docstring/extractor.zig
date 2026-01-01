@@ -121,7 +121,7 @@ pub const DocstringExtractor = struct {
         var current_pos: usize = 0;
 
         // Tags that end the details section
-        const end_tags = [_][]const u8{ "@param", "@tparam", "@return", "@returns", "@deprecated", "@note", "@warning", "@see", "@sa", "@since", "@author", "@version", "@example", "@pre", "@post" };
+        const end_tags = [_][]const u8{ "@param", "@tparam", "@return", "@returns", "@retval", "@deprecated", "@note", "@warning", "@see", "@sa", "@since", "@author", "@version", "@example", "@pre", "@post" };
 
         while (lines.next()) |line| {
             const line_start = current_pos;
@@ -198,6 +198,7 @@ pub const DocstringExtractor = struct {
         // Parse all Doxygen tags
         var params: std.ArrayList(types.ParamDoc) = .empty;
         var tparams: std.ArrayList(types.ParamDoc) = .empty;
+        var retvals: std.ArrayList(types.RetvalDoc) = .empty;
         var exceptions: std.ArrayList(types.ExceptionDoc) = .empty;
         var notes: std.ArrayList([]const u8) = .empty;
         var warnings: std.ArrayList([]const u8) = .empty;
@@ -250,6 +251,19 @@ pub const DocstringExtractor = struct {
             {
                 const prefix_len: usize = if (std.mem.startsWith(u8, trimmed, "@returns ")) 9 else 8;
                 doc.returns = trimmed[prefix_len..];
+            }
+            // @retval <value> <description>
+            else if (std.mem.startsWith(u8, trimmed, "@retval ")) {
+                const rest = trimmed[8..];
+                var parts = std.mem.splitScalar(u8, rest, ' ');
+                if (parts.next()) |retval_value| {
+                    const desc_start = 8 + retval_value.len + 1;
+                    const description = if (desc_start < trimmed.len) trimmed[desc_start..] else "";
+                    try retvals.append(self.allocator, types.RetvalDoc{
+                        .value = retval_value,
+                        .description = description,
+                    });
+                }
             }
             // @deprecated
             else if (std.mem.startsWith(u8, trimmed, "@deprecated ")) {
@@ -319,6 +333,9 @@ pub const DocstringExtractor = struct {
         }
         if (tparams.items.len > 0) {
             doc.tparams = try tparams.toOwnedSlice(self.allocator);
+        }
+        if (retvals.items.len > 0) {
+            doc.retvals = try retvals.toOwnedSlice(self.allocator);
         }
         if (exceptions.items.len > 0) {
             doc.exceptions = try exceptions.toOwnedSlice(self.allocator);
@@ -709,4 +726,24 @@ test "parse tparam tag" {
     try std.testing.expectEqualStrings("The element type", doc.tparams[0].description);
     try std.testing.expectEqualStrings("Allocator", doc.tparams[1].name);
     try std.testing.expectEqualStrings("The memory allocator", doc.tparams[1].description);
+}
+
+test "parse retval tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Opens a file.
+        \\* @retval 0 Success
+        \\* @retval -1 File not found
+        \\* @retval -2 Permission denied
+    );
+    defer std.testing.allocator.free(doc.retvals);
+
+    try std.testing.expectEqualStrings("Opens a file.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 3), doc.retvals.len);
+    try std.testing.expectEqualStrings("0", doc.retvals[0].value);
+    try std.testing.expectEqualStrings("Success", doc.retvals[0].description);
+    try std.testing.expectEqualStrings("-1", doc.retvals[1].value);
+    try std.testing.expectEqualStrings("File not found", doc.retvals[1].description);
+    try std.testing.expectEqualStrings("-2", doc.retvals[2].value);
+    try std.testing.expectEqualStrings("Permission denied", doc.retvals[2].description);
 }

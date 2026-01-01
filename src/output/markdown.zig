@@ -433,6 +433,22 @@ pub const MarkdownGenerator = struct {
                 try self.writeString("\n\n");
             }
 
+            // Return values (@retval)
+            if (doc.retvals.len > 0) {
+                try self.writeString("**Return Values:**\n");
+                for (doc.retvals) |retval| {
+                    try self.writeString("- `");
+                    try self.writeString(retval.value);
+                    try self.writeString("`");
+                    if (retval.description.len > 0) {
+                        try self.writeString(": ");
+                        try self.writeString(retval.description);
+                    }
+                    try self.writeString("\n");
+                }
+                try self.writeString("\n");
+            }
+
             // Exceptions
             if (doc.exceptions.len > 0) {
                 try self.writeString("**Throws:**\n");

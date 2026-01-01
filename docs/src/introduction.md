@@ -6,8 +6,8 @@ Welcome to the API documentation.
 
 This documentation covers:
 
-- **1** functions
+- **2** functions
 
 ## Source Files
 
-- `/tmp/test_tparam.hpp`
+- `/tmp/test_retval.hpp`

@@ -4,9 +4,5 @@
 
 # Functions
 
-- [test_tparam.hpp](./functions/test_tparam.md)
-
-# Types
-
-- [test_tparam.hpp](./types/test_tparam.md)
+- [test_retval.hpp](./functions/test_retval.md)
 
