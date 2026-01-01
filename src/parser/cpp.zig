@@ -239,13 +239,18 @@ pub const CppParser = struct {
                 if (std.mem.eql(u8, child_kind, "function_definition") or
                     std.mem.eql(u8, child_kind, "declaration"))
                 {
-                    // Extract function and override its docstring with template-level doc
+                    // Extract function and add template params
                     if (try self.extractFunctionPrototypeWithDoc(child, filename, namespace, template_doc)) |func| {
-                        try functions.append(self.allocator, func);
+                        var template_func = func;
+                        template_func.template_params = template_params;
+                        try functions.append(self.allocator, template_func);
                     }
                 } else if (std.mem.eql(u8, child_kind, "class_specifier")) {
+                    // Extract class and add template params
                     if (try self.extractClassWithDoc(child, filename, namespace, template_doc)) |class| {
-                        try classes.append(self.allocator, class);
+                        var template_class = class;
+                        template_class.template_params = template_params;
+                        try classes.append(self.allocator, template_class);
                     }
                 } else if (std.mem.eql(u8, child_kind, "struct_specifier")) {
                     if (try self.extractStructWithDoc(child, filename, namespace, template_doc)) |s| {
@@ -307,6 +312,11 @@ pub const CppParser = struct {
                             {
                                 // Non-type template parameter like "size_t N" or "size_t N = 10"
                                 if (self.extractNonTypeTemplateParam(param_node)) |param| {
+                                    try params.append(self.allocator, param);
+                                }
+                            } else if (std.mem.eql(u8, param_kind, "template_template_parameter_declaration")) {
+                                // template<typename> class Container
+                                if (self.extractTemplateTemplateParam(param_node)) |param| {
                                     try params.append(self.allocator, param);
                                 }
                             }
@@ -378,6 +388,53 @@ pub const CppParser = struct {
         return types.TemplateParam{
             .name = name.?,
             .kind = param_type orelse "auto",
+        };
+    }
+
+    /// Extracts a template template parameter (e.g., template<typename> class Container)
+    fn extractTemplateTemplateParam(self: *Self, node: ts.Node) ?types.TemplateParam {
+        var name: ?[]const u8 = null;
+
+        // The structure is:
+        // template_template_parameter_declaration
+        //   - template (keyword)
+        //   - template_parameter_list (<typename>)
+        //   - type_parameter_declaration (class Container)
+        //       - class (keyword)
+        //       - type_identifier (Container)
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "type_parameter_declaration")) {
+                    // Look inside type_parameter_declaration for the name
+                    var j: u32 = 0;
+                    while (j < child.childCount()) : (j += 1) {
+                        if (child.child(j)) |inner_child| {
+                            const inner_kind = inner_child.kind();
+                            if (std.mem.eql(u8, inner_kind, "type_identifier") or
+                                std.mem.eql(u8, inner_kind, "identifier"))
+                            {
+                                name = self.getNodeText(inner_child);
+                            }
+                        }
+                    }
+                } else if (std.mem.eql(u8, child_kind, "type_identifier") or
+                    std.mem.eql(u8, child_kind, "identifier"))
+                {
+                    // Direct child (fallback)
+                    name = self.getNodeText(child);
+                }
+            }
+        }
+
+        if (name == null) return null;
+
+        return types.TemplateParam{
+            .name = name.?,
+            .kind = "template",
         };
     }
 
@@ -598,6 +655,7 @@ pub const CppParser = struct {
         var is_explicit = false;
         var is_noexcept = false;
         var is_conversion_operator = false;
+        var is_operator_overload = false;
         var operator_symbol: ?[]const u8 = null;
 
         var i: u32 = 0;
@@ -623,8 +681,10 @@ pub const CppParser = struct {
                 } else if (std.mem.eql(u8, child_kind, "delete")) {
                     is_deleted = true;
                 } else if (std.mem.eql(u8, child_kind, "type_identifier") or
-                    std.mem.eql(u8, child_kind, "primitive_type"))
+                    std.mem.eql(u8, child_kind, "primitive_type") or
+                    std.mem.eql(u8, child_kind, "placeholder_type_specifier"))
                 {
+                    // Handle regular types and 'auto' (placeholder_type_specifier for C++20)
                     if (return_type == null) {
                         return_type = self.getNodeText(child);
                     }
@@ -637,6 +697,18 @@ pub const CppParser = struct {
                                 std.mem.eql(u8, fd_kind, "field_identifier"))
                             {
                                 name = self.getNodeText(fd_child);
+                            } else if (std.mem.eql(u8, fd_kind, "operator_name")) {
+                                // Regular operator overload: operator+, operator==, operator<=>, etc.
+                                is_operator_overload = true;
+                                const op_text = self.getNodeText(fd_child);
+                                name = op_text;
+                                // Extract the operator symbol from "operator X"
+                                if (std.mem.indexOf(u8, op_text, "operator")) |_| {
+                                    const after_op = std.mem.trimLeft(u8, op_text[8..], " ");
+                                    if (after_op.len > 0) {
+                                        operator_symbol = after_op;
+                                    }
+                                }
                             } else if (std.mem.eql(u8, fd_kind, "operator_cast")) {
                                 // Conversion operator: operator Type()
                                 is_conversion_operator = true;
@@ -663,9 +735,11 @@ pub const CppParser = struct {
 
         const params_slice = try params.toOwnedSlice(self.allocator);
 
-        // Determine method kind - conversion operators take precedence
+        // Determine method kind - conversion operators and operator overloads take precedence
         const kind: types.MethodKind = if (is_conversion_operator)
             .conversion_operator
+        else if (is_operator_overload)
+            .operator_overload
         else
             self.categorizeMethodKind(name.?, return_type, params_slice, class_name);
 

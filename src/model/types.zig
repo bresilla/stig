@@ -74,6 +74,8 @@ pub const Function = struct {
     is_constexpr: bool = false,
     is_consteval: bool = false,
     is_noexcept: bool = false,
+    template_params: []const TemplateParam = &[_]TemplateParam{},
+    requires_clause: ?[]const u8 = null,
 };
 
 /// Struct field
@@ -184,6 +186,8 @@ pub const Class = struct {
     location: SourceLocation = .{ .file = "", .line = 0, .column = 0 },
     namespace: ?[]const u8 = null,
     base_classes: []const []const u8 = &[_][]const u8{},
+    template_params: []const TemplateParam = &[_]TemplateParam{},
+    requires_clause: ?[]const u8 = null,
 };
 
 /// C++ namespace

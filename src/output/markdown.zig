@@ -293,6 +293,34 @@ pub const MarkdownGenerator = struct {
         }
     }
 
+    /// Formats template parameters as a signature string for code blocks
+    /// e.g., "template<typename T, usize N>\n"
+    fn formatTemplateSignature(self: *Self, template_params: []const types.TemplateParam) !void {
+        if (template_params.len == 0) return;
+
+        try self.writeString("template<");
+        for (template_params, 0..) |param, i| {
+            if (i > 0) try self.writeString(", ");
+            try self.writeString(param.kind);
+            try self.writeString(" ");
+            try self.writeString(param.name);
+        }
+        try self.writeString(">\n");
+    }
+
+    /// Formats template parameters as a short param list for headings
+    /// e.g., "<T, N>" (with HTML escaping)
+    fn formatTemplateParamList(self: *Self, template_params: []const types.TemplateParam) !void {
+        if (template_params.len == 0) return;
+
+        try self.writeString("&lt;");
+        for (template_params, 0..) |param, i| {
+            if (i > 0) try self.writeString(", ");
+            try self.writeString(param.name);
+        }
+        try self.writeString("&gt;");
+    }
+
     /// Gets the basename of a file path without extension
     /// e.g., "include/spatial/geometry.hpp" -> "geometry"
     fn getFileBasename(self: *Self, path: []const u8) []const u8 {
@@ -313,13 +341,15 @@ pub const MarkdownGenerator = struct {
     }
 
     fn writeFunction(self: *Self, func: types.Function) !void {
-        // Function name as heading
+        // Function name as heading (with template params if present)
         try self.writeString("### `");
         try self.writeString(func.name);
+        try self.formatTemplateParamList(func.template_params);
         try self.writeString("`\n\n");
 
         // Code block with signature
-        try self.writeString("```c\n");
+        try self.writeString("```cpp\n");
+        try self.formatTemplateSignature(func.template_params);
         try self.writeString(func.return_type);
         try self.writeString(" ");
         try self.writeString(func.name);
@@ -503,6 +533,19 @@ pub const MarkdownGenerator = struct {
                 try self.writeString(since);
                 try self.writeString("\n\n");
             }
+        }
+
+        // Template parameters
+        if (func.template_params.len > 0) {
+            try self.writeString("**Template Parameters:**\n");
+            for (func.template_params) |param| {
+                try self.writeString("- `");
+                try self.writeString(param.name);
+                try self.writeString("` (");
+                try self.writeString(param.kind);
+                try self.writeString(")\n");
+            }
+            try self.writeString("\n");
         }
 
         try self.writeString("---\n\n");
@@ -719,13 +762,16 @@ pub const MarkdownGenerator = struct {
     }
 
     fn writeClass(self: *Self, class: types.Class) !void {
-        // Class name as heading
+        // Class name as heading (with template params if present)
         try self.writeString("### `");
         try self.writeString(class.name);
+        try self.formatTemplateParamList(class.template_params);
         try self.writeString("`\n\n");
 
         // Code block with class definition
-        try self.writeString("```cpp\nclass ");
+        try self.writeString("```cpp\n");
+        try self.formatTemplateSignature(class.template_params);
+        try self.writeString("class ");
         try self.writeString(class.name);
         try self.writeString(" {\n");
 
@@ -814,6 +860,19 @@ pub const MarkdownGenerator = struct {
                 }
                 try self.writeString("\n\n");
             }
+        }
+
+        // Template parameters
+        if (class.template_params.len > 0) {
+            try self.writeString("**Template Parameters:**\n");
+            for (class.template_params) |param| {
+                try self.writeString("- `");
+                try self.writeString(param.name);
+                try self.writeString("` (");
+                try self.writeString(param.kind);
+                try self.writeString(")\n");
+            }
+            try self.writeString("\n");
         }
 
         // Document public methods
