@@ -37,6 +37,14 @@ pub const ExcludeMode = enum {
     target,
 };
 
+/// Group information for @group command
+pub const GroupInfo = struct {
+    /// Group identifier (e.g., "getters")
+    name: []const u8,
+    /// Optional group heading (e.g., "Getter Functions")
+    heading: ?[]const u8 = null,
+};
+
 /// Parsed docstring with structured information
 pub const DocString = struct {
     /// Raw docstring text
@@ -93,6 +101,8 @@ pub const DocString = struct {
     exclude: ExcludeMode = .none,
     /// Synopsis override (@synopsis) - replaces generated synopsis
     synopsis_override: ?[]const u8 = null,
+    /// Group membership (@group) - groups related entities together
+    group: ?GroupInfo = null,
 };
 
 /// Function parameter

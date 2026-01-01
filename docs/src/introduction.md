@@ -6,8 +6,8 @@ Welcome to the API documentation.
 
 This documentation covers:
 
-- **4** functions
+- **8** functions
 
 ## Source Files
 
-- `test/fixtures/test_synopsis.hpp`
+- `test/fixtures/test_group.hpp`

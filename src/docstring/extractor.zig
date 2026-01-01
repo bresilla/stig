@@ -146,7 +146,7 @@ pub const DocstringExtractor = struct {
         var current_pos: usize = 0;
 
         // Tags that end the details section (without prefix - we check both @ and \)
-        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude", "synopsis" };
+        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude", "synopsis", "group" };
 
         while (lines.next()) |line| {
             const line_start = current_pos;
@@ -401,6 +401,35 @@ pub const DocstringExtractor = struct {
             // @synopsis - override the displayed synopsis
             else if (startsWithCommand(trimmed, "synopsis ")) {
                 doc.synopsis_override = trimmed[10..];
+            }
+            // @group - group related entities together
+            else if (startsWithCommand(trimmed, "group ")) {
+                const content = std.mem.trim(u8, trimmed[7..], " \t");
+                if (content.len > 0) {
+                    // Parse: "name [Optional Heading]"
+                    // First word is the group name, rest is optional heading
+                    var name_end: usize = 0;
+                    for (content, 0..) |c, i| {
+                        if (c == ' ' or c == '\t') {
+                            name_end = i;
+                            break;
+                        }
+                    }
+                    if (name_end == 0) {
+                        // No space found, entire content is the name
+                        doc.group = types.GroupInfo{
+                            .name = content,
+                            .heading = null,
+                        };
+                    } else {
+                        // Name is before space, heading is after
+                        const heading = std.mem.trim(u8, content[name_end..], " \t");
+                        doc.group = types.GroupInfo{
+                            .name = content[0..name_end],
+                            .heading = if (heading.len > 0) heading else null,
+                        };
+                    }
+                }
             }
         }
 

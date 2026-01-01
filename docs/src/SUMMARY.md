@@ -4,5 +4,5 @@
 
 # Functions
 
-- [test_synopsis.hpp](./functions/test_synopsis.md)
+- [test_group.hpp](./functions/test_group.md)
 

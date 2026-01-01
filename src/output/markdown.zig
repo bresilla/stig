@@ -73,11 +73,7 @@ pub const MarkdownGenerator = struct {
             }
             if (has_visible_funcs) {
                 try self.writeString("## Functions\n\n");
-                for (module.functions) |func| {
-                    // Skip fully excluded functions
-                    if (func.doc != null and func.doc.?.exclude == .full) continue;
-                    try self.writeFunction(func);
-                }
+                try self.writeFunctionsWithGroups(module.functions);
             }
         }
 
@@ -520,6 +516,139 @@ pub const MarkdownGenerator = struct {
             try self.writeString(param.name);
         }
         try self.writeString(");\n```\n\n");
+    }
+
+    /// Writes functions with group support - groups related functions together
+    fn writeFunctionsWithGroups(self: *Self, functions: []const types.Function) !void {
+        // Collect groups and ungrouped functions
+        var groups = std.StringHashMap(std.ArrayList(types.Function)).init(self.allocator);
+        defer {
+            var it = groups.valueIterator();
+            while (it.next()) |list| {
+                list.deinit(self.allocator);
+            }
+            groups.deinit();
+        }
+
+        var group_order: std.ArrayList([]const u8) = .empty;
+        defer group_order.deinit(self.allocator);
+
+        var group_headings = std.StringHashMap([]const u8).init(self.allocator);
+        defer group_headings.deinit();
+
+        var ungrouped: std.ArrayList(types.Function) = .empty;
+        defer ungrouped.deinit(self.allocator);
+
+        // Categorize functions
+        for (functions) |func| {
+            // Skip fully excluded functions
+            if (func.doc != null and func.doc.?.exclude == .full) continue;
+
+            if (func.doc) |doc| {
+                if (doc.group) |group| {
+                    // Add to group
+                    const gop = try groups.getOrPut(group.name);
+                    if (!gop.found_existing) {
+                        gop.value_ptr.* = .empty;
+                        try group_order.append(self.allocator, group.name);
+                    }
+                    try gop.value_ptr.append(self.allocator, func);
+
+                    // Store heading if this is the first with a heading
+                    if (group.heading) |heading| {
+                        if (!group_headings.contains(group.name)) {
+                            try group_headings.put(group.name, heading);
+                        }
+                    }
+                    continue;
+                }
+            }
+            // Ungrouped function
+            try ungrouped.append(self.allocator, func);
+        }
+
+        // Write grouped functions first
+        for (group_order.items) |group_name| {
+            if (groups.get(group_name)) |group_funcs| {
+                // Write group heading
+                if (group_headings.get(group_name)) |heading| {
+                    try self.writeString("### ");
+                    try self.writeString(heading);
+                    try self.writeString("\n\n");
+                } else {
+                    // Use group name as heading if no explicit heading
+                    try self.writeString("### ");
+                    try self.writeString(group_name);
+                    try self.writeString("\n\n");
+                }
+
+                // Write all functions in the group
+                for (group_funcs.items) |func| {
+                    try self.writeFunctionInGroup(func);
+                }
+                try self.writeString("---\n\n");
+            }
+        }
+
+        // Write ungrouped functions
+        for (ungrouped.items) |func| {
+            try self.writeFunction(func);
+        }
+    }
+
+    /// Writes a function that's part of a group (uses #### instead of ###)
+    fn writeFunctionInGroup(self: *Self, func: types.Function) !void {
+        // Check for return_type exclusion mode
+        const hide_return_type = func.doc != null and func.doc.?.exclude == .return_type;
+
+        // Function name as subheading (with template params if present)
+        try self.writeString("#### `");
+        try self.writeString(func.name);
+        try self.formatTemplateParamList(func.template_params);
+        try self.writeString("`\n\n");
+
+        // Code block with signature
+        try self.writeString("```cpp\n");
+
+        // Check for synopsis override
+        if (func.doc) |doc| {
+            if (doc.synopsis_override) |synopsis| {
+                try self.writeString(synopsis);
+                try self.writeString("\n```\n\n");
+            } else {
+                try self.writeGeneratedSignature(func, hide_return_type);
+            }
+        } else {
+            try self.writeGeneratedSignature(func, hide_return_type);
+        }
+
+        // Write documentation (brief only for grouped functions to keep it compact)
+        if (func.doc) |doc| {
+            if (doc.brief) |brief| {
+                try self.writeString(brief);
+                try self.writeString("\n\n");
+            }
+
+            // Parameters
+            if (doc.params.len > 0) {
+                try self.writeString("**Parameters:**\n");
+                for (doc.params) |param| {
+                    try self.writeString("- `");
+                    try self.writeString(param.name);
+                    try self.writeString("`: ");
+                    try self.writeString(param.description);
+                    try self.writeString("\n");
+                }
+                try self.writeString("\n");
+            }
+
+            // Return value
+            if (doc.returns) |ret| {
+                try self.writeString("**Returns:** ");
+                try self.writeString(ret);
+                try self.writeString("\n\n");
+            }
+        }
     }
 
     fn writeFunction(self: *Self, func: types.Function) !void {
