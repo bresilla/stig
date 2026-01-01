@@ -109,6 +109,8 @@ pub const DocString = struct {
     module: ?[]const u8 = null,
     /// Entity target (@entity) - remote documentation for another entity
     entity_target: ?[]const u8 = null,
+    /// Whether this is file-level documentation (@file)
+    is_file_doc: bool = false,
 };
 
 /// Function parameter
@@ -340,4 +342,6 @@ pub const Module = struct {
     type_aliases: []const TypeAlias = &[_]TypeAlias{},
     concepts: []const Concept = &[_]Concept{},
     groups: []const Group = &[_]Group{},
+    /// File-level documentation (@file)
+    file_doc: ?DocString = null,
 };
