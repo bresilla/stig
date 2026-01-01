@@ -42,6 +42,32 @@ pub const Config = struct {
     extract_protected: bool = true,
     /// Custom section names for localization/style
     section_names: SectionNames = .{},
+    /// Output customization options
+    output_options: OutputOptions = .{},
+
+    /// Output formatting options
+    pub const OutputOptions = struct {
+        /// Show source file and line number in documentation
+        show_source_location: bool = true,
+        /// Show access specifiers (public/private/protected)
+        show_access_specifiers: bool = true,
+        /// Show group section comments in output
+        show_group_output_section: bool = true,
+        /// Language for code blocks
+        code_language: []const u8 = "cpp",
+        /// Synopsis style: full, compact, or minimal
+        synopsis_style: SynopsisStyle = .full,
+    };
+
+    /// Synopsis rendering style
+    pub const SynopsisStyle = enum {
+        /// Complete signature with all qualifiers
+        full,
+        /// Simplified signature
+        compact,
+        /// Just name and parameters
+        minimal,
+    };
 
     /// Customizable section names for documentation output
     pub const SectionNames = struct {
