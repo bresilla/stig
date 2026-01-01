@@ -113,6 +113,8 @@ pub const DocString = struct {
     is_file_doc: bool = false,
     /// Output section header (@output_section) - adds section comment in synopsis
     output_section: ?[]const u8 = null,
+    /// Copy documentation from another entity (@copydoc)
+    copydoc_target: ?[]const u8 = null,
 };
 
 /// Function parameter
