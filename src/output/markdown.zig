@@ -180,6 +180,35 @@ pub const MarkdownGenerator = struct {
                 try self.writeString(deprecated);
                 try self.writeString("\n\n");
             }
+            if (file_doc.copyright) |copyright| {
+                try self.writeString("**Copyright:** ");
+                try self.writeString(copyright);
+                try self.writeString("\n\n");
+            }
+            if (file_doc.dates.len > 0) {
+                if (file_doc.dates.len == 1) {
+                    try self.writeString("**Date:** ");
+                    try self.writeString(file_doc.dates[0].date);
+                    if (file_doc.dates[0].description) |desc| {
+                        try self.writeString(" (");
+                        try self.writeString(desc);
+                        try self.writeString(")");
+                    }
+                    try self.writeString("\n\n");
+                } else {
+                    try self.writeString("**History:**\n");
+                    for (file_doc.dates) |date_info| {
+                        try self.writeString("- ");
+                        try self.writeString(date_info.date);
+                        if (date_info.description) |desc| {
+                            try self.writeString(": ");
+                            try self.writeString(desc);
+                        }
+                        try self.writeString("\n");
+                    }
+                    try self.writeString("\n");
+                }
+            }
         }
 
         // Functions section
@@ -1008,6 +1037,24 @@ pub const MarkdownGenerator = struct {
                 }
             }
 
+            // Attention notices
+            if (doc.attention.len > 0) {
+                for (doc.attention) |att| {
+                    try self.writeString("> ⚠️ **Attention:** ");
+                    try self.writeString(att);
+                    try self.writeString("\n\n");
+                }
+            }
+
+            // Important notices
+            if (doc.important.len > 0) {
+                for (doc.important) |imp| {
+                    try self.writeString("> ❗ **Important:** ");
+                    try self.writeString(imp);
+                    try self.writeString("\n\n");
+                }
+            }
+
             // Examples
             if (doc.examples.len > 0) {
                 try self.writeString("**Examples:**\n\n");
@@ -1106,6 +1153,53 @@ pub const MarkdownGenerator = struct {
                     try self.writeString("\n");
                 }
                 try self.writeString("\n");
+            }
+
+            // Date/History
+            if (doc.dates.len > 0) {
+                if (doc.dates.len == 1) {
+                    try self.writeString("**Date:** ");
+                    try self.writeString(doc.dates[0].date);
+                    if (doc.dates[0].description) |desc| {
+                        try self.writeString(" (");
+                        try self.writeString(desc);
+                        try self.writeString(")");
+                    }
+                    try self.writeString("\n\n");
+                } else {
+                    try self.writeString("**History:**\n");
+                    for (doc.dates) |date_info| {
+                        try self.writeString("- ");
+                        try self.writeString(date_info.date);
+                        if (date_info.description) |desc| {
+                            try self.writeString(": ");
+                            try self.writeString(desc);
+                        }
+                        try self.writeString("\n");
+                    }
+                    try self.writeString("\n");
+                }
+            }
+
+            // Copyright
+            if (doc.copyright) |copyright| {
+                try self.writeString("**Copyright:** ");
+                try self.writeString(copyright);
+                try self.writeString("\n\n");
+            }
+
+            // Mermaid diagrams
+            if (doc.mermaid_diagrams.len > 0) {
+                for (doc.mermaid_diagrams) |diagram| {
+                    if (diagram.caption) |caption| {
+                        try self.writeString("**");
+                        try self.writeString(caption);
+                        try self.writeString("**\n\n");
+                    }
+                    try self.writeString("```mermaid\n");
+                    try self.writeString(diagram.content);
+                    try self.writeString("\n```\n\n");
+                }
             }
         }
 
@@ -1558,6 +1652,20 @@ pub const MarkdownGenerator = struct {
                     try self.writeString("\n");
                 }
                 try self.writeString("\n");
+            }
+
+            // Mermaid diagrams
+            if (doc.mermaid_diagrams.len > 0) {
+                for (doc.mermaid_diagrams) |diagram| {
+                    if (diagram.caption) |caption| {
+                        try self.writeString("**");
+                        try self.writeString(caption);
+                        try self.writeString("**\n\n");
+                    }
+                    try self.writeString("```mermaid\n");
+                    try self.writeString(diagram.content);
+                    try self.writeString("\n```\n\n");
+                }
             }
         }
 

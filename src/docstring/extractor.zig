@@ -146,7 +146,7 @@ pub const DocstringExtractor = struct {
         var current_pos: usize = 0;
 
         // Tags that end the details section (without prefix - we check both @ and \)
-        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude", "synopsis", "group", "unique_name", "module", "entity", "file", "output_section", "copydoc", "todo", "bug", "snippet" };
+        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude", "synopsis", "group", "unique_name", "module", "entity", "file", "output_section", "copydoc", "todo", "bug", "snippet", "attention", "important", "date", "copyright", "mermaid" };
 
         while (lines.next()) |line| {
             const line_start = current_pos;
@@ -236,10 +236,57 @@ pub const DocstringExtractor = struct {
         var todos: std.ArrayList(types.TodoItem) = .empty;
         var bugs: std.ArrayList(types.BugItem) = .empty;
         var snippets: std.ArrayList(types.SnippetRef) = .empty;
+        var attention: std.ArrayList([]const u8) = .empty;
+        var important: std.ArrayList([]const u8) = .empty;
+        var dates: std.ArrayList(types.DateInfo) = .empty;
+        var mermaid_diagrams: std.ArrayList(types.MermaidDiagram) = .empty;
+
+        // State for multi-line @mermaid/@endmermaid blocks
+        var in_mermaid_block = false;
+        var mermaid_content: std.ArrayList(u8) = .empty;
+        var mermaid_caption: ?[]const u8 = null;
 
         var lines = std.mem.splitScalar(u8, raw, '\n');
         while (lines.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \t\r*");
+
+            // Handle @mermaid or \mermaid [optional caption]
+            if (startsWithCommand(trimmed, "mermaid")) {
+                in_mermaid_block = true;
+                mermaid_content = .empty;
+                // Check for caption after @mermaid (e.g., "@mermaid State Diagram")
+                const prefix_len: usize = if (trimmed[0] == '@') 8 else 9;
+                if (prefix_len <= trimmed.len) {
+                    const caption_text = std.mem.trim(u8, trimmed[prefix_len..], " \t");
+                    mermaid_caption = if (caption_text.len > 0) caption_text else null;
+                } else {
+                    mermaid_caption = null;
+                }
+                continue;
+            }
+
+            // Handle @endmermaid or \endmermaid
+            if (startsWithCommand(trimmed, "endmermaid")) {
+                if (in_mermaid_block) {
+                    const content = try mermaid_content.toOwnedSlice(self.allocator);
+                    try mermaid_diagrams.append(self.allocator, types.MermaidDiagram{
+                        .content = content,
+                        .caption = mermaid_caption,
+                    });
+                    in_mermaid_block = false;
+                    mermaid_caption = null;
+                }
+                continue;
+            }
+
+            // If inside mermaid block, collect content
+            if (in_mermaid_block) {
+                if (mermaid_content.items.len > 0) {
+                    try mermaid_content.append(self.allocator, '\n');
+                }
+                try mermaid_content.appendSlice(self.allocator, trimmed);
+                continue;
+            }
 
             // @param or \param <name> <description>
             if (startsWithCommand(trimmed, "param ")) {
@@ -505,6 +552,36 @@ pub const DocstringExtractor = struct {
                     });
                 }
             }
+            // @attention or \attention
+            else if (startsWithCommand(trimmed, "attention ")) {
+                try attention.append(self.allocator, trimmed[11..]);
+            }
+            // @important or \important
+            else if (startsWithCommand(trimmed, "important ")) {
+                try important.append(self.allocator, trimmed[11..]);
+            }
+            // @date or \date - format: @date 2024-01-15 [description]
+            else if (startsWithCommand(trimmed, "date ")) {
+                const rest = trimmed[6..];
+                // Split into date and optional description
+                // Date is first word, rest is description
+                var parts = std.mem.splitScalar(u8, rest, ' ');
+                if (parts.next()) |date_str| {
+                    const desc_start = 6 + date_str.len + 1;
+                    const description = if (desc_start < trimmed.len)
+                        std.mem.trim(u8, trimmed[desc_start..], " \t()")
+                    else
+                        null;
+                    try dates.append(self.allocator, types.DateInfo{
+                        .date = date_str,
+                        .description = if (description != null and description.?.len > 0) description else null,
+                    });
+                }
+            }
+            // @copyright or \copyright
+            else if (startsWithCommand(trimmed, "copyright ")) {
+                doc.copyright = trimmed[11..];
+            }
         }
 
         // Convert ArrayLists to slices
@@ -552,6 +629,18 @@ pub const DocstringExtractor = struct {
         }
         if (snippets.items.len > 0) {
             doc.snippets = try snippets.toOwnedSlice(self.allocator);
+        }
+        if (attention.items.len > 0) {
+            doc.attention = try attention.toOwnedSlice(self.allocator);
+        }
+        if (important.items.len > 0) {
+            doc.important = try important.toOwnedSlice(self.allocator);
+        }
+        if (dates.items.len > 0) {
+            doc.dates = try dates.toOwnedSlice(self.allocator);
+        }
+        if (mermaid_diagrams.items.len > 0) {
+            doc.mermaid_diagrams = try mermaid_diagrams.toOwnedSlice(self.allocator);
         }
 
         return doc;
@@ -1043,4 +1132,177 @@ test "parse snippet with backslash prefix" {
     try std.testing.expectEqual(@as(usize, 1), doc.snippets.len);
     try std.testing.expectEqualStrings("examples/test.cpp", doc.snippets[0].file);
     try std.testing.expectEqualStrings("my_example", doc.snippets[0].anchor);
+}
+
+test "parse attention tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Initializes the system.
+        \\* @attention This function is NOT thread-safe!
+        \\* @attention Memory must be manually freed after use
+    );
+    defer std.testing.allocator.free(doc.attention);
+
+    try std.testing.expectEqualStrings("Initializes the system.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 2), doc.attention.len);
+    try std.testing.expectEqualStrings("This function is NOT thread-safe!", doc.attention[0]);
+    try std.testing.expectEqualStrings("Memory must be manually freed after use", doc.attention[1]);
+}
+
+test "parse important tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Initializes the system.
+        \\* @important Must be called before any other API function
+        \\* @important Do not call from interrupt context
+    );
+    defer std.testing.allocator.free(doc.important);
+
+    try std.testing.expectEqualStrings("Initializes the system.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 2), doc.important.len);
+    try std.testing.expectEqualStrings("Must be called before any other API function", doc.important[0]);
+    try std.testing.expectEqualStrings("Do not call from interrupt context", doc.important[1]);
+}
+
+test "parse attention and important with backslash prefix" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Function description.
+        \\* \attention First attention item
+        \\* \important First important item
+    );
+    defer {
+        std.testing.allocator.free(doc.attention);
+        std.testing.allocator.free(doc.important);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), doc.attention.len);
+    try std.testing.expectEqualStrings("First attention item", doc.attention[0]);
+    try std.testing.expectEqual(@as(usize, 1), doc.important.len);
+    try std.testing.expectEqualStrings("First important item", doc.important[0]);
+}
+
+test "parse date tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* A function with date.
+        \\* @date 2024-01-15
+    );
+    defer std.testing.allocator.free(doc.dates);
+
+    try std.testing.expectEqualStrings("A function with date.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 1), doc.dates.len);
+    try std.testing.expectEqualStrings("2024-01-15", doc.dates[0].date);
+    try std.testing.expect(doc.dates[0].description == null);
+}
+
+test "parse date tag with description" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* A function with dates.
+        \\* @date 2023-06-20 created
+        \\* @date 2024-01-10 updated for 3D support
+    );
+    defer std.testing.allocator.free(doc.dates);
+
+    try std.testing.expectEqual(@as(usize, 2), doc.dates.len);
+    try std.testing.expectEqualStrings("2023-06-20", doc.dates[0].date);
+    try std.testing.expectEqualStrings("created", doc.dates[0].description.?);
+    try std.testing.expectEqualStrings("2024-01-10", doc.dates[1].date);
+    try std.testing.expectEqualStrings("updated for 3D support", doc.dates[1].description.?);
+}
+
+test "parse copyright tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* A function with copyright.
+        \\* @copyright 2024 MyCompany, MIT License
+    );
+
+    try std.testing.expectEqualStrings("A function with copyright.", doc.brief.?);
+    try std.testing.expectEqualStrings("2024 MyCompany, MIT License", doc.copyright.?);
+}
+
+test "parse date and copyright with backslash prefix" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* File description.
+        \\* \date 2024-01-15
+        \\* \copyright 2024 Company Inc.
+    );
+    defer std.testing.allocator.free(doc.dates);
+
+    try std.testing.expectEqual(@as(usize, 1), doc.dates.len);
+    try std.testing.expectEqualStrings("2024-01-15", doc.dates[0].date);
+    try std.testing.expectEqualStrings("2024 Company Inc.", doc.copyright.?);
+}
+
+test "parse mermaid block" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Connection class.
+        \\* @mermaid
+        \\* stateDiagram-v2
+        \\*     [*] --> Disconnected
+        \\*     Disconnected --> Connected
+        \\* @endmermaid
+    );
+    defer std.testing.allocator.free(doc.mermaid_diagrams);
+
+    try std.testing.expectEqualStrings("Connection class.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 1), doc.mermaid_diagrams.len);
+    try std.testing.expect(doc.mermaid_diagrams[0].caption == null);
+    try std.testing.expect(std.mem.indexOf(u8, doc.mermaid_diagrams[0].content, "stateDiagram-v2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, doc.mermaid_diagrams[0].content, "[*] --> Disconnected") != null);
+}
+
+test "parse mermaid block with caption" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Connection class.
+        \\* @mermaid State Diagram
+        \\* stateDiagram-v2
+        \\*     [*] --> Idle
+        \\* @endmermaid
+    );
+    defer std.testing.allocator.free(doc.mermaid_diagrams);
+
+    try std.testing.expectEqual(@as(usize, 1), doc.mermaid_diagrams.len);
+    try std.testing.expectEqualStrings("State Diagram", doc.mermaid_diagrams[0].caption.?);
+    try std.testing.expect(std.mem.indexOf(u8, doc.mermaid_diagrams[0].content, "stateDiagram-v2") != null);
+}
+
+test "parse multiple mermaid blocks" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Data processor.
+        \\* @mermaid Flow
+        \\* flowchart LR
+        \\*     A --> B
+        \\* @endmermaid
+        \\* @mermaid State
+        \\* stateDiagram-v2
+        \\*     [*] --> Active
+        \\* @endmermaid
+    );
+    defer std.testing.allocator.free(doc.mermaid_diagrams);
+
+    try std.testing.expectEqual(@as(usize, 2), doc.mermaid_diagrams.len);
+    try std.testing.expectEqualStrings("Flow", doc.mermaid_diagrams[0].caption.?);
+    try std.testing.expectEqualStrings("State", doc.mermaid_diagrams[1].caption.?);
+}
+
+test "parse mermaid with backslash prefix" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Flow chart.
+        \\* \mermaid
+        \\* flowchart TD
+        \\*     Start --> End
+        \\* \endmermaid
+    );
+    defer std.testing.allocator.free(doc.mermaid_diagrams);
+
+    try std.testing.expectEqual(@as(usize, 1), doc.mermaid_diagrams.len);
+    try std.testing.expect(std.mem.indexOf(u8, doc.mermaid_diagrams[0].content, "flowchart TD") != null);
 }

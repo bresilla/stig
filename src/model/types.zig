@@ -121,6 +121,16 @@ pub const DocString = struct {
     bugs: []const BugItem = &[_]BugItem{},
     /// External code snippets (@snippet)
     snippets: []const SnippetRef = &[_]SnippetRef{},
+    /// Attention notices (@attention)
+    attention: []const []const u8 = &[_][]const u8{},
+    /// Important notices (@important)
+    important: []const []const u8 = &[_][]const u8{},
+    /// Date information (@date)
+    dates: []const DateInfo = &[_]DateInfo{},
+    /// Copyright notice (@copyright)
+    copyright: ?[]const u8 = null,
+    /// Mermaid diagrams (@mermaid/@endmermaid)
+    mermaid_diagrams: []const MermaidDiagram = &[_]MermaidDiagram{},
 };
 
 /// Function parameter
@@ -370,6 +380,22 @@ pub const SnippetRef = struct {
     anchor: []const u8,
     /// Optional language override for syntax highlighting (default inferred from extension)
     language: ?[]const u8 = null,
+};
+
+/// Date information from @date tag
+pub const DateInfo = struct {
+    /// The date string (e.g., "2024-01-15")
+    date: []const u8,
+    /// Optional description (e.g., "updated", "created", etc.)
+    description: ?[]const u8 = null,
+};
+
+/// Mermaid diagram from @mermaid/@endmermaid block
+pub const MermaidDiagram = struct {
+    /// Diagram content (mermaid syntax)
+    content: []const u8,
+    /// Optional caption/title for the diagram
+    caption: ?[]const u8 = null,
 };
 
 /// A parsed module (typically one header file)

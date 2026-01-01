@@ -16,6 +16,7 @@ const Watcher = @import("watch.zig").Watcher;
 const coverage = @import("coverage.zig");
 const snippet = @import("snippet.zig");
 const lint = @import("lint.zig");
+const cache_mod = @import("cache.zig");
 
 pub fn main() !void {
     // Get allocator - disable safety checks to avoid leak warnings
@@ -186,6 +187,7 @@ pub fn main() !void {
     const FileData = struct {
         source: []const u8,
         module: types.Module,
+        path: []const u8,
     };
 
     var file_data: std.ArrayList(FileData) = .empty;
@@ -195,6 +197,24 @@ pub fn main() !void {
         }
         file_data.deinit(allocator);
     }
+
+    // Initialize incremental cache for mdbook format (if not forcing rebuild)
+    var incr_cache: ?cache_mod.IncrementalCache = null;
+    defer if (incr_cache) |*c| c.deinit();
+
+    const cache_output_dir = args.output_file orelse config.output_dir;
+    if (args.output_format == .mdbook and !args.force_rebuild and cache_output_dir.len > 0) {
+        incr_cache = cache_mod.IncrementalCache.init(allocator, cache_output_dir) catch null;
+        if (incr_cache) |*c| {
+            c.load() catch {
+                // Cache doesn't exist or is invalid, will do full build
+            };
+        }
+    }
+
+    // Track statistics for incremental build
+    var files_skipped: usize = 0;
+    var files_rebuilt: usize = 0;
 
     // Process each input file
     for (input_files) |input_file| {
@@ -210,6 +230,19 @@ pub fn main() !void {
             continue;
         };
 
+        // Check if file needs rebuilding (for mdbook format with cache)
+        if (incr_cache) |*cache| {
+            const needs_rebuild = cache.needsRebuild(input_file, source) catch true;
+            if (!needs_rebuild) {
+                std.debug.print("Skipping unchanged: {s}\n", .{input_file});
+                files_skipped += 1;
+                allocator.free(source);
+                continue;
+            }
+        }
+
+        files_rebuilt += 1;
+
         // Set base path for include directives (directory containing the source file)
         const base_path = std.fs.path.dirname(input_file) orelse ".";
         c_parser.setBasePath(base_path);
@@ -222,7 +255,12 @@ pub fn main() !void {
         else
             try c_parser.parse(source, input_file);
 
-        try file_data.append(allocator, .{ .source = source, .module = module });
+        try file_data.append(allocator, .{ .source = source, .module = module, .path = input_file });
+
+        // Update cache entry after successful parsing
+        if (incr_cache) |*cache| {
+            cache.updateEntry(input_file, source) catch {};
+        }
     }
 
     // Collect modules for generation
@@ -304,6 +342,14 @@ pub fn main() !void {
         .mdbook => {
             // Generate mdbook structure
             const output_dir = args.output_file orelse config.output_dir;
+
+            // Check if we have any files to process
+            if (modules.items.len == 0 and files_skipped > 0) {
+                std.debug.print("All {d} files unchanged (cached)\n", .{files_skipped});
+                std.debug.print("Use --force to rebuild all files\n", .{});
+                return;
+            }
+
             const mdbook_config = MdbookConfig{
                 .title = args.book_title orelse config.title,
                 .output_dir = output_dir,
@@ -318,6 +364,17 @@ pub fn main() !void {
                 return;
             };
 
+            // Save cache after successful generation
+            if (incr_cache) |*cache| {
+                cache.save() catch |err| {
+                    std.debug.print("Warning: Could not save cache: {}\n", .{err});
+                };
+            }
+
+            // Print summary
+            if (files_skipped > 0) {
+                std.debug.print("Rebuilt {d} file(s), skipped {d} unchanged\n", .{ files_rebuilt, files_skipped });
+            }
             std.debug.print("Generated mdbook structure in: {s}/\n", .{output_dir});
             std.debug.print("Run 'mdbook build {s}' to build the book\n", .{output_dir});
         },

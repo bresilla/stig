@@ -37,6 +37,7 @@ pub const Args = struct {
     serve_mode: bool,
     coverage_mode: bool,
     lint_mode: bool,
+    force_rebuild: bool,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Args) void {
@@ -62,6 +63,7 @@ pub const ArgParser = struct {
     serve_ptr: ?*bool,
     coverage_ptr: ?*bool,
     lint_ptr: ?*bool,
+    force_ptr: ?*bool,
 
     const Self = @This();
 
@@ -81,6 +83,7 @@ pub const ArgParser = struct {
             .serve_ptr = null,
             .coverage_ptr = null,
             .lint_ptr = null,
+            .force_ptr = null,
         };
     }
 
@@ -135,6 +138,10 @@ pub const ArgParser = struct {
         lint_opts.help = "Lint documentation for errors and warnings";
         self.lint_ptr = try parser.flag("L", "lint", &lint_opts);
 
+        var force_opts = argonaut.Options{};
+        force_opts.help = "Force full rebuild, ignore cache";
+        self.force_ptr = try parser.flag("", "force", &force_opts);
+
         var help_opts = argonaut.Options{};
         help_opts.help = "Show this help message";
         self.help_ptr = try parser.flag("h", "help", &help_opts);
@@ -163,6 +170,7 @@ pub const ArgParser = struct {
                 .serve_mode = false,
                 .coverage_mode = false,
                 .lint_mode = false,
+                .force_rebuild = false,
                 .allocator = self.allocator,
             };
         }
@@ -182,6 +190,7 @@ pub const ArgParser = struct {
                 .serve_mode = false,
                 .coverage_mode = false,
                 .lint_mode = false,
+                .force_rebuild = false,
                 .allocator = self.allocator,
             };
         }
@@ -214,11 +223,12 @@ pub const ArgParser = struct {
         const config_str = self.config_ptr.?.*;
         const config_file: ?[]const u8 = if (config_str.len > 0) config_str else null;
 
-        // Get watch/serve/coverage/lint modes
+        // Get watch/serve/coverage/lint/force modes
         const watch_mode = self.watch_ptr.?.* or self.serve_ptr.?.*;
         const serve_mode = self.serve_ptr.?.*;
         const coverage_mode = self.coverage_ptr.?.*;
         const lint_mode = self.lint_ptr.?.*;
+        const force_rebuild = self.force_ptr.?.*;
 
         // Get input files from remainder (positional arguments)
         const input_files = if (self.remainder) |rem|
@@ -239,6 +249,7 @@ pub const ArgParser = struct {
             .serve_mode = serve_mode,
             .coverage_mode = coverage_mode,
             .lint_mode = lint_mode,
+            .force_rebuild = force_rebuild,
             .allocator = self.allocator,
         };
     }
@@ -286,6 +297,7 @@ pub const ArgParser = struct {
             \\    --serve                Watch mode + spawn mdbook serve for live preview
             \\    -C, --coverage         Generate documentation coverage report
             \\    -L, --lint             Lint documentation for errors and warnings
+            \\    --force                Force full rebuild, ignore cache
             \\    -h, --help             Show this help message
             \\    -v, --version          Show version information
             \\

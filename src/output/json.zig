@@ -1751,11 +1751,92 @@ pub const JsonGenerator = struct {
         try self.writeIndent();
         try self.writeKey("snippets");
         try self.serializeSnippetRefs(doc.snippets);
+        try self.writeChar(',');
+        try self.writeNewline();
+
+        // Attention
+        try self.writeIndent();
+        try self.writeKey("attention");
+        try self.writeStringArray(doc.attention);
+        try self.writeChar(',');
+        try self.writeNewline();
+
+        // Important
+        try self.writeIndent();
+        try self.writeKey("important");
+        try self.writeStringArray(doc.important);
+        try self.writeChar(',');
+        try self.writeNewline();
+
+        // Dates
+        try self.writeIndent();
+        try self.writeKey("dates");
+        try self.serializeDateInfos(doc.dates);
+        try self.writeChar(',');
+        try self.writeNewline();
+
+        // Copyright
+        try self.writeIndent();
+        try self.writeKey("copyright");
+        if (doc.copyright) |copyright| {
+            try self.writeJsonString(copyright);
+        } else {
+            try self.writeString("null");
+        }
+        try self.writeChar(',');
+        try self.writeNewline();
+
+        // Mermaid diagrams
+        try self.writeIndent();
+        try self.writeKey("mermaid_diagrams");
+        try self.serializeMermaidDiagrams(doc.mermaid_diagrams);
         try self.writeNewline();
 
         self.indent_level -= 1;
         try self.writeIndent();
         try self.writeChar('}');
+    }
+
+    fn serializeMermaidDiagrams(self: *Self, diagrams: []const types.MermaidDiagram) !void {
+        try self.writeChar('[');
+        if (diagrams.len > 0) {
+            try self.writeNewline();
+            self.indent_level += 1;
+
+            for (diagrams, 0..) |diagram, i| {
+                try self.writeIndent();
+                try self.writeChar('{');
+                try self.writeNewline();
+                self.indent_level += 1;
+
+                try self.writeIndent();
+                try self.writeKeyValue("content", diagram.content);
+                try self.writeChar(',');
+                try self.writeNewline();
+
+                try self.writeIndent();
+                try self.writeKey("caption");
+                if (diagram.caption) |caption| {
+                    try self.writeJsonString(caption);
+                } else {
+                    try self.writeString("null");
+                }
+                try self.writeNewline();
+
+                self.indent_level -= 1;
+                try self.writeIndent();
+                try self.writeChar('}');
+
+                if (i < diagrams.len - 1) {
+                    try self.writeChar(',');
+                }
+                try self.writeNewline();
+            }
+
+            self.indent_level -= 1;
+            try self.writeIndent();
+        }
+        try self.writeChar(']');
     }
 
     fn serializeSnippetRefs(self: *Self, snippets: []const types.SnippetRef) !void {
@@ -1794,6 +1875,48 @@ pub const JsonGenerator = struct {
                 try self.writeChar('}');
 
                 if (i < snippets.len - 1) {
+                    try self.writeChar(',');
+                }
+                try self.writeNewline();
+            }
+
+            self.indent_level -= 1;
+            try self.writeIndent();
+        }
+        try self.writeChar(']');
+    }
+
+    fn serializeDateInfos(self: *Self, dates: []const types.DateInfo) !void {
+        try self.writeChar('[');
+        if (dates.len > 0) {
+            try self.writeNewline();
+            self.indent_level += 1;
+
+            for (dates, 0..) |date_info, i| {
+                try self.writeIndent();
+                try self.writeChar('{');
+                try self.writeNewline();
+                self.indent_level += 1;
+
+                try self.writeIndent();
+                try self.writeKeyValue("date", date_info.date);
+                try self.writeChar(',');
+                try self.writeNewline();
+
+                try self.writeIndent();
+                try self.writeKey("description");
+                if (date_info.description) |desc| {
+                    try self.writeJsonString(desc);
+                } else {
+                    try self.writeString("null");
+                }
+                try self.writeNewline();
+
+                self.indent_level -= 1;
+                try self.writeIndent();
+                try self.writeChar('}');
+
+                if (i < dates.len - 1) {
                     try self.writeChar(',');
                 }
                 try self.writeNewline();

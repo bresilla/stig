@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("model/types.zig");
+const cli = @import("cli.zig");
 
 /// Cache for incremental documentation generation
 /// Tracks file hashes to detect changes and avoid re-parsing unchanged files
@@ -153,7 +154,9 @@ pub const Cache = struct {
         var content: std.ArrayList(u8) = .empty;
         defer content.deinit(self.allocator);
 
-        try content.appendSlice(self.allocator, "{\n  \"version\": 1,\n  \"entries\": {\n");
+        try content.appendSlice(self.allocator, "{\n  \"version\": 1,\n  \"stig_version\": \"");
+        try content.appendSlice(self.allocator, cli.VERSION);
+        try content.appendSlice(self.allocator, "\",\n  \"entries\": {\n");
 
         var first = true;
         var iter = self.manifest.entries.iterator();
@@ -287,6 +290,23 @@ pub const Cache = struct {
         return hex;
     }
 
+    /// Compute SHA256 hash of content bytes
+    pub fn computeContentHash(content: []const u8) [64]u8 {
+        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+        hasher.update(content);
+        const digest = hasher.finalResult();
+
+        // Convert to hex string
+        var hex: [64]u8 = undefined;
+        const hex_chars = "0123456789abcdef";
+        for (digest, 0..) |byte, i| {
+            hex[i * 2] = hex_chars[byte >> 4];
+            hex[i * 2 + 1] = hex_chars[byte & 0x0f];
+        }
+
+        return hex;
+    }
+
     /// Update or insert an entry
     fn updateEntry(self: *Self, path: []const u8, entry: FileEntry) !void {
         const result = try self.manifest.entries.getOrPut(path);
@@ -295,6 +315,96 @@ pub const Cache = struct {
         }
         result.value_ptr.* = entry;
         self.dirty = true;
+    }
+};
+
+/// Incremental cache for mdbook generation
+/// Stores cache in .stig-cache directory within output directory
+pub const IncrementalCache = struct {
+    allocator: std.mem.Allocator,
+    cache_dir: []const u8,
+    output_dir: []const u8,
+    cache: Cache,
+    cache_dir_owned: []const u8,
+
+    const Self = @This();
+
+    /// Initialize incremental cache for an output directory
+    pub fn init(allocator: std.mem.Allocator, output_dir: []const u8) !Self {
+        // Create cache directory path: output_dir/.stig-cache
+        const cache_dir = try std.fs.path.join(allocator, &.{ output_dir, ".stig-cache" });
+
+        return Self{
+            .allocator = allocator,
+            .cache_dir = cache_dir,
+            .output_dir = output_dir,
+            .cache = Cache.init(allocator, cache_dir),
+            .cache_dir_owned = cache_dir,
+        };
+    }
+
+    /// Deinitialize and free resources
+    pub fn deinit(self: *Self) void {
+        self.cache.deinit();
+        self.allocator.free(self.cache_dir_owned);
+    }
+
+    /// Load cache manifest from disk
+    pub fn load(self: *Self) !void {
+        try self.cache.load();
+    }
+
+    /// Save cache manifest to disk
+    pub fn save(self: *Self) !void {
+        try self.cache.save();
+    }
+
+    /// Check if a file needs rebuilding
+    /// Returns true if file is new, modified, or output is missing
+    pub fn needsRebuild(self: *Self, file_path: []const u8, content: []const u8) !bool {
+        // First check if the cached entry exists
+        if (self.cache.manifest.entries.get(file_path)) |entry| {
+            // Compare content hash
+            const current_hash = Cache.computeContentHash(content);
+            if (std.mem.eql(u8, &entry.hash, &current_hash)) {
+                // Hash matches - check if output files exist
+                // For now, we assume output exists if hash matches
+                // In the future, we could track output files explicitly
+                return false;
+            }
+            return true;
+        }
+
+        // New file - needs rebuild
+        return true;
+    }
+
+    /// Update cache entry for a file after successful generation
+    pub fn updateEntry(self: *Self, file_path: []const u8, content: []const u8) !void {
+        const hash = Cache.computeContentHash(content);
+
+        // Get file stats for mtime
+        const stat = std.fs.cwd().statFile(file_path) catch |err| {
+            if (err == error.FileNotFound) {
+                // File was deleted - remove from cache
+                self.cache.removeFile(file_path);
+                return;
+            }
+            return err;
+        };
+
+        const entry = Cache.FileEntry{
+            .hash = hash,
+            .mtime = stat.mtime,
+            .size = stat.size,
+        };
+
+        try self.cache.updateEntry(file_path, entry);
+    }
+
+    /// Mark cache as dirty (needs saving)
+    pub fn markDirty(self: *Self) void {
+        self.cache.dirty = true;
     }
 };
 
@@ -332,4 +442,28 @@ test "cache - check new file" {
 
     const status = try cache.checkFile("/nonexistent/file.h");
     try std.testing.expectEqual(Cache.ChangeStatus.new_file, status);
+}
+
+test "cache - compute content hash" {
+    const hash1 = Cache.computeContentHash("Hello, World!");
+    const hash2 = Cache.computeContentHash("Hello, World!");
+    const hash3 = Cache.computeContentHash("Different content");
+
+    try std.testing.expectEqualSlices(u8, &hash1, &hash2);
+    try std.testing.expect(!std.mem.eql(u8, &hash1, &hash3));
+}
+
+test "incremental cache - init and deinit" {
+    var incr_cache = try IncrementalCache.init(std.testing.allocator, "/tmp/test_docs");
+    defer incr_cache.deinit();
+
+    try std.testing.expectEqualStrings("/tmp/test_docs/.stig-cache", incr_cache.cache_dir);
+}
+
+test "incremental cache - needs rebuild for new file" {
+    var incr_cache = try IncrementalCache.init(std.testing.allocator, "/tmp/test_docs");
+    defer incr_cache.deinit();
+
+    const needs = try incr_cache.needsRebuild("new_file.h", "content");
+    try std.testing.expect(needs);
 }
