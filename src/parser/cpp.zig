@@ -1429,17 +1429,33 @@ pub const CppParser = struct {
     }
 
     /// Finds preceding docstring
+    /// Handles both /** */ block comments and consecutive /// line comments
     fn findPrecedingDocstring(self: *Self, node: ts.Node) ?types.DocString {
         var prev = node.prevSibling();
+
+        // Collect consecutive /// comments (they appear in reverse order)
+        var triple_slash_comments: std.ArrayList([]const u8) = .empty;
+        defer triple_slash_comments.deinit(self.allocator);
+
         while (prev != null) {
             const prev_kind = prev.?.kind();
             if (std.mem.eql(u8, prev_kind, "comment")) {
                 const text = self.getNodeText(prev.?);
-                if (std.mem.startsWith(u8, text, "/**") or
-                    std.mem.startsWith(u8, text, "///"))
-                {
+
+                // Block comment - return immediately
+                if (std.mem.startsWith(u8, text, "/**")) {
                     return self.parseDocComment(text);
                 }
+
+                // Triple-slash comment - collect it
+                if (std.mem.startsWith(u8, text, "///")) {
+                    triple_slash_comments.append(self.allocator, text) catch break;
+                    prev = prev.?.prevSibling();
+                    continue;
+                }
+
+                // Regular comment (// or /*) - stop collecting
+                break;
             } else if (!std.mem.eql(u8, prev_kind, "preproc_ifdef") and
                 !std.mem.eql(u8, prev_kind, "preproc_ifndef"))
             {
@@ -1447,6 +1463,35 @@ pub const CppParser = struct {
             }
             prev = prev.?.prevSibling();
         }
+
+        // If we collected /// comments, merge them (they're in reverse order)
+        if (triple_slash_comments.items.len > 0) {
+            var merged: std.ArrayList(u8) = .empty;
+            defer merged.deinit(self.allocator);
+
+            // Reverse iterate to get correct order
+            var i = triple_slash_comments.items.len;
+            while (i > 0) {
+                i -= 1;
+                const comment = triple_slash_comments.items[i];
+                // Strip /// prefix
+                var content = comment;
+                if (std.mem.startsWith(u8, content, "/// ")) {
+                    content = content[4..];
+                } else if (std.mem.startsWith(u8, content, "///")) {
+                    content = content[3..];
+                }
+                merged.appendSlice(self.allocator, content) catch break;
+                if (i > 0) {
+                    merged.append(self.allocator, '\n') catch break;
+                }
+            }
+
+            if (merged.items.len > 0) {
+                return self.docstring_extractor.parse(merged.items) catch null;
+            }
+        }
+
         return null;
     }
 

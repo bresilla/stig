@@ -121,7 +121,7 @@ pub const DocstringExtractor = struct {
         var current_pos: usize = 0;
 
         // Tags that end the details section
-        const end_tags = [_][]const u8{ "@param", "@return", "@returns", "@deprecated", "@note", "@warning", "@see", "@sa", "@since", "@author", "@version", "@example", "@pre", "@post" };
+        const end_tags = [_][]const u8{ "@param", "@tparam", "@return", "@returns", "@deprecated", "@note", "@warning", "@see", "@sa", "@since", "@author", "@version", "@example", "@pre", "@post" };
 
         while (lines.next()) |line| {
             const line_start = current_pos;
@@ -197,6 +197,7 @@ pub const DocstringExtractor = struct {
 
         // Parse all Doxygen tags
         var params: std.ArrayList(types.ParamDoc) = .empty;
+        var tparams: std.ArrayList(types.ParamDoc) = .empty;
         var exceptions: std.ArrayList(types.ExceptionDoc) = .empty;
         var notes: std.ArrayList([]const u8) = .empty;
         var warnings: std.ArrayList([]const u8) = .empty;
@@ -219,6 +220,26 @@ pub const DocstringExtractor = struct {
                         try params.append(self.allocator, types.ParamDoc{
                             .name = param_name,
                             .description = trimmed[desc_start..],
+                        });
+                    }
+                }
+            }
+            // @tparam <name> <description> (template parameter)
+            else if (std.mem.startsWith(u8, trimmed, "@tparam ")) {
+                const rest = trimmed[8..];
+                var parts = std.mem.splitScalar(u8, rest, ' ');
+                if (parts.next()) |tparam_name| {
+                    const desc_start = 8 + tparam_name.len + 1;
+                    if (desc_start < trimmed.len) {
+                        try tparams.append(self.allocator, types.ParamDoc{
+                            .name = tparam_name,
+                            .description = trimmed[desc_start..],
+                        });
+                    } else {
+                        // @tparam with just name, no description
+                        try tparams.append(self.allocator, types.ParamDoc{
+                            .name = tparam_name,
+                            .description = "",
                         });
                     }
                 }
@@ -295,6 +316,9 @@ pub const DocstringExtractor = struct {
         // Convert ArrayLists to slices
         if (params.items.len > 0) {
             doc.params = try params.toOwnedSlice(self.allocator);
+        }
+        if (tparams.items.len > 0) {
+            doc.tparams = try tparams.toOwnedSlice(self.allocator);
         }
         if (exceptions.items.len > 0) {
             doc.exceptions = try exceptions.toOwnedSlice(self.allocator);
@@ -668,4 +692,21 @@ test "parse multiple exception tags" {
     try std.testing.expectEqual(@as(usize, 2), doc.exceptions.len);
     try std.testing.expectEqualStrings("std::invalid_argument", doc.exceptions[0].exception_type);
     try std.testing.expectEqualStrings("std::out_of_range", doc.exceptions[1].exception_type);
+}
+
+test "parse tparam tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* A container class.
+        \\* @tparam T The element type
+        \\* @tparam Allocator The memory allocator
+    );
+    defer std.testing.allocator.free(doc.tparams);
+
+    try std.testing.expectEqualStrings("A container class.", doc.brief.?);
+    try std.testing.expectEqual(@as(usize, 2), doc.tparams.len);
+    try std.testing.expectEqualStrings("T", doc.tparams[0].name);
+    try std.testing.expectEqualStrings("The element type", doc.tparams[0].description);
+    try std.testing.expectEqualStrings("Allocator", doc.tparams[1].name);
+    try std.testing.expectEqualStrings("The memory allocator", doc.tparams[1].description);
 }

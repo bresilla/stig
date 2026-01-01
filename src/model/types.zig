@@ -53,6 +53,8 @@ pub const DocString = struct {
     author: ?[]const u8 = null,
     /// Version information (@version)
     version: ?[]const u8 = null,
+    /// Template parameter documentation (@tparam)
+    tparams: []const ParamDoc = &[_]ParamDoc{},
 };
 
 /// Function parameter

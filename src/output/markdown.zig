@@ -535,15 +535,28 @@ pub const MarkdownGenerator = struct {
             }
         }
 
-        // Template parameters
-        if (func.template_params.len > 0) {
+        // Template parameters (merge parsed params with @tparam docs)
+        if (func.template_params.len > 0 or (func.doc != null and func.doc.?.tparams.len > 0)) {
             try self.writeString("**Template Parameters:**\n");
             for (func.template_params) |param| {
                 try self.writeString("- `");
                 try self.writeString(param.name);
                 try self.writeString("` (");
                 try self.writeString(param.kind);
-                try self.writeString(")\n");
+                try self.writeString(")");
+                // Look for @tparam documentation for this parameter
+                if (func.doc) |doc| {
+                    for (doc.tparams) |tparam| {
+                        if (std.mem.eql(u8, tparam.name, param.name)) {
+                            if (tparam.description.len > 0) {
+                                try self.writeString(": ");
+                                try self.writeString(tparam.description);
+                            }
+                            break;
+                        }
+                    }
+                }
+                try self.writeString("\n");
             }
             try self.writeString("\n");
         }
@@ -900,15 +913,28 @@ pub const MarkdownGenerator = struct {
             }
         }
 
-        // Template parameters
-        if (class.template_params.len > 0) {
+        // Template parameters (merge parsed params with @tparam docs)
+        if (class.template_params.len > 0 or (class.doc != null and class.doc.?.tparams.len > 0)) {
             try self.writeString("**Template Parameters:**\n");
             for (class.template_params) |param| {
                 try self.writeString("- `");
                 try self.writeString(param.name);
                 try self.writeString("` (");
                 try self.writeString(param.kind);
-                try self.writeString(")\n");
+                try self.writeString(")");
+                // Look for @tparam documentation for this parameter
+                if (class.doc) |doc| {
+                    for (doc.tparams) |tparam| {
+                        if (std.mem.eql(u8, tparam.name, param.name)) {
+                            if (tparam.description.len > 0) {
+                                try self.writeString(": ");
+                                try self.writeString(tparam.description);
+                            }
+                            break;
+                        }
+                    }
+                }
+                try self.writeString("\n");
             }
             try self.writeString("\n");
         }
