@@ -4,5 +4,5 @@
 
 # Functions
 
-- [test_ingroup.hpp](./functions/test_ingroup.md)
+- [test_exclude.hpp](./functions/test_exclude.md)
 

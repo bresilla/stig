@@ -64,65 +64,146 @@ pub const MarkdownGenerator = struct {
 
         // Functions section
         if (module.functions.len > 0) {
-            try self.writeString("## Functions\n\n");
+            var has_visible_funcs = false;
             for (module.functions) |func| {
-                try self.writeFunction(func);
+                if (func.doc == null or func.doc.?.exclude != .full) {
+                    has_visible_funcs = true;
+                    break;
+                }
+            }
+            if (has_visible_funcs) {
+                try self.writeString("## Functions\n\n");
+                for (module.functions) |func| {
+                    // Skip fully excluded functions
+                    if (func.doc != null and func.doc.?.exclude == .full) continue;
+                    try self.writeFunction(func);
+                }
             }
         }
 
         // Structs section
         if (module.structs.len > 0) {
-            try self.writeString("## Structures\n\n");
+            var has_visible_structs = false;
             for (module.structs) |s| {
-                try self.writeStruct(s);
+                if (s.doc == null or s.doc.?.exclude != .full) {
+                    has_visible_structs = true;
+                    break;
+                }
+            }
+            if (has_visible_structs) {
+                try self.writeString("## Structures\n\n");
+                for (module.structs) |s| {
+                    if (s.doc != null and s.doc.?.exclude == .full) continue;
+                    try self.writeStruct(s);
+                }
             }
         }
 
         // Enums section
         if (module.enums.len > 0) {
-            try self.writeString("## Enumerations\n\n");
+            var has_visible_enums = false;
             for (module.enums) |e| {
-                try self.writeEnum(e);
+                if (e.doc == null or e.doc.?.exclude != .full) {
+                    has_visible_enums = true;
+                    break;
+                }
+            }
+            if (has_visible_enums) {
+                try self.writeString("## Enumerations\n\n");
+                for (module.enums) |e| {
+                    if (e.doc != null and e.doc.?.exclude == .full) continue;
+                    try self.writeEnum(e);
+                }
             }
         }
 
         // Typedefs section
         if (module.typedefs.len > 0) {
-            try self.writeString("## Type Definitions\n\n");
+            var has_visible_typedefs = false;
             for (module.typedefs) |td| {
-                try self.writeTypedef(td);
+                if (td.doc == null or td.doc.?.exclude != .full) {
+                    has_visible_typedefs = true;
+                    break;
+                }
+            }
+            if (has_visible_typedefs) {
+                try self.writeString("## Type Definitions\n\n");
+                for (module.typedefs) |td| {
+                    if (td.doc != null and td.doc.?.exclude == .full) continue;
+                    try self.writeTypedef(td);
+                }
             }
         }
 
         // Macros section
         if (module.macros.len > 0) {
-            try self.writeString("## Macros\n\n");
+            var has_visible_macros = false;
             for (module.macros) |macro| {
-                try self.writeMacro(macro);
+                if (macro.doc == null or macro.doc.?.exclude != .full) {
+                    has_visible_macros = true;
+                    break;
+                }
+            }
+            if (has_visible_macros) {
+                try self.writeString("## Macros\n\n");
+                for (module.macros) |macro| {
+                    if (macro.doc != null and macro.doc.?.exclude == .full) continue;
+                    try self.writeMacro(macro);
+                }
             }
         }
 
         // Classes section (C++)
         if (module.classes.len > 0) {
-            try self.writeString("## Classes\n\n");
+            var has_visible_classes = false;
             for (module.classes) |class| {
-                try self.writeClass(class);
+                if (class.doc == null or class.doc.?.exclude != .full) {
+                    has_visible_classes = true;
+                    break;
+                }
+            }
+            if (has_visible_classes) {
+                try self.writeString("## Classes\n\n");
+                for (module.classes) |class| {
+                    if (class.doc != null and class.doc.?.exclude == .full) continue;
+                    try self.writeClass(class);
+                }
             }
         }
 
         // Type Aliases section (C++)
         if (module.type_aliases.len > 0) {
-            try self.writeString("## Type Aliases\n\n");
+            var has_visible_aliases = false;
             for (module.type_aliases) |alias| {
-                try self.writeTypeAlias(alias);
+                if (alias.docstring == null or alias.docstring.?.exclude != .full) {
+                    has_visible_aliases = true;
+                    break;
+                }
+            }
+            if (has_visible_aliases) {
+                try self.writeString("## Type Aliases\n\n");
+                for (module.type_aliases) |alias| {
+                    if (alias.docstring != null and alias.docstring.?.exclude == .full) continue;
+                    try self.writeTypeAlias(alias);
+                }
             }
         }
 
         // Concepts section (C++20)
         if (module.concepts.len > 0) {
-            try self.writeString("## Concepts\n\n");
+            var has_visible_concepts = false;
             for (module.concepts) |concept| {
-                try self.writeConcept(concept);
+                if (concept.docstring == null or concept.docstring.?.exclude != .full) {
+                    has_visible_concepts = true;
+                    break;
+                }
+            }
+            if (has_visible_concepts) {
+                try self.writeString("## Concepts\n\n");
+                for (module.concepts) |concept| {
+                    if (concept.docstring != null and concept.docstring.?.exclude == .full) continue;
+                    try self.writeConcept(concept);
+                }
             }
         }
 
@@ -415,6 +496,9 @@ pub const MarkdownGenerator = struct {
     }
 
     fn writeFunction(self: *Self, func: types.Function) !void {
+        // Check for return_type exclusion mode
+        const hide_return_type = func.doc != null and func.doc.?.exclude == .return_type;
+
         // Function name as heading (with template params if present)
         try self.writeString("### `");
         try self.writeString(func.name);
@@ -429,8 +513,13 @@ pub const MarkdownGenerator = struct {
             try self.writeString("\n");
         }
         try self.formatTemplateSignature(func.template_params);
-        try self.writeString(func.return_type);
-        try self.writeString(" ");
+        // Hide return type if @exclude return is specified
+        if (hide_return_type) {
+            try self.writeString("/* see below */ ");
+        } else {
+            try self.writeString(func.return_type);
+            try self.writeString(" ");
+        }
         try self.writeString(func.name);
         try self.writeString("(");
 

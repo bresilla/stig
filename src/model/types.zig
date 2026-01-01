@@ -25,6 +25,18 @@ pub const RetvalDoc = struct {
     description: []const u8,
 };
 
+/// Exclusion mode for @exclude command
+pub const ExcludeMode = enum {
+    /// Normal - include in documentation
+    none,
+    /// Exclude entity entirely from documentation
+    full,
+    /// Hide return type in synopsis (function appears, return type hidden)
+    return_type,
+    /// Hide alias target or enum underlying type
+    target,
+};
+
 /// Parsed docstring with structured information
 pub const DocString = struct {
     /// Raw docstring text
@@ -77,6 +89,8 @@ pub const DocString = struct {
     invariants: []const []const u8 = &[_][]const u8{},
     /// Group membership (@ingroup)
     ingroup: ?[]const u8 = null,
+    /// Exclusion mode (@exclude)
+    exclude: ExcludeMode = .none,
 };
 
 /// Function parameter

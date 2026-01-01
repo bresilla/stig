@@ -6,8 +6,8 @@ Welcome to the API documentation.
 
 This documentation covers:
 
-- **3** functions
+- **4** functions
 
 ## Source Files
 
-- `/tmp/test_ingroup.hpp`
+- `/tmp/test_exclude.hpp`

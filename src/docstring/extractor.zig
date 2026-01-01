@@ -146,7 +146,7 @@ pub const DocstringExtractor = struct {
         var current_pos: usize = 0;
 
         // Tags that end the details section (without prefix - we check both @ and \)
-        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup" };
+        const end_tags = [_][]const u8{ "param", "tparam", "return", "returns", "retval", "deprecated", "note", "warning", "see", "sa", "since", "author", "version", "example", "pre", "post", "effects", "requires", "complexity", "remarks", "sync", "threadsafety", "invariant", "ensures", "ingroup", "defgroup", "exclude" };
 
         while (lines.next()) |line| {
             const line_start = current_pos;
@@ -381,6 +381,22 @@ pub const DocstringExtractor = struct {
             // @ingroup - group membership
             else if (startsWithCommand(trimmed, "ingroup ")) {
                 doc.ingroup = trimmed[9..];
+            }
+            // @exclude - exclusion from documentation
+            else if (startsWithCommand(trimmed, "exclude")) {
+                // Check for @exclude with argument or just @exclude
+                const rest = if (trimmed[0] == '@') trimmed[8..] else trimmed[9..];
+                const arg = std.mem.trim(u8, rest, " \t");
+                if (arg.len == 0) {
+                    doc.exclude = .full;
+                } else if (std.mem.eql(u8, arg, "return") or std.mem.eql(u8, arg, "return_type")) {
+                    doc.exclude = .return_type;
+                } else if (std.mem.eql(u8, arg, "target")) {
+                    doc.exclude = .target;
+                } else {
+                    // Unknown argument, treat as full exclude
+                    doc.exclude = .full;
+                }
             }
         }
 
