@@ -88,6 +88,8 @@ stig check -f compiler include/*.h
 stig generate include/*.h -f mdbook -o docs/ --serve
 ```
 
+> **Note:** Following standardese and doxygen conventions, stig only processes **header files** (`.h`, `.hpp`, `.hxx`, `.hh`). Implementation files (`.cpp`, `.cc`, `.cxx`) are automatically skipped, as documentation should be in headers where declarations are, not in source files where implementations are.
+
 ## Features
 
 ### Parsing Capabilities

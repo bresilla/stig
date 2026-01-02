@@ -156,6 +156,12 @@ pub const Watcher = struct {
         }
 
         for (files_to_parse) |input_file| {
+            // Skip implementation files - only check headers for documentation
+            if (!isHeaderFile(input_file)) {
+                std.debug.print("   ⏭️  Skipping implementation file: {s}\n", .{input_file});
+                continue;
+            }
+
             const file = std.fs.cwd().openFile(input_file, .{}) catch |err| {
                 std.debug.print("   ⚠️  Cannot open {s}: {}\n", .{ input_file, err });
                 continue;
@@ -267,6 +273,23 @@ pub const Watcher = struct {
         std.debug.print("\x1b[2J\x1b[H", .{});
     }
 };
+
+/// Check if a file is a C/C++ header file that should be documented
+/// Following standardese and doxygen conventions, only header files should
+/// contain documentation comments. Implementation files (.cpp, .cc, .cxx) are excluded.
+fn isHeaderFile(filename: []const u8) bool {
+    // C headers
+    if (std.mem.endsWith(u8, filename, ".h")) return true;
+
+    // C++ headers
+    const cpp_header_extensions = [_][]const u8{ ".hpp", ".hxx", ".hh", ".H" };
+    for (cpp_header_extensions) |ext| {
+        if (std.mem.endsWith(u8, filename, ext)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 /// Checks if a file is a C++ file based on extension
 fn isCppFile(filename: []const u8) bool {

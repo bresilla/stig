@@ -170,6 +170,12 @@ fn runCheckCommand(allocator: std.mem.Allocator, args: *cli.Args) !void {
     }
 
     for (input_files) |input_file| {
+        // Skip implementation files - only check headers for documentation
+        if (!isHeaderFile(input_file)) {
+            std.debug.print("Skipping implementation file: {s}\n", .{input_file});
+            continue;
+        }
+
         const file = std.fs.cwd().openFile(input_file, .{}) catch |err| {
             std.debug.print("Error: Cannot open file '{s}': {}\n", .{ input_file, err });
             continue;
@@ -448,6 +454,12 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
 
     // Process each input file
     for (input_files) |input_file| {
+        // Skip implementation files - only check headers for documentation
+        if (!isHeaderFile(input_file)) {
+            std.debug.print("Skipping implementation file: {s}\n", .{input_file});
+            continue;
+        }
+
         const file = std.fs.cwd().openFile(input_file, .{}) catch |err| {
             std.debug.print("Error: Cannot open file '{s}': {}\n", .{ input_file, err });
             continue;
@@ -657,6 +669,23 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
             }
         },
     }
+}
+
+/// Check if a file is a C/C++ header file that should be documented
+/// Following standardese and doxygen conventions, only header files should
+/// contain documentation comments. Implementation files (.cpp, .cc, .cxx) are excluded.
+fn isHeaderFile(filename: []const u8) bool {
+    // C headers
+    if (std.mem.endsWith(u8, filename, ".h")) return true;
+
+    // C++ headers
+    const cpp_header_extensions = [_][]const u8{ ".hpp", ".hxx", ".hh", ".H" };
+    for (cpp_header_extensions) |ext| {
+        if (std.mem.endsWith(u8, filename, ext)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /// Checks if a file is a C++ file based on extension

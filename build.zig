@@ -47,17 +47,17 @@ pub fn build(b: *std.Build) void {
     });
 
     // Add tree-sitter module from zig-tree-sitter
-    exe.root_module.addImport("tree-sitter", tree_sitter_dep.module("tree_sitter"));
+    exe.root_module.addImport("tree-sitter", tree_sitter_dep.module("tree-sitter"));
 
     // Add tree-sitter-c module and link its library
     const ts_c_module = tree_sitter_c_dep.module("tree-sitter-c");
-    ts_c_module.addImport("tree-sitter", tree_sitter_dep.module("tree_sitter"));
+    ts_c_module.addImport("tree-sitter", tree_sitter_dep.module("tree-sitter"));
     exe.root_module.addImport("tree-sitter-c", ts_c_module);
     exe.linkLibrary(tree_sitter_c_dep.artifact("tree-sitter-c"));
 
     // Add tree-sitter-cpp module and link its library
     const ts_cpp_module = tree_sitter_cpp_dep.module("tree-sitter-cpp");
-    ts_cpp_module.addImport("tree-sitter", tree_sitter_dep.module("tree_sitter"));
+    ts_cpp_module.addImport("tree-sitter", tree_sitter_dep.module("tree-sitter"));
     exe.root_module.addImport("tree-sitter-cpp", ts_cpp_module);
     exe.linkLibrary(tree_sitter_cpp_dep.artifact("tree-sitter-cpp"));
 
@@ -87,14 +87,14 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
-    unit_tests.root_module.addImport("tree-sitter", tree_sitter_dep.module("tree_sitter"));
+    unit_tests.root_module.addImport("tree-sitter", tree_sitter_dep.module("tree-sitter"));
     const test_ts_c_module = tree_sitter_c_dep.module("tree-sitter-c");
-    test_ts_c_module.addImport("tree-sitter", tree_sitter_dep.module("tree_sitter"));
+    test_ts_c_module.addImport("tree-sitter", tree_sitter_dep.module("tree-sitter"));
     unit_tests.root_module.addImport("tree-sitter-c", test_ts_c_module);
     unit_tests.linkLibrary(tree_sitter_c_dep.artifact("tree-sitter-c"));
 
     const test_ts_cpp_module = tree_sitter_cpp_dep.module("tree-sitter-cpp");
-    test_ts_cpp_module.addImport("tree-sitter", tree_sitter_dep.module("tree_sitter"));
+    test_ts_cpp_module.addImport("tree-sitter", tree_sitter_dep.module("tree-sitter"));
     unit_tests.root_module.addImport("tree-sitter-cpp", test_ts_cpp_module);
     unit_tests.linkLibrary(tree_sitter_cpp_dep.artifact("tree-sitter-cpp"));
 

@@ -26,9 +26,9 @@ inputs:
     description: 'Path to stig.toml config file'
     required: false
   zig-version:
-    description: 'Zig version to use for building Stig'
+    description: 'Zig version to use for building Stig (empty = auto-detect from build.zig.zon)'
     required: false
-    default: '0.13.0'
+    default: ''
   stig-version:
     description: 'Stig version (git ref, tag, or "latest")'
     required: false
@@ -54,7 +54,7 @@ runs:
   using: 'composite'
   steps:
     - name: Setup Zig
-      uses: goto-bus-stop/setup-zig@v2
+      uses: mlugg/setup-zig@v2
       with:
         version: ${{ inputs.zig-version }}
     

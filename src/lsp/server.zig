@@ -272,6 +272,14 @@ pub const Server = struct {
         const file_path = try lsp_types.uriToPath(self.allocator, uri);
         defer self.allocator.free(file_path);
 
+        // Only check header files for documentation
+        // Implementation files (.cpp, .cc, .cxx) should not have documentation comments
+        if (!isHeaderFile(file_path)) {
+            // Send empty diagnostics to clear any previous diagnostics
+            try self.sendDiagnostics(uri, &[_]lsp_types.Diagnostic{});
+            return;
+        }
+
         // Determine if C or C++ file
         const is_cpp = isCppFile(file_path);
 
@@ -351,7 +359,24 @@ pub const Server = struct {
     }
 };
 
-/// Check if a file is a C++ file based on extension
+/// Check if a file is a C/C++ header file that should be documented
+/// Following standardese and doxygen conventions, only header files should
+/// contain documentation comments. Implementation files (.cpp, .cc, .cxx) are excluded.
+fn isHeaderFile(filename: []const u8) bool {
+    // C headers
+    if (std.mem.endsWith(u8, filename, ".h")) return true;
+
+    // C++ headers
+    const cpp_header_extensions = [_][]const u8{ ".hpp", ".hxx", ".hh", ".H" };
+    for (cpp_header_extensions) |ext| {
+        if (std.mem.endsWith(u8, filename, ext)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Check if a file is a C++ file (for parser selection)
 fn isCppFile(filename: []const u8) bool {
     const cpp_extensions = [_][]const u8{ ".cpp", ".cxx", ".cc", ".hpp", ".hxx", ".hh", ".C", ".H" };
     for (cpp_extensions) |ext| {
