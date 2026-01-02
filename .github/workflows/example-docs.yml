@@ -1,0 +1,87 @@
+# Example workflow for generating documentation with Stig
+# This is a reference implementation that users can copy to their projects
+
+name: Generate Documentation
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'include/**'
+      - 'src/**'
+      - 'test/complex/include/**'
+  pull_request:
+    branches: [main]
+
+jobs:
+  generate-docs:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+      
+      - name: Build Stig
+        run: |
+          zig build -Doptimize=ReleaseFast
+          ./zig-out/bin/stig --version
+      
+      - name: Generate Documentation (Markdown)
+        run: |
+          ./zig-out/bin/stig test/complex/include/spatial/*.hpp \
+            -f markdown \
+            -o /tmp/docs.md \
+            --title "Spatial Library API"
+      
+      - name: Generate Documentation (mdbook)
+        run: |
+          ./zig-out/bin/stig test/complex/include/spatial/*.hpp \
+            -f mdbook \
+            -o /tmp/docs-mdbook \
+            --title "Spatial Library API"
+      
+      - name: Generate Documentation (JSON)
+        run: |
+          ./zig-out/bin/stig test/complex/include/spatial/*.hpp \
+            -f json \
+            -o /tmp/docs.json
+      
+      - name: Generate Documentation (HTML)
+        run: |
+          ./zig-out/bin/stig test/complex/include/spatial/*.hpp \
+            -f html \
+            -o /tmp/docs.html \
+            --title "Spatial Library API"
+      
+      - name: Check Coverage
+        run: |
+          ./zig-out/bin/stig --coverage test/complex/include/spatial/*.hpp
+      
+      - name: Upload Documentation Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation
+          path: |
+            /tmp/docs.md
+            /tmp/docs.json
+            /tmp/docs.html
+            /tmp/docs-mdbook/
+          retention-days: 30
+      
+      # Optional: Deploy to GitHub Pages
+      # - name: Setup mdbook
+      #   run: |
+      #     cargo install mdbook
+      #     mdbook build /tmp/docs-mdbook
+      # 
+      # - name: Deploy to GitHub Pages
+      #   uses: peaceiris/actions-gh-pages@v3
+      #   if: github.ref == 'refs/heads/main'
+      #   with:
+      #     github_token: ${{ secrets.GITHUB_TOKEN }}
+      #     publish_dir: /tmp/docs-mdbook/book
