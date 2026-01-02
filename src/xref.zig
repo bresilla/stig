@@ -290,29 +290,53 @@ pub const SymbolTable = struct {
                 try self.registerWithUniqueName(class.name, .class_type, module.name, unique_name);
 
                 // Register class methods with qualified names (Class::method)
+                // For overloaded methods, we use signature-based names to disambiguate
                 for (class.methods) |method| {
                     const method_unique_name = if (method.doc) |doc| doc.unique_name_override else null;
 
                     // Build qualified name: ClassName::methodName
                     const qualified_name = try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ class.name, method.name });
-                    defer self.allocator.free(qualified_name);
 
-                    try self.registerWithUniqueName(qualified_name, .function, module.name, method_unique_name);
-
-                    // Also register with signature for overload disambiguation
+                    // Generate signature-based name for overload disambiguation
                     const sig_name = try self.generateSignatureName(qualified_name, method.params);
-                    if (!std.mem.eql(u8, sig_name, qualified_name)) {
-                        if (!self.symbols.contains(sig_name)) {
-                            const anchor = try self.generateAnchor(qualified_name);
-                            try self.symbols.put(sig_name, SymbolInfo{
-                                .kind = .function,
-                                .source_file = module.name,
-                                .anchor = anchor,
-                                .name = qualified_name,
-                            });
-                        } else {
-                            self.allocator.free(sig_name);
+
+                    // First try to register with base qualified name (for first overload)
+                    if (!self.symbols.contains(qualified_name)) {
+                        const anchor = try self.generateAnchor(qualified_name);
+                        const info = SymbolInfo{
+                            .kind = .function,
+                            .source_file = module.name,
+                            .anchor = anchor,
+                            .name = qualified_name,
+                        };
+                        try self.symbols.put(qualified_name, info);
+
+                        // Also register short name if different
+                        if (!std.mem.eql(u8, method.name, qualified_name) and !self.symbols.contains(method.name)) {
+                            try self.symbols.put(method.name, info);
                         }
+
+                        // Register unique name override if provided
+                        if (method_unique_name) |uname| {
+                            if (!self.symbols.contains(uname)) {
+                                try self.symbols.put(uname, info);
+                            }
+                        }
+                    } else {
+                        // Base name already taken (overloaded method)
+                        // Free the qualified_name since we won't use it
+                        self.allocator.free(qualified_name);
+                    }
+
+                    // Always register with signature name for precise overload lookup
+                    if (!self.symbols.contains(sig_name)) {
+                        const anchor = try self.generateAnchor(sig_name);
+                        try self.symbols.put(sig_name, SymbolInfo{
+                            .kind = .function,
+                            .source_file = module.name,
+                            .anchor = anchor,
+                            .name = sig_name,
+                        });
                     } else {
                         self.allocator.free(sig_name);
                     }

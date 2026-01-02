@@ -609,8 +609,101 @@ fn globMatch(pattern: []const u8, name: []const u8) bool {
     return pi == pattern.len;
 }
 
-/// Prints the coverage report to stderr using std.debug.print
+/// Output format for coverage reports
+pub const OutputFormat = enum {
+    /// Human-readable format with summary
+    human,
+    /// Compiler-style format: file:line:col: severity: message
+    compiler,
+    /// JSON format for tooling
+    json,
+};
+
+/// Prints the coverage report in compiler-style format (file:line:col: severity: message)
+/// This format is compatible with most IDEs and CI/CD tools
+pub fn printCompilerReport(report: CoverageReport) void {
+    for (report.missing_items.items) |item| {
+        // Determine severity based on issue type
+        const severity = if (std.mem.eql(u8, item.issue, "no documentation"))
+            "warning"
+        else
+            "note";
+
+        // Format: file:line:col: severity: message
+        // Use column 1 as default since we don't track columns
+        if (item.line > 0) {
+            std.debug.print("{s}:{d}:1: {s}: {s} '{s}' ({s})\n", .{
+                item.file,
+                item.line,
+                severity,
+                item.issue,
+                item.entity_name,
+                item.entity_type,
+            });
+        } else {
+            // For items without line info, still output in compiler format
+            std.debug.print("{s}:1:1: {s}: {s} '{s}' ({s})\n", .{
+                item.file,
+                severity,
+                item.issue,
+                item.entity_name,
+                item.entity_type,
+            });
+        }
+    }
+
+    // Print summary at the end
+    if (report.missing_items.items.len > 0) {
+        std.debug.print("\nstig: {d} documentation issue(s) found\n", .{report.missing_items.items.len});
+    }
+
+    // Print coverage percentage
+    std.debug.print("stig: coverage {d:.0}% ({d}/{d} entities documented)\n", .{
+        report.overallPercentage(),
+        report.documented_entities,
+        report.total_entities,
+    });
+}
+
+/// Prints the coverage report in JSON format
+pub fn printJsonReport(allocator: std.mem.Allocator, report: CoverageReport) !void {
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(allocator);
+
+    try output.appendSlice(allocator, "{\n");
+    try output.appendSlice(allocator, "  \"coverage\": {\n");
+    try std.fmt.format(output.writer(allocator), "    \"percentage\": {d:.1},\n", .{report.overallPercentage()});
+    try std.fmt.format(output.writer(allocator), "    \"documented\": {d},\n", .{report.documented_entities});
+    try std.fmt.format(output.writer(allocator), "    \"total\": {d}\n", .{report.total_entities});
+    try output.appendSlice(allocator, "  },\n");
+
+    try output.appendSlice(allocator, "  \"issues\": [\n");
+    for (report.missing_items.items, 0..) |item, i| {
+        try output.appendSlice(allocator, "    {\n");
+        try std.fmt.format(output.writer(allocator), "      \"file\": \"{s}\",\n", .{item.file});
+        try std.fmt.format(output.writer(allocator), "      \"line\": {d},\n", .{item.line});
+        try std.fmt.format(output.writer(allocator), "      \"entity\": \"{s}\",\n", .{item.entity_name});
+        try std.fmt.format(output.writer(allocator), "      \"type\": \"{s}\",\n", .{item.entity_type});
+        try std.fmt.format(output.writer(allocator), "      \"issue\": \"{s}\"\n", .{item.issue});
+        if (i < report.missing_items.items.len - 1) {
+            try output.appendSlice(allocator, "    },\n");
+        } else {
+            try output.appendSlice(allocator, "    }\n");
+        }
+    }
+    try output.appendSlice(allocator, "  ]\n");
+    try output.appendSlice(allocator, "}\n");
+
+    std.debug.print("{s}", .{output.items});
+}
+
+/// Prints the coverage report to stderr using std.debug.print (human-readable format)
 pub fn printReport(report: CoverageReport) void {
+    printHumanReport(report);
+}
+
+/// Prints the coverage report in human-readable format
+pub fn printHumanReport(report: CoverageReport) void {
     std.debug.print("\n", .{});
     std.debug.print("Documentation Coverage Report\n", .{});
     std.debug.print("=============================\n", .{});

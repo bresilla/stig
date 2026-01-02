@@ -18,41 +18,13 @@ const coverage = @import("coverage.zig");
 const snippet = @import("snippet.zig");
 const lint = @import("lint.zig");
 const cache_mod = @import("cache.zig");
+const lsp_server = @import("lsp/server.zig");
 
 pub fn main() !void {
     // Get allocator - disable safety checks to avoid leak warnings
-    // TODO: Fix memory leaks in C++ parser properly
     var gpa = std.heap.GeneralPurposeAllocator(.{ .safety = false }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-
-    // Check for preprocessor subcommand first
-    var args_iter = std.process.args();
-    _ = args_iter.skip(); // Skip program name
-    if (args_iter.next()) |first_arg| {
-        if (std.mem.eql(u8, first_arg, "preprocessor") or std.mem.eql(u8, first_arg, "preprocess")) {
-            // Check for "supports" subcommand (mdbook calls: stinger preprocessor supports <renderer>)
-            if (args_iter.next()) |second_arg| {
-                if (std.mem.eql(u8, second_arg, "supports")) {
-                    // We support all renderers (html, pdf, etc.)
-                    // Exit with 0 to indicate support
-                    return;
-                }
-            }
-            // Run as mdbook preprocessor - use page allocator to avoid leak reports on stderr
-            preprocessor.runPreprocessor(std.heap.page_allocator) catch |err| {
-                std.debug.print("Preprocessor error: {}\n", .{err});
-                return;
-            };
-            return;
-        }
-        // Handle mdbook's "supports" check (for direct invocation: stinger supports <renderer>)
-        if (std.mem.eql(u8, first_arg, "supports")) {
-            // We support all renderers (html, pdf, etc.)
-            // Exit with 0 to indicate support
-            return;
-        }
-    }
 
     // Parse CLI arguments
     var arg_parser = cli.ArgParser.init(allocator);
@@ -70,17 +42,53 @@ pub fn main() !void {
     };
     defer args.deinit();
 
-    // Handle help/version (defer will clean up arg_parser)
-    if (args.show_help) {
-        arg_parser.printHelp();
-        return;
+    // Handle subcommands
+    switch (args.subcommand) {
+        .help => {
+            arg_parser.printHelp();
+            return;
+        },
+        .help_generate => {
+            cli.ArgParser.printGenerateHelp();
+            return;
+        },
+        .help_check => {
+            cli.ArgParser.printCheckHelp();
+            return;
+        },
+        .version => {
+            arg_parser.printVersion();
+            return;
+        },
+        .preprocessor => {
+            // Run as mdbook preprocessor
+            preprocessor.runPreprocessor(std.heap.page_allocator) catch |err| {
+                std.debug.print("Preprocessor error: {}\n", .{err});
+                return;
+            };
+            return;
+        },
+        .check => {
+            try runCheckCommand(allocator, &args);
+            return;
+        },
+        .check_lsp => {
+            // Run as LSP server for editor integration
+            lsp_server.runServer(allocator) catch |err| {
+                std.debug.print("LSP server error: {}\n", .{err});
+                return;
+            };
+            return;
+        },
+        .generate => {
+            try runGenerateCommand(allocator, &args, &arg_parser);
+            return;
+        },
     }
+}
 
-    if (args.show_version) {
-        arg_parser.printVersion();
-        return;
-    }
-
+/// Runs the 'check' subcommand - documentation coverage and quality checks
+fn runCheckCommand(allocator: std.mem.Allocator, args: *cli.Args) !void {
     // Load config file
     const config_path = args.config_file orelse "stig.toml";
     var config_loader: ?*config_mod.ConfigLoader = null;
@@ -91,11 +99,9 @@ pub fn main() !void {
         config = result.config;
     } else |err| {
         if (args.config_file != null) {
-            // Only error if user explicitly specified a config file
             std.debug.print("Error: Cannot load config file '{s}': {}\n", .{ config_path, err });
             return;
         }
-        // Use default config if stig.toml doesn't exist - this is fine
     }
 
     defer {
@@ -105,23 +111,19 @@ pub fn main() !void {
         }
     }
 
-    // Merge CLI args with config (CLI takes precedence)
-    cli.ArgParser.mergeWithConfig(&args, config);
-
-    // Check for input files (from CLI or config)
+    // Get input files
     var input_patterns = args.input_files;
     if (input_patterns.len == 0 and config.input_patterns.len > 0) {
-        // Use input patterns from config
         input_patterns = config.input_patterns;
     }
 
     if (input_patterns.len == 0) {
         std.debug.print("Error: No input files specified\n\n", .{});
-        arg_parser.printHelp();
+        cli.ArgParser.printCheckHelp();
         return;
     }
 
-    // Expand glob patterns to actual file paths
+    // Expand glob patterns
     var expanded_files: std.ArrayList([]const u8) = .empty;
     defer {
         for (expanded_files.items) |f| {
@@ -131,12 +133,242 @@ pub fn main() !void {
     }
 
     for (input_patterns) |pattern| {
-        // Check if pattern contains glob characters
         if (std.mem.indexOfAny(u8, pattern, "*?[")) |_| {
-            // It's a glob pattern - expand it
             try expandGlob(allocator, pattern, &expanded_files);
         } else {
-            // It's a regular file path
+            const path_copy = try allocator.dupe(u8, pattern);
+            try expanded_files.append(allocator, path_copy);
+        }
+    }
+
+    const input_files = expanded_files.items;
+
+    if (input_files.len == 0) {
+        std.debug.print("Error: No files matched the input patterns\n\n", .{});
+        return;
+    }
+
+    // Initialize parsers
+    var c_parser = try CParser.init(allocator);
+    defer c_parser.deinit();
+
+    var cpp_parser = try CppParser.init(allocator);
+    defer cpp_parser.deinit();
+
+    // Parse files
+    const FileData = struct {
+        source: []const u8,
+        module: types.Module,
+    };
+
+    var file_data: std.ArrayList(FileData) = .empty;
+    defer {
+        for (file_data.items) |data| {
+            allocator.free(data.source);
+        }
+        file_data.deinit(allocator);
+    }
+
+    for (input_files) |input_file| {
+        const file = std.fs.cwd().openFile(input_file, .{}) catch |err| {
+            std.debug.print("Error: Cannot open file '{s}': {}\n", .{ input_file, err });
+            continue;
+        };
+        defer file.close();
+
+        const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
+            std.debug.print("Error: Cannot read file '{s}': {}\n", .{ input_file, err });
+            continue;
+        };
+
+        const base_path = std.fs.path.dirname(input_file) orelse ".";
+        c_parser.setBasePath(base_path);
+        cpp_parser.setBasePath(base_path);
+
+        const is_cpp = isCppFile(input_file);
+        const module = if (is_cpp)
+            try cpp_parser.parse(source, input_file)
+        else
+            try c_parser.parse(source, input_file);
+
+        try file_data.append(allocator, .{ .source = source, .module = module });
+    }
+
+    // Collect modules
+    var modules: std.ArrayList(types.Module) = .empty;
+    defer modules.deinit(allocator);
+
+    for (file_data.items) |data| {
+        try modules.append(allocator, data.module);
+    }
+
+    // Run coverage analysis
+    const min_coverage = args.min_coverage orelse config.coverage.min_coverage;
+    const coverage_config = coverage.CoverageConfig{
+        .min_coverage = min_coverage,
+        .require_param_docs = config.coverage.require_param_docs,
+        .require_return_docs = config.coverage.require_return_docs,
+        .require_tparam_docs = config.coverage.require_tparam_docs,
+        .exclude_patterns = config.coverage.exclude_patterns,
+    };
+
+    var report = try coverage.analyze(allocator, modules.items, coverage_config);
+    defer report.deinit();
+
+    // Also run lint checks for additional validation
+    var symbol_table = xref.SymbolTable.init(allocator);
+    defer symbol_table.deinit();
+    try symbol_table.buildFromModules(modules.items);
+
+    const lint_config = lint.LintConfig{
+        .enabled = config.lint.enabled,
+        .treat_warnings_as_errors = args.strict or config.lint.treat_warnings_as_errors,
+        .max_brief_length = config.lint.max_brief_length,
+        .require_brief = config.lint.require_brief,
+        .require_param_docs = config.lint.require_param_docs,
+        .require_return_docs = config.lint.require_return_docs,
+        .require_tparam_docs = config.lint.require_tparam_docs,
+        .check_cross_references = config.lint.check_cross_references,
+        .require_brief_period = config.lint.require_brief_period,
+        .exclude_patterns = config.lint.exclude_patterns,
+    };
+
+    var linter = lint.Linter.init(allocator, lint_config);
+    linter.setSymbolTable(&symbol_table);
+
+    var lint_report = try linter.lint(modules.items);
+    defer lint_report.deinit();
+
+    // Output based on format
+    switch (args.check_output_format) {
+        .human => {
+            // Print coverage report
+            coverage.printHumanReport(report);
+
+            // Print lint issues if any
+            if (lint_report.issues.items.len > 0) {
+                lint.printReport(lint_report);
+            }
+        },
+        .compiler => {
+            // Print in compiler-style format for CI/CD
+            coverage.printCompilerReport(report);
+
+            // Also print lint issues in compiler format
+            for (lint_report.issues.items) |issue| {
+                const severity_str = switch (issue.severity) {
+                    .@"error" => "error",
+                    .warning => "warning",
+                    .info => "note",
+                };
+                if (issue.line > 0) {
+                    std.debug.print("{s}:{d}:1: {s}: [{s}] {s} in {s} '{s}'\n", .{
+                        issue.file,
+                        issue.line,
+                        severity_str,
+                        issue.code,
+                        issue.message,
+                        issue.entity_type,
+                        issue.entity_name,
+                    });
+                } else {
+                    std.debug.print("{s}:1:1: {s}: [{s}] {s} in {s} '{s}'\n", .{
+                        issue.file,
+                        severity_str,
+                        issue.code,
+                        issue.message,
+                        issue.entity_type,
+                        issue.entity_name,
+                    });
+                }
+            }
+        },
+        .json => {
+            try coverage.printJsonReport(allocator, report);
+        },
+    }
+
+    // Determine exit code
+    var exit_code: u8 = 0;
+
+    // Check coverage threshold
+    if (report.overallPercentage() < @as(f64, @floatFromInt(min_coverage))) {
+        if (args.check_output_format == .human) {
+            std.debug.print("Coverage ({d:.0}%) is below minimum threshold ({d}%)\n", .{
+                report.overallPercentage(),
+                min_coverage,
+            });
+        }
+        exit_code = 2;
+    }
+
+    // Check for lint errors
+    if (lint_report.hasErrors()) {
+        exit_code = 1;
+    }
+
+    // Check for warnings with strict mode
+    if (args.strict and lint_report.hasWarnings()) {
+        exit_code = 2;
+    }
+
+    if (exit_code != 0) {
+        std.process.exit(exit_code);
+    }
+}
+
+/// Runs the 'generate' subcommand - documentation generation
+fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser: *cli.ArgParser) !void {
+    // Load config file
+    const config_path = args.config_file orelse "stig.toml";
+    var config_loader: ?*config_mod.ConfigLoader = null;
+    var config: config_mod.Config = config_mod.Config{};
+
+    if (config_mod.loadFromFile(allocator, config_path)) |result| {
+        config_loader = result.loader;
+        config = result.config;
+    } else |err| {
+        if (args.config_file != null) {
+            std.debug.print("Error: Cannot load config file '{s}': {}\n", .{ config_path, err });
+            return;
+        }
+    }
+
+    defer {
+        if (config_loader) |loader| {
+            loader.deinit();
+            allocator.destroy(loader);
+        }
+    }
+
+    // Merge CLI args with config
+    cli.ArgParser.mergeWithConfig(args, config);
+
+    // Get input files
+    var input_patterns = args.input_files;
+    if (input_patterns.len == 0 and config.input_patterns.len > 0) {
+        input_patterns = config.input_patterns;
+    }
+
+    if (input_patterns.len == 0) {
+        std.debug.print("Error: No input files specified\n\n", .{});
+        arg_parser.printHelp();
+        return;
+    }
+
+    // Expand glob patterns
+    var expanded_files: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (expanded_files.items) |f| {
+            allocator.free(f);
+        }
+        expanded_files.deinit(allocator);
+    }
+
+    for (input_patterns) |pattern| {
+        if (std.mem.indexOfAny(u8, pattern, "*?[")) |_| {
+            try expandGlob(allocator, pattern, &expanded_files);
+        } else {
             const path_copy = try allocator.dupe(u8, pattern);
             try expanded_files.append(allocator, path_copy);
         }
@@ -184,7 +416,7 @@ pub fn main() !void {
     var cpp_parser = try CppParser.init(allocator);
     defer cpp_parser.deinit();
 
-    // Store sources and modules together so sources outlive module usage
+    // Store sources and modules together
     const FileData = struct {
         source: []const u8,
         module: types.Module,
@@ -199,7 +431,7 @@ pub fn main() !void {
         file_data.deinit(allocator);
     }
 
-    // Initialize incremental cache for mdbook format (if not forcing rebuild)
+    // Initialize incremental cache for mdbook format
     var incr_cache: ?cache_mod.IncrementalCache = null;
     defer if (incr_cache) |*c| c.deinit();
 
@@ -207,19 +439,15 @@ pub fn main() !void {
     if (args.output_format == .mdbook and !args.force_rebuild and cache_output_dir.len > 0) {
         incr_cache = cache_mod.IncrementalCache.init(allocator, cache_output_dir) catch null;
         if (incr_cache) |*c| {
-            c.load() catch {
-                // Cache doesn't exist or is invalid, will do full build
-            };
+            c.load() catch {};
         }
     }
 
-    // Track statistics for incremental build
     var files_skipped: usize = 0;
     var files_rebuilt: usize = 0;
 
     // Process each input file
     for (input_files) |input_file| {
-        // Read file
         const file = std.fs.cwd().openFile(input_file, .{}) catch |err| {
             std.debug.print("Error: Cannot open file '{s}': {}\n", .{ input_file, err });
             continue;
@@ -231,7 +459,7 @@ pub fn main() !void {
             continue;
         };
 
-        // Check if file needs rebuilding (for mdbook format with cache)
+        // Check if file needs rebuilding
         if (incr_cache) |*cache| {
             const needs_rebuild = cache.needsRebuild(input_file, source) catch true;
             if (!needs_rebuild) {
@@ -244,12 +472,10 @@ pub fn main() !void {
 
         files_rebuilt += 1;
 
-        // Set base path for include directives (directory containing the source file)
         const base_path = std.fs.path.dirname(input_file) orelse ".";
         c_parser.setBasePath(base_path);
         cpp_parser.setBasePath(base_path);
 
-        // Choose parser based on file extension
         const is_cpp = isCppFile(input_file);
         const module = if (is_cpp)
             try cpp_parser.parse(source, input_file)
@@ -258,13 +484,13 @@ pub fn main() !void {
 
         try file_data.append(allocator, .{ .source = source, .module = module, .path = input_file });
 
-        // Update cache entry after successful parsing
+        // Update cache entry
         if (incr_cache) |*cache| {
             cache.updateEntry(input_file, source) catch {};
         }
     }
 
-    // Collect modules for generation
+    // Collect modules
     var modules: std.ArrayList(types.Module) = .empty;
     defer modules.deinit(allocator);
 
@@ -272,86 +498,17 @@ pub fn main() !void {
         try modules.append(allocator, data.module);
     }
 
-    // Coverage mode - generate coverage report and exit
-    if (args.coverage_mode) {
-        const coverage_config = coverage.CoverageConfig{
-            .min_coverage = config.coverage.min_coverage,
-            .require_param_docs = config.coverage.require_param_docs,
-            .require_return_docs = config.coverage.require_return_docs,
-            .require_tparam_docs = config.coverage.require_tparam_docs,
-            .exclude_patterns = config.coverage.exclude_patterns,
-        };
-
-        var report = try coverage.analyze(allocator, modules.items, coverage_config);
-        defer report.deinit();
-
-        // Print report to stderr (use debug.print for simplicity)
-        coverage.printReport(report);
-
-        // Exit with code 1 if coverage is below threshold
-        if (report.overallPercentage() < @as(f64, @floatFromInt(coverage_config.min_coverage))) {
-            std.debug.print("Coverage ({d:.0}%) is below minimum threshold ({d}%)\n", .{
-                report.overallPercentage(),
-                coverage_config.min_coverage,
-            });
-            std.process.exit(1);
-        }
-        return;
-    }
-
-    // Lint mode - check documentation quality and exit
-    if (args.lint_mode) {
-        // Build symbol table for cross-reference validation
-        var symbol_table = xref.SymbolTable.init(allocator);
-        defer symbol_table.deinit();
-        try symbol_table.buildFromModules(modules.items);
-
-        const lint_config = lint.LintConfig{
-            .enabled = config.lint.enabled,
-            .treat_warnings_as_errors = config.lint.treat_warnings_as_errors,
-            .max_brief_length = config.lint.max_brief_length,
-            .require_brief = config.lint.require_brief,
-            .require_param_docs = config.lint.require_param_docs,
-            .require_return_docs = config.lint.require_return_docs,
-            .require_tparam_docs = config.lint.require_tparam_docs,
-            .check_cross_references = config.lint.check_cross_references,
-            .require_brief_period = config.lint.require_brief_period,
-            .exclude_patterns = config.lint.exclude_patterns,
-        };
-
-        var linter = lint.Linter.init(allocator, lint_config);
-        linter.setSymbolTable(&symbol_table);
-
-        var report = try linter.lint(modules.items);
-        defer report.deinit();
-
-        // Print report
-        lint.printReport(report);
-
-        // Exit with appropriate code
-        if (report.hasErrors()) {
-            std.process.exit(1);
-        }
-        if (lint_config.treat_warnings_as_errors and report.hasWarnings()) {
-            std.process.exit(2);
-        }
-        return;
-    }
-
     // Generate output based on format
     switch (args.output_format) {
         .mdbook => {
-            // Generate mdbook structure
             const output_dir = args.output_file orelse config.output_dir;
 
-            // Check if we have any files to process
             if (modules.items.len == 0 and files_skipped > 0) {
                 std.debug.print("All {d} files unchanged (cached)\n", .{files_skipped});
                 std.debug.print("Use --force to rebuild all files\n", .{});
                 return;
             }
 
-            // Map config.Grouping to MdbookConfig.GroupingStrategy
             const grouping_strategy: MdbookConfig.GroupingStrategy = switch (config.grouping) {
                 .by_header => .by_header,
                 .by_prefix => .by_prefix,
@@ -375,14 +532,13 @@ pub fn main() !void {
                 return;
             };
 
-            // Save cache after successful generation
+            // Save cache
             if (incr_cache) |*cache| {
                 cache.save() catch |err| {
                     std.debug.print("Warning: Could not save cache: {}\n", .{err});
                 };
             }
 
-            // Print summary
             if (files_skipped > 0) {
                 std.debug.print("Rebuilt {d} file(s), skipped {d} unchanged\n", .{ files_rebuilt, files_skipped });
             }
@@ -390,16 +546,13 @@ pub fn main() !void {
             std.debug.print("Run 'mdbook build {s}' to build the book\n", .{output_dir});
         },
         .markdown => {
-            // Build symbol table for cross-referencing
             var symbol_table = xref.SymbolTable.init(allocator);
             defer symbol_table.deinit();
             try symbol_table.buildFromModules(modules.items);
 
-            // Initialize snippet extractor for @snippet tags
             var snippet_extractor = snippet.SnippetExtractor.init(allocator);
             defer snippet_extractor.deinit();
 
-            // Generate single markdown output
             var output_buffer: std.ArrayList(u8) = .empty;
             defer output_buffer.deinit(allocator);
 
@@ -407,19 +560,15 @@ pub fn main() !void {
                 var gen = MarkdownGenerator.init(allocator);
                 defer gen.deinit();
 
-                // Enable cross-reference support
                 gen.setSymbolTable(&symbol_table);
                 gen.setOutputFormat(.markdown);
-                // Enable snippet extraction
                 gen.setSnippetExtractor(&snippet_extractor);
 
                 const markdown = try gen.generate(module);
                 try output_buffer.appendSlice(allocator, markdown);
             }
 
-            // Write output
             if (args.output_file) |output_path| {
-                // Write to file
                 const file = std.fs.cwd().createFile(output_path, .{}) catch |err| {
                     std.debug.print("Error: Cannot create output file '{s}': {}\n", .{ output_path, err });
                     return;
@@ -433,7 +582,6 @@ pub fn main() !void {
 
                 std.debug.print("Generated documentation: {s}\n", .{output_path});
             } else {
-                // Write to stdout
                 var buf: [8192]u8 = undefined;
                 var file_writer = std.fs.File.stdout().writer(&buf);
                 const stdout = &file_writer.interface;
@@ -443,7 +591,6 @@ pub fn main() !void {
             }
         },
         .json => {
-            // Generate JSON output
             var json_gen = JsonGenerator.init(allocator);
             defer json_gen.deinit();
 
@@ -452,9 +599,7 @@ pub fn main() !void {
                 return;
             };
 
-            // Write output
             if (args.output_file) |output_path| {
-                // Write to file
                 const file = std.fs.cwd().createFile(output_path, .{}) catch |err| {
                     std.debug.print("Error: Cannot create output file '{s}': {}\n", .{ output_path, err });
                     return;
@@ -468,7 +613,6 @@ pub fn main() !void {
 
                 std.debug.print("Generated JSON documentation: {s}\n", .{output_path});
             } else {
-                // Write to stdout
                 var buf: [8192]u8 = undefined;
                 var file_writer = std.fs.File.stdout().writer(&buf);
                 const stdout = &file_writer.interface;
@@ -478,11 +622,9 @@ pub fn main() !void {
             }
         },
         .html => {
-            // Generate single-page HTML output
             var html_gen = HtmlGenerator.init(allocator);
             defer html_gen.deinit();
 
-            // Set title if provided
             if (args.book_title) |title| {
                 html_gen.setTitle(title);
             }
@@ -492,9 +634,7 @@ pub fn main() !void {
                 return;
             };
 
-            // Write output
             if (args.output_file) |output_path| {
-                // Write to file
                 const file = std.fs.cwd().createFile(output_path, .{}) catch |err| {
                     std.debug.print("Error: Cannot create output file '{s}': {}\n", .{ output_path, err });
                     return;
@@ -508,7 +648,6 @@ pub fn main() !void {
 
                 std.debug.print("Generated HTML documentation: {s}\n", .{output_path});
             } else {
-                // Write to stdout
                 var buf: [8192]u8 = undefined;
                 var file_writer = std.fs.File.stdout().writer(&buf);
                 const stdout = &file_writer.interface;
@@ -532,33 +671,91 @@ fn isCppFile(filename: []const u8) bool {
 }
 
 /// Expands a glob pattern to matching file paths
+/// Supports ** for recursive directory matching
+/// Examples: include/**/*.hpp, include/**.hpp, **/*.h
 fn expandGlob(allocator: std.mem.Allocator, pattern: []const u8, results: *std.ArrayList([]const u8)) !void {
-    // Split pattern into directory and file pattern
-    const last_sep = std.mem.lastIndexOfScalar(u8, pattern, '/');
-    const dir_path = if (last_sep) |idx| pattern[0..idx] else ".";
-    const file_pattern = if (last_sep) |idx| pattern[idx + 1 ..] else pattern;
+    // Check for recursive pattern (**)
+    if (std.mem.indexOf(u8, pattern, "**")) |double_star_pos| {
+        // Get prefix (directory before **)
+        const prefix = if (double_star_pos > 0 and pattern[double_star_pos - 1] == '/')
+            pattern[0 .. double_star_pos - 1]
+        else if (double_star_pos > 0)
+            pattern[0..double_star_pos]
+        else
+            ".";
 
-    // Open the directory
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
-        std.debug.print("Warning: Cannot open directory '{s}': {}\n", .{ dir_path, err });
+        // Get suffix (pattern after **)
+        const suffix_start = double_star_pos + 2;
+        const suffix = if (suffix_start >= pattern.len)
+            "*" // just **, match everything
+        else if (pattern[suffix_start] == '/')
+            pattern[suffix_start + 1 ..] // **/*.hpp -> *.hpp
+        else
+            pattern[suffix_start..]; // **.hpp -> *.hpp
+
+        // If suffix starts with ., it's like **.hpp -> we want *.hpp
+        const file_pattern = if (suffix.len > 0 and suffix[0] == '.') blk: {
+            var buf: [256]u8 = undefined;
+            const result = std.fmt.bufPrint(&buf, "*{s}", .{suffix}) catch suffix;
+            break :blk result;
+        } else suffix;
+
+        try expandRecursive(allocator, prefix, file_pattern, results);
+    } else {
+        // Simple glob without **
+        const last_sep = std.mem.lastIndexOfScalar(u8, pattern, '/');
+        const dir_path = if (last_sep) |idx| pattern[0..idx] else ".";
+        const file_pattern = if (last_sep) |idx| pattern[idx + 1 ..] else pattern;
+
+        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+            std.debug.print("Warning: Cannot open directory '{s}': {}\n", .{ dir_path, err });
+            return;
+        };
+        defer dir.close();
+
+        var iter = dir.iterate();
+        while (try iter.next()) |entry| {
+            if (entry.kind != .file) continue;
+
+            if (globMatch(file_pattern, entry.name)) {
+                const full_path = if (last_sep != null)
+                    try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, entry.name })
+                else
+                    try allocator.dupe(u8, entry.name);
+
+                try results.append(allocator, full_path);
+            }
+        }
+    }
+}
+
+/// Recursively expand directories and match files against suffix pattern
+fn expandRecursive(allocator: std.mem.Allocator, base_dir: []const u8, file_pattern: []const u8, results: *std.ArrayList([]const u8)) !void {
+    var dir = std.fs.cwd().openDir(base_dir, .{ .iterate = true }) catch {
         return;
     };
     defer dir.close();
 
-    // Iterate and match files
     var iter = dir.iterate();
     while (try iter.next()) |entry| {
-        if (entry.kind != .file) continue;
+        const full_path = if (std.mem.eql(u8, base_dir, "."))
+            try allocator.dupe(u8, entry.name)
+        else
+            try std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_dir, entry.name });
 
-        // Simple glob matching (supports * and ?)
-        if (globMatch(file_pattern, entry.name)) {
-            // Build full path
-            const full_path = if (last_sep != null)
-                try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, entry.name })
-            else
-                try allocator.dupe(u8, entry.name);
-
-            try results.append(allocator, full_path);
+        if (entry.kind == .directory) {
+            // Recurse into subdirectory
+            try expandRecursive(allocator, full_path, file_pattern, results);
+            allocator.free(full_path);
+        } else if (entry.kind == .file) {
+            // Check if file matches the pattern
+            if (globMatch(file_pattern, entry.name)) {
+                try results.append(allocator, full_path);
+            } else {
+                allocator.free(full_path);
+            }
+        } else {
+            allocator.free(full_path);
         }
     }
 }
@@ -587,7 +784,6 @@ fn globMatch(pattern: []const u8, name: []const u8) bool {
         }
     }
 
-    // Check remaining pattern characters (must all be *)
     while (pi < pattern.len and pattern[pi] == '*') {
         pi += 1;
     }

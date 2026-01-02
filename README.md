@@ -3,7 +3,7 @@
 **Tree-sitter based C/C++ documentation generator with Doxygen-style comments and mdbook output**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Zig](https://img.shields.io/badge/Zig-0.13.0+-orange.svg)](https://ziglang.org/)
+[![Zig](https://img.shields.io/badge/Zig-0.14.0+-orange.svg)](https://ziglang.org/)
 
 ## Overview
 
@@ -51,7 +51,7 @@ Unlike traditional documentation generators that rely on libclang, Stig uses tre
 
 ### Build from Source
 
-Requires Zig 0.13.0 or later.
+Requires Zig 0.14.0 or later.
 
 ```bash
 git clone https://github.com/bresilla/stig.git
@@ -76,13 +76,16 @@ devbox shell
 stig include/mylib.h
 
 # Generate mdbook structure
-stig include/*.h -f mdbook -o docs/ --title "My Library API"
+stig generate include/*.h -f mdbook -o docs/ --title "My Library API"
 
-# Generate with coverage check
-stig --coverage include/*.h
+# Check documentation coverage (human-readable)
+stig check include/*.h
+
+# Check with CI/CD-friendly output (file:line:col: severity: message)
+stig check -f compiler include/*.h
 
 # Watch mode with live preview
-stig include/*.h -f mdbook -o docs/ --serve
+stig generate include/*.h -f mdbook -o docs/ --serve
 ```
 
 ## Features
@@ -190,11 +193,13 @@ Result process(Point p);
 
 Generates: `[Point](#point)`, `[the geometry guide](geometry_page.md)`
 
-### Coverage & Linting
+### Documentation Checking
 
-**Coverage Report:**
+The `stig check` command combines coverage analysis and linting into a single command with multiple output formats:
+
+**Human-Readable Report (default):**
 ```bash
-stig --coverage include/*.h
+stig check include/*.h
 ```
 
 Output:
@@ -214,10 +219,39 @@ Missing Documentation:
     - validate() [line 58] - missing @return
 ```
 
-**Linting:**
+**Compiler-Style Output (for CI/CD):**
 ```bash
-stig --lint include/*.h
+stig check -f compiler include/*.h
 ```
+
+Output:
+```
+include/api.h:42:1: warning: missing @param for 'flags' 'process' (function)
+include/api.h:58:1: warning: missing @return 'validate' (function)
+include/api.h:75:1: warning: no documentation 'helper' (function)
+
+stig: 3 documentation issue(s) found
+stig: coverage 85% (42/50 entities documented)
+```
+
+**JSON Output (for tooling):**
+```bash
+stig check -f json include/*.h
+```
+
+**Additional Options:**
+```bash
+# Set minimum coverage threshold (exit code 2 if below)
+stig check --min-coverage 80 include/*.h
+
+# Treat warnings as errors (exit code 2 if warnings found)
+stig check --strict include/*.h
+```
+
+**Exit Codes:**
+- `0` - All checks passed
+- `1` - Errors found (invalid references, etc.)
+- `2` - Warnings found (with `--strict`) or coverage below threshold
 
 Checks for:
 - Missing `@brief` descriptions
@@ -498,35 +532,44 @@ Generates `TESTS.md` with links to test files.
 ## CLI Reference
 
 ```
-stig [OPTIONS] <INPUT_FILES>...
+stig <COMMAND> [OPTIONS] <INPUT_FILES>...
 
-ARGS:
-    <INPUT_FILES>...    C/C++ header files to process
+COMMANDS:
+    generate        Generate documentation (default if no subcommand)
+    check           Check documentation coverage and quality
+    preprocessor    Run as mdbook preprocessor
+    help            Show help message
+    version         Show version information
 
-OPTIONS:
+GENERATE OPTIONS:
     -o, --output <PATH>    Output file or directory (default: stdout)
     -f, --format <FMT>     Output format: markdown, mdbook, json, html
     --title <TITLE>        Book title (for mdbook/html format)
     -c, --config <FILE>    Config file path (default: stig.toml)
     -w, --watch            Watch for file changes and regenerate
     --serve                Watch mode + spawn mdbook serve for live preview
-    -C, --coverage         Generate documentation coverage report
-    -L, --lint             Lint documentation for errors and warnings
     --force                Force full rebuild, ignore cache
     -h, --help             Show help message
+
+CHECK OPTIONS:
+    -c, --config <FILE>    Config file path (default: stig.toml)
+    -f, --format <FMT>     Output format: human, compiler, json
+    --min-coverage <N>     Minimum coverage percentage (0-100)
+    --strict               Treat warnings as errors
+    -h, --help             Show help message
+
+GLOBAL OPTIONS:
+    -h, --help             Show help (use 'stig <command> --help' for details)
     -v, --version          Show version information
 
-SUBCOMMANDS:
-    preprocessor    Run as mdbook preprocessor (reads JSON from stdin)
-
 EXAMPLES:
-    stig input.h                         # Output to stdout
-    stig input.h -o output.md           # Output to file
-    stig src/*.h -o api.md              # Multiple files
-    stig src/*.h -f mdbook -o docs/     # Generate mdbook
-    stig src/*.h -f json -o api.json   # Generate JSON
-    stig --coverage src/*.h            # Coverage report
-    stig --lint src/*.h               # Lint documentation
+    stig input.h                              # Generate markdown to stdout
+    stig generate input.h -o output.md        # Generate to file
+    stig generate src/*.h -f mdbook -o docs/  # Generate mdbook
+    stig check src/*.h                        # Human-readable coverage report
+    stig check -f compiler src/*.h            # CI/CD-friendly output
+    stig check --min-coverage 80 src/*.h      # Fail if coverage < 80%
+    stig check --strict src/*.h               # Treat warnings as errors
 ```
 
 ## Output Structure
@@ -602,7 +645,7 @@ options = "-O2 -std=c++20"
 
 ## Requirements
 
-- **Build**: Zig 0.13.0+
+- **Build**: Zig 0.14.0+
 - **Runtime**: None (static binary)
 - **Optional**: mdbook (for building generated documentation)
 
