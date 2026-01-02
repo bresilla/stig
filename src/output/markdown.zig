@@ -4,6 +4,7 @@ const xref = @import("../xref.zig");
 const config = @import("../config.zig");
 const snippet_mod = @import("../snippet.zig");
 const extractor_mod = @import("../docstring/extractor.zig");
+const godbolt_mod = @import("../godbolt.zig");
 
 /// Markdown output generator with optional cross-reference support
 pub const MarkdownGenerator = struct {
@@ -543,6 +544,36 @@ pub const MarkdownGenerator = struct {
                 return try std.fmt.allocPrint(self.allocator, "#{s}", .{resolved.anchor});
             },
         }
+    }
+
+    /// Writes a code block with optional Godbolt link
+    fn writeCodeBlockWithGodbolt(self: *Self, code: []const u8, language: []const u8) !void {
+        // Write code block
+        try self.writeString("```");
+        try self.writeString(language);
+        try self.writeString("\n");
+        try self.writeString(code);
+        try self.writeString("\n```\n");
+
+        // Add Godbolt link if enabled and language is C/C++
+        if (self.cfg.godbolt.enabled and
+            (std.mem.eql(u8, language, "c") or
+                std.mem.eql(u8, language, "cpp") or
+                std.mem.eql(u8, language, "c++")))
+        {
+            var gen = godbolt_mod.GodboltUrlGenerator.init(self.allocator);
+            gen.setCompiler(self.cfg.godbolt.compiler);
+            gen.setOptions(self.cfg.godbolt.options);
+
+            const link = try gen.generateMarkdownLink(code, self.cfg.godbolt.link_text);
+            defer self.allocator.free(link);
+
+            try self.writeString("\n");
+            try self.writeString(link);
+            try self.writeString("\n");
+        }
+
+        try self.writeString("\n");
     }
 
     /// Extracts the base type name from a type string
@@ -1360,9 +1391,7 @@ pub const MarkdownGenerator = struct {
                         try self.writeString("}}\n```\n\n");
                     } else {
                         // Inline code
-                        try self.writeString("```c\n");
-                        try self.writeString(example);
-                        try self.writeString("\n```\n\n");
+                        try self.writeCodeBlockWithGodbolt(example, "c");
                     }
                 }
             }
@@ -1377,11 +1406,7 @@ pub const MarkdownGenerator = struct {
                     if (self.snippet_extractor) |extractor| {
                         if (extractor.extract(snippet_ref)) |code| {
                             const lang = snippet_mod.SnippetExtractor.getLanguage(snippet_ref);
-                            try self.writeString("```");
-                            try self.writeString(lang);
-                            try self.writeString("\n");
-                            try self.writeString(code);
-                            try self.writeString("\n```\n\n");
+                            try self.writeCodeBlockWithGodbolt(code, lang);
                         } else |err| {
                             // Show error placeholder
                             try self.writeString("```\n// Snippet not found: ");
@@ -1504,18 +1529,8 @@ pub const MarkdownGenerator = struct {
             // Code blocks
             if (doc.code_blocks.len > 0) {
                 for (doc.code_blocks) |block| {
-                    try self.writeString("```");
-                    if (block.language) |lang| {
-                        try self.writeString(lang);
-                    } else {
-                        try self.writeString("cpp"); // default
-                    }
-                    if (block.show_line_numbers) {
-                        try self.writeString(",linenos");
-                    }
-                    try self.writeString("\n");
-                    try self.writeString(block.content);
-                    try self.writeString("\n```\n\n");
+                    const lang = block.language orelse "cpp";
+                    try self.writeCodeBlockWithGodbolt(block.content, lang);
                 }
             }
         }
@@ -1993,18 +2008,8 @@ pub const MarkdownGenerator = struct {
             // Code blocks
             if (doc.code_blocks.len > 0) {
                 for (doc.code_blocks) |block| {
-                    try self.writeString("```");
-                    if (block.language) |lang| {
-                        try self.writeString(lang);
-                    } else {
-                        try self.writeString("cpp"); // default
-                    }
-                    if (block.show_line_numbers) {
-                        try self.writeString(",linenos");
-                    }
-                    try self.writeString("\n");
-                    try self.writeString(block.content);
-                    try self.writeString("\n```\n\n");
+                    const lang = block.language orelse "cpp";
+                    try self.writeCodeBlockWithGodbolt(block.content, lang);
                 }
             }
         }

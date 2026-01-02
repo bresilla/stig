@@ -60,6 +60,8 @@ pub const Config = struct {
     coverage: CoverageOptions = .{},
     /// Lint options
     lint: LintOptions = .{},
+    /// Godbolt (Compiler Explorer) integration options
+    godbolt: GodboltOptions = .{},
     /// Module definitions for organizing documentation into packages
     modules: []const ModuleConfig = &[_]ModuleConfig{},
 
@@ -113,6 +115,18 @@ pub const Config = struct {
         code_language: []const u8 = "cpp",
         /// Synopsis style: full, compact, or minimal
         synopsis_style: SynopsisStyle = .full,
+    };
+
+    /// Godbolt (Compiler Explorer) integration options
+    pub const GodboltOptions = struct {
+        /// Enable Godbolt links for code examples
+        enabled: bool = false,
+        /// Compiler ID (e.g., "g132" for GCC 13.2, "clang1600" for Clang 16)
+        compiler: []const u8 = "g132",
+        /// Compiler options (e.g., "-O2 -std=c++20")
+        options: []const u8 = "-O2 -std=c++20",
+        /// Link text
+        link_text: []const u8 = "Run on Compiler Explorer",
     };
 
     /// Synopsis rendering style
