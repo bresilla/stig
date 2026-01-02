@@ -990,6 +990,7 @@ pub const CppParser = struct {
         else
             self.categorizeMethodKind(name.?, return_type, params_slice, class_name);
 
+        const start = node.startPoint();
         return types.Method{
             .name = name.?,
             .return_type = return_type orelse "void",
@@ -1008,6 +1009,11 @@ pub const CppParser = struct {
             .is_explicit = is_explicit,
             .is_noexcept = is_noexcept,
             .attributes = try attributes.toOwnedSlice(self.allocator),
+            .location = types.SourceLocation{
+                .file = "", // Will be set by caller if needed
+                .line = start.row + 1,
+                .column = start.column + 1,
+            },
         };
     }
 

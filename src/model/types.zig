@@ -297,6 +297,8 @@ pub const Method = struct {
     attributes: []const Attribute = &[_]Attribute{},
     /// Functions/methods called by this method (for call graph)
     calls: []const []const u8 = &[_][]const u8{},
+    /// Source location of the method declaration
+    location: SourceLocation = .{ .file = "", .line = 0, .column = 0 },
 };
 
 /// C++ class field with access specifier

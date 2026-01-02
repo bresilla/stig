@@ -308,33 +308,33 @@ pub const Linter = struct {
 
         if (method.doc) |doc| {
             // Check brief
-            try self.checkBrief(doc, method_name, "method", file, 0, report);
+            try self.checkBrief(doc, method_name, "method", file, method.location.line, report);
 
-            // Check parameters
+            // Check params
             if (self.config.require_param_docs) {
-                try self.checkParams(doc, method.params, method_name, "method", file, 0, report);
+                try self.checkParams(doc, method.params, method_name, "method", file, method.location.line, report);
             }
 
-            // Check return documentation (skip constructors/destructors)
+            // Check return (skip constructors/destructors)
             if (self.config.require_return_docs and
                 method.kind != .constructor and
                 method.kind != .destructor and
                 method.kind != .copy_constructor and
                 method.kind != .move_constructor)
             {
-                try self.checkReturn(doc, method.return_type, method_name, "method", file, 0, report);
+                try self.checkReturn(doc, method.return_type, method_name, "method", file, method.location.line, report);
             }
 
             // Check cross-references
             if (self.config.check_cross_references) {
-                try self.checkCrossReferences(doc, method_name, "method", file, 0, report);
+                try self.checkCrossReferences(doc, method_name, "method", file, method.location.line, report);
             }
         } else {
             // No documentation - create a copy of the name for the report
             const name_copy = try self.allocator.dupe(u8, method_name);
             try report.addIssue(.{
                 .file = file,
-                .line = 0,
+                .line = method.location.line,
                 .entity_name = name_copy,
                 .entity_type = "method",
                 .severity = .warning,

@@ -452,7 +452,7 @@ fn analyzeClass(allocator: std.mem.Allocator, class: types.Class, file: []const 
                                 .entity_name = name_copy,
                                 .entity_type = "method",
                                 .issue = issue,
-                                .line = 0,
+                                .line = method.location.line,
                             });
                         }
                     }
@@ -475,7 +475,7 @@ fn analyzeClass(allocator: std.mem.Allocator, class: types.Class, file: []const 
                             .entity_name = name_copy,
                             .entity_type = "method",
                             .issue = "missing @return",
-                            .line = 0,
+                            .line = method.location.line,
                         });
                     }
                 }
@@ -487,7 +487,7 @@ fn analyzeClass(allocator: std.mem.Allocator, class: types.Class, file: []const 
                     .entity_name = name_copy,
                     .entity_type = "method",
                     .issue = "no documentation",
-                    .line = 0,
+                    .line = method.location.line,
                 });
             }
         } else {
@@ -498,7 +498,7 @@ fn analyzeClass(allocator: std.mem.Allocator, class: types.Class, file: []const 
                 .entity_name = name_copy,
                 .entity_type = "method",
                 .issue = "no documentation",
-                .line = 0,
+                .line = method.location.line,
             });
         }
     }
