@@ -149,5 +149,154 @@ function(stig_add_docs TARGET_NAME)
     message(STATUS "  Title: ${STIG_TITLE}")
 endfunction()
 
+# Function to add stig test target
+# This creates a test executable using stig's test framework
+function(stig_add_tests TARGET_NAME)
+    if(NOT STIG_FOUND)
+        message(FATAL_ERROR "stig_add_tests: Stig not found. Please install stig or set STIG_ROOT.")
+    endif()
+    
+    # Parse arguments
+    cmake_parse_arguments(STIG_TEST
+        ""                                          # Options
+        "WORKING_DIRECTORY"                         # Single-value keywords
+        "SOURCES;INCLUDE_DIRS;LIBRARIES;DEPENDS"    # Multi-value keywords
+        ${ARGN}
+    )
+    
+    # Validate required arguments
+    if(NOT STIG_TEST_SOURCES)
+        message(FATAL_ERROR "stig_add_tests: SOURCES argument is required")
+    endif()
+    
+    # Set defaults
+    if(NOT STIG_TEST_WORKING_DIRECTORY)
+        set(STIG_TEST_WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
+    
+    # Check if stig_test.h exists, if not generate it
+    set(STIG_TEST_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    set(STIG_TEST_HEADER "${STIG_TEST_DIR}/stig_test.h")
+    set(STIG_TEST_MAIN "${STIG_TEST_DIR}/stig_main.cpp")
+    
+    if(NOT EXISTS ${STIG_TEST_HEADER})
+        message(STATUS "Generating stig_test.h...")
+        execute_process(
+            COMMAND ${STIG_EXECUTABLE} init --force
+            WORKING_DIRECTORY ${STIG_TEST_DIR}
+            RESULT_VARIABLE STIG_INIT_RESULT
+            OUTPUT_QUIET
+            ERROR_QUIET
+        )
+        if(NOT STIG_INIT_RESULT EQUAL 0)
+            message(WARNING "Failed to generate stig test infrastructure. Run 'stig init' manually.")
+        endif()
+    endif()
+    
+    # Expand glob patterns in SOURCES
+    set(STIG_TEST_SOURCE_FILES "")
+    foreach(pattern ${STIG_TEST_SOURCES})
+        if(pattern MATCHES "[*?]")
+            file(GLOB_RECURSE matched_files ${pattern})
+            list(APPEND STIG_TEST_SOURCE_FILES ${matched_files})
+        else()
+            list(APPEND STIG_TEST_SOURCE_FILES ${pattern})
+        endif()
+    endforeach()
+    
+    # Remove duplicates
+    list(REMOVE_DUPLICATES STIG_TEST_SOURCE_FILES)
+    
+    # Add main.cpp if it exists
+    if(EXISTS "${STIG_TEST_DIR}/main.cpp")
+        list(APPEND STIG_TEST_SOURCE_FILES "${STIG_TEST_DIR}/main.cpp")
+    endif()
+    
+    # Create test executable
+    add_executable(${TARGET_NAME} ${STIG_TEST_SOURCE_FILES})
+    
+    # Add include directories
+    target_include_directories(${TARGET_NAME} PRIVATE ${STIG_TEST_DIR})
+    if(STIG_TEST_INCLUDE_DIRS)
+        target_include_directories(${TARGET_NAME} PRIVATE ${STIG_TEST_INCLUDE_DIRS})
+    endif()
+    
+    # Link libraries
+    if(STIG_TEST_LIBRARIES)
+        target_link_libraries(${TARGET_NAME} PRIVATE ${STIG_TEST_LIBRARIES})
+    endif()
+    
+    # Add dependencies
+    if(STIG_TEST_DEPENDS)
+        add_dependencies(${TARGET_NAME} ${STIG_TEST_DEPENDS})
+    endif()
+    
+    # Register with CTest
+    add_test(
+        NAME ${TARGET_NAME}
+        COMMAND ${TARGET_NAME}
+        WORKING_DIRECTORY ${STIG_TEST_WORKING_DIRECTORY}
+    )
+    
+    # Print configuration
+    message(STATUS "Stig test target '${TARGET_NAME}' configured:")
+    message(STATUS "  Sources: ${STIG_TEST_SOURCE_FILES}")
+    if(STIG_TEST_INCLUDE_DIRS)
+        message(STATUS "  Include dirs: ${STIG_TEST_INCLUDE_DIRS}")
+    endif()
+    if(STIG_TEST_LIBRARIES)
+        message(STATUS "  Libraries: ${STIG_TEST_LIBRARIES}")
+    endif()
+endfunction()
+
+# Function to run stig test command (compile and run via stig)
+# This uses stig's built-in test runner instead of CMake's compilation
+function(stig_run_tests TARGET_NAME)
+    if(NOT STIG_FOUND)
+        message(FATAL_ERROR "stig_run_tests: Stig not found. Please install stig or set STIG_ROOT.")
+    endif()
+    
+    # Parse arguments
+    cmake_parse_arguments(STIG_RUN
+        ""                              # Options
+        "CONFIG;WORKING_DIRECTORY"      # Single-value keywords
+        "SOURCES"                       # Multi-value keywords
+        ${ARGN}
+    )
+    
+    # Set defaults
+    if(NOT STIG_RUN_WORKING_DIRECTORY)
+        set(STIG_RUN_WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endif()
+    
+    # Build command arguments
+    set(STIG_ARGS "test")
+    
+    if(STIG_RUN_CONFIG)
+        list(APPEND STIG_ARGS -c ${STIG_RUN_CONFIG})
+    endif()
+    
+    if(STIG_RUN_SOURCES)
+        list(APPEND STIG_ARGS ${STIG_RUN_SOURCES})
+    endif()
+    
+    # Create custom target to run tests via stig
+    add_custom_target(${TARGET_NAME}
+        COMMAND ${STIG_EXECUTABLE} ${STIG_ARGS}
+        WORKING_DIRECTORY ${STIG_RUN_WORKING_DIRECTORY}
+        COMMENT "Running tests with stig"
+        VERBATIM
+    )
+    
+    # Also register as CTest test
+    add_test(
+        NAME ${TARGET_NAME}
+        COMMAND ${STIG_EXECUTABLE} ${STIG_ARGS}
+        WORKING_DIRECTORY ${STIG_RUN_WORKING_DIRECTORY}
+    )
+    
+    message(STATUS "Stig run-tests target '${TARGET_NAME}' configured")
+endfunction()
+
 # Mark variables as advanced
 mark_as_advanced(STIG_EXECUTABLE)

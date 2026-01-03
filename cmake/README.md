@@ -1,6 +1,6 @@
 # Stig CMake Integration
 
-This directory contains CMake modules for integrating Stig documentation generation into CMake-based projects.
+This directory contains CMake modules for integrating Stig documentation generation and testing into CMake-based projects.
 
 ## Installation
 
@@ -115,6 +115,78 @@ if(BUILD_DOCS)
 endif()
 ```
 
+## Testing Integration
+
+Stig provides a lightweight C++ test framework. You can integrate it with CMake in two ways:
+
+### Option 1: CMake compiles tests (recommended)
+
+Use `stig_add_tests()` to let CMake compile your tests:
+
+```cmake
+enable_testing()
+
+stig_add_tests(my_tests
+    SOURCES
+        test/test_*.cpp
+    INCLUDE_DIRS
+        ${CMAKE_SOURCE_DIR}/include
+    LIBRARIES
+        my_library
+)
+```
+
+Run tests:
+```bash
+cmake --build build
+ctest --test-dir build
+```
+
+### Option 2: Stig compiles and runs tests
+
+Use `stig_run_tests()` to let stig handle compilation:
+
+```cmake
+enable_testing()
+
+stig_run_tests(my_tests
+    CONFIG ${CMAKE_SOURCE_DIR}/stig.toml
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+```
+
+Run tests:
+```bash
+cmake --build build --target my_tests
+# or
+ctest --test-dir build
+```
+
+### Writing Tests
+
+First, initialize the test infrastructure:
+```bash
+stig init
+```
+
+Then write tests using the stig test macros:
+
+```cpp
+// test/test_mylib.cpp
+#include "stig_test.h"
+#include <mylib/mylib.hpp>
+
+STIG_TEST(test_addition) {
+    STIG_CHECK_EQ(add(2, 3), 5);
+    STIG_CHECK_EQ(add(-1, 1), 0);
+}
+
+STIG_TEST(test_validation) {
+    STIG_CHECK_THROWS(validate(-1));  // Should throw
+    STIG_CHECK_NOTHROW(validate(1));  // Should not throw
+}
+```
+
 ## Function Reference
 
 ### `stig_add_docs(TARGET_NAME ...)`
@@ -207,6 +279,57 @@ Use the `FORCE` option to force rebuild:
 stig_add_docs(docs
     SOURCES include/*.hpp
     FORCE  # Always rebuild
+)
+```
+
+### `stig_add_tests(TARGET_NAME ...)`
+
+Creates a test executable using stig's test framework, compiled by CMake.
+
+**Arguments:**
+
+- `TARGET_NAME` (required): Name of the test executable to create
+- `SOURCES` (required): List of test source files or glob patterns
+- `INCLUDE_DIRS` (optional): Additional include directories
+- `LIBRARIES` (optional): Libraries to link against
+- `DEPENDS` (optional): Additional target dependencies
+- `WORKING_DIRECTORY` (optional): Working directory for test execution
+
+**Example:**
+
+```cmake
+stig_add_tests(unit_tests
+    SOURCES
+        test/test_core.cpp
+        test/test_utils.cpp
+    INCLUDE_DIRS
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party
+    LIBRARIES
+        my_library
+        pthread
+    DEPENDS
+        generate_headers
+)
+```
+
+### `stig_run_tests(TARGET_NAME ...)`
+
+Creates a target that runs tests using stig's built-in test runner.
+
+**Arguments:**
+
+- `TARGET_NAME` (required): Name of the CMake target to create
+- `CONFIG` (optional): Path to stig.toml configuration file
+- `SOURCES` (optional): Specific test files to run
+- `WORKING_DIRECTORY` (optional): Working directory for test execution
+
+**Example:**
+
+```cmake
+stig_run_tests(stig_tests
+    CONFIG ${CMAKE_SOURCE_DIR}/stig.toml
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
 ```
 
