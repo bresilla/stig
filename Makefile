@@ -3,8 +3,17 @@ SHELL := /bin/bash
 # ==================================================================================================
 # Project configuration
 # ==================================================================================================
-PROJECT_NAME := stig
-PROJECT_CAP  := STIG
+PROJECT_NAME := $(shell cat NAME 2>/dev/null | tr -d '[:space:]')
+ifeq ($(PROJECT_NAME),)
+    $(error Error: NAME file not found or empty)
+endif
+
+PROJECT_VERSION := $(shell cat VERSION 2>/dev/null | tr -d '[:space:]')
+ifeq ($(PROJECT_VERSION),)
+    $(error Error: VERSION file not found or empty)
+endif
+
+PROJECT_CAP  := $(shell echo $(PROJECT_NAME) | tr '[:lower:]' '[:upper:]')
 LATEST_TAG   ?= $(shell git describe --tags --abbrev=0 2>/dev/null)
 TOP_DIR      := $(CURDIR)
 BUILD_DIR    := $(TOP_DIR)/zig-out
@@ -25,6 +34,7 @@ CMD_QUICKFIX    := grep "error:" "$(TOP_DIR)/.complog" > "$(TOP_DIR)/.quickfix" 
 # ==================================================================================================
 $(info ------------------------------------------)
 $(info Project: $(PROJECT_NAME))
+$(info Version: $(PROJECT_VERSION))
 $(info Build System: zig)
 $(info ------------------------------------------)
 
