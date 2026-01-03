@@ -19,6 +19,8 @@ const snippet = @import("snippet.zig");
 const lint = @import("lint.zig");
 const cache_mod = @import("cache.zig");
 const lsp_server = @import("lsp/server.zig");
+const init_cmd = @import("init.zig");
+const testing_cmd = @import("testing.zig");
 
 pub fn main() !void {
     // Get allocator - disable safety checks to avoid leak warnings
@@ -56,6 +58,14 @@ pub fn main() !void {
             cli.ArgParser.printCheckHelp();
             return;
         },
+        .help_init => {
+            cli.ArgParser.printInitHelp();
+            return;
+        },
+        .help_test => {
+            cli.ArgParser.printTestHelp();
+            return;
+        },
         .version => {
             arg_parser.printVersion();
             return;
@@ -79,6 +89,25 @@ pub fn main() !void {
                 return;
             };
             return;
+        },
+        .init => {
+            init_cmd.runInit(allocator, args.config_file, args.force_rebuild) catch |err| {
+                std.debug.print("Init error: {}\n", .{err});
+                return;
+            };
+            return;
+        },
+        .@"test" => {
+            const output_format: testing_cmd.TestOutputFormat = switch (args.check_output_format) {
+                .human => .console,
+                .json => .json,
+                .compiler => .junit,
+            };
+            const exit_code = testing_cmd.runTest(allocator, args.input_files, args.config_file, output_format) catch |err| {
+                std.debug.print("Test error: {}\n", .{err});
+                std.process.exit(1);
+            };
+            std.process.exit(exit_code);
         },
         .generate => {
             try runGenerateCommand(allocator, &args, &arg_parser);

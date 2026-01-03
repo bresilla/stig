@@ -46,12 +46,20 @@ pub const Subcommand = enum {
     check_lsp,
     /// Run as mdbook preprocessor
     preprocessor,
+    /// Initialize test infrastructure
+    init,
+    /// Run tests
+    @"test",
     /// Show help
     help,
     /// Show help for generate subcommand
     help_generate,
     /// Show help for check subcommand
     help_check,
+    /// Show help for init subcommand
+    help_init,
+    /// Show help for test subcommand
+    help_test,
     /// Show version
     version,
 };
@@ -198,6 +206,12 @@ pub const ArgParser = struct {
                 // mdbook support check - just return preprocessor mode
                 subcommand = .preprocessor;
                 args_start = 2;
+            } else if (std.mem.eql(u8, first_arg, "init")) {
+                subcommand = .init;
+                args_start = 2;
+            } else if (std.mem.eql(u8, first_arg, "test")) {
+                subcommand = .@"test";
+                args_start = 2;
             }
         }
 
@@ -205,6 +219,8 @@ pub const ArgParser = struct {
         return switch (subcommand) {
             .generate => try self.parseGenerateArgs(process_args, args_start),
             .check => try self.parseCheckArgs(process_args, args_start),
+            .init => try self.parseInitArgs(process_args, args_start),
+            .@"test" => try self.parseTestArgs(process_args, args_start),
             .preprocessor => Args{
                 .subcommand = .preprocessor,
                 .input_files = &[_][]const u8{},
@@ -222,7 +238,7 @@ pub const ArgParser = struct {
                 .allocator = self.allocator,
             },
             .check_lsp => unreachable, // returned from parseCheckArgs
-            .help, .help_generate, .help_check, .version => unreachable, // handled above
+            .help, .help_generate, .help_check, .help_init, .help_test, .version => unreachable, // handled above
         };
     }
 
@@ -490,6 +506,184 @@ pub const ArgParser = struct {
         };
     }
 
+    fn parseInitArgs(self: *Self, process_args: []const [:0]u8, args_start: usize) !Args {
+        // Create argonaut parser for init subcommand
+        self.parser = try argonaut.newParser(
+            self.allocator,
+            "stig init",
+            "Initialize test infrastructure for a C/C++ project",
+        );
+        const parser = self.parser.?;
+        parser.command.disableHelp();
+
+        // Define arguments
+        var config_opts = argonaut.Options{};
+        config_opts.help = "Config file path to create (default: stig.toml)";
+        self.config_ptr = try parser.string("c", "config", &config_opts);
+
+        var force_opts = argonaut.Options{};
+        force_opts.help = "Overwrite existing files";
+        self.force_ptr = try parser.flag("", "force", &force_opts);
+
+        var help_opts = argonaut.Options{};
+        help_opts.help = "Show help for init command";
+        self.help_ptr = try parser.flag("h", "help", &help_opts);
+
+        // Build args slice starting from args_start
+        var args_list: std.ArrayList([]const u8) = .empty;
+        defer args_list.deinit(self.allocator);
+
+        try args_list.append(self.allocator, "stig");
+        for (process_args[args_start..]) |arg| {
+            try args_list.append(self.allocator, arg);
+        }
+
+        // Parse
+        self.remainder = parser.parseWithRemainder(args_list.items) catch |err| {
+            return err;
+        };
+
+        // Check for help
+        if (self.help_ptr.?.*) {
+            return Args{
+                .subcommand = .help_init,
+                .input_files = &[_][]const u8{},
+                .output_file = null,
+                .output_format = .markdown,
+                .format_explicitly_set = false,
+                .book_title = null,
+                .config_file = null,
+                .watch_mode = false,
+                .serve_mode = false,
+                .force_rebuild = false,
+                .check_output_format = .human,
+                .min_coverage = null,
+                .strict = false,
+                .allocator = self.allocator,
+            };
+        }
+
+        // Get config file
+        const config_str = self.config_ptr.?.*;
+        const config_file: ?[]const u8 = if (config_str.len > 0) config_str else null;
+
+        // Get force flag
+        const force_rebuild = self.force_ptr.?.*;
+
+        return Args{
+            .subcommand = .init,
+            .input_files = &[_][]const u8{},
+            .output_file = null,
+            .output_format = .markdown,
+            .format_explicitly_set = false,
+            .book_title = null,
+            .config_file = config_file,
+            .watch_mode = false,
+            .serve_mode = false,
+            .force_rebuild = force_rebuild,
+            .check_output_format = .human,
+            .min_coverage = null,
+            .strict = false,
+            .allocator = self.allocator,
+        };
+    }
+
+    fn parseTestArgs(self: *Self, process_args: []const [:0]u8, args_start: usize) !Args {
+        // Create argonaut parser for test subcommand
+        self.parser = try argonaut.newParser(
+            self.allocator,
+            "stig test",
+            "Compile and run tests",
+        );
+        const parser = self.parser.?;
+        parser.command.disableHelp();
+
+        // Define arguments
+        var config_opts = argonaut.Options{};
+        config_opts.help = "Config file path (default: stig.toml)";
+        self.config_ptr = try parser.string("c", "config", &config_opts);
+
+        var format_opts = argonaut.Options{};
+        format_opts.help = "Output format: console, json, junit (default: console)";
+        self.check_format_ptr = try parser.string("f", "format", &format_opts);
+
+        var help_opts = argonaut.Options{};
+        help_opts.help = "Show help for test command";
+        self.help_ptr = try parser.flag("h", "help", &help_opts);
+
+        // Build args slice starting from args_start
+        var args_list: std.ArrayList([]const u8) = .empty;
+        defer args_list.deinit(self.allocator);
+
+        try args_list.append(self.allocator, "stig");
+        for (process_args[args_start..]) |arg| {
+            try args_list.append(self.allocator, arg);
+        }
+
+        // Parse
+        self.remainder = parser.parseWithRemainder(args_list.items) catch |err| {
+            return err;
+        };
+
+        // Check for help
+        if (self.help_ptr.?.*) {
+            return Args{
+                .subcommand = .help_test,
+                .input_files = &[_][]const u8{},
+                .output_file = null,
+                .output_format = .markdown,
+                .format_explicitly_set = false,
+                .book_title = null,
+                .config_file = null,
+                .watch_mode = false,
+                .serve_mode = false,
+                .force_rebuild = false,
+                .check_output_format = .human,
+                .min_coverage = null,
+                .strict = false,
+                .allocator = self.allocator,
+            };
+        }
+
+        // Get config file
+        const config_str = self.config_ptr.?.*;
+        const config_file: ?[]const u8 = if (config_str.len > 0) config_str else null;
+
+        // Parse test output format
+        const format_str = if (self.check_format_ptr) |ptr| ptr.* else "";
+        var check_output_format: CheckOutputFormat = .human;
+        if (format_str.len > 0) {
+            if (std.mem.eql(u8, format_str, "json")) {
+                check_output_format = .json;
+            } else if (std.mem.eql(u8, format_str, "junit") or std.mem.eql(u8, format_str, "xml")) {
+                check_output_format = .compiler; // reuse for junit
+            }
+        }
+
+        // Get input files (test files or binary) from remainder
+        const input_files = if (self.remainder) |rem|
+            try self.allocator.dupe([]const u8, rem)
+        else
+            &[_][]const u8{};
+
+        return Args{
+            .subcommand = .@"test",
+            .input_files = input_files,
+            .output_file = null,
+            .output_format = .markdown,
+            .format_explicitly_set = false,
+            .book_title = null,
+            .config_file = config_file,
+            .watch_mode = false,
+            .serve_mode = false,
+            .force_rebuild = false,
+            .check_output_format = check_output_format,
+            .min_coverage = null,
+            .strict = false,
+            .allocator = self.allocator,
+        };
+    }
+
     fn defaultArgs(allocator: std.mem.Allocator) Args {
         return Args{
             .subcommand = .help,
@@ -610,6 +804,74 @@ pub const ArgParser = struct {
         std.debug.print("{s}", .{help});
     }
 
+    /// Prints help for init subcommand
+    pub fn printInitHelp() void {
+        const help =
+            \\stig init - Initialize test infrastructure for a C/C++ project
+            \\
+            \\USAGE:
+            \\    stig init [OPTIONS]
+            \\
+            \\OPTIONS:
+            \\    -c, --config <FILE>    Config file path to create (default: stig.toml)
+            \\    --force                Overwrite existing files
+            \\    -h, --help             Show this help message
+            \\
+            \\DESCRIPTION:
+            \\    Creates the test infrastructure for your project:
+            \\
+            \\    ./stig.toml          - Configuration file
+            \\    ./test/              - Test directory
+            \\    ./test/stig_test.h   - Generated test framework header
+            \\    ./test/main.cpp      - Test runner main file
+            \\    ./test/test_example.cpp - Example test file
+            \\
+            \\EXAMPLES:
+            \\    stig init                    # Initialize in current directory
+            \\    stig init --force            # Overwrite existing files
+            \\
+        ;
+        std.debug.print("{s}", .{help});
+    }
+
+    /// Prints help for test subcommand
+    pub fn printTestHelp() void {
+        const help =
+            \\stig test - Compile and run tests
+            \\
+            \\USAGE:
+            \\    stig test [OPTIONS] [FILES...]
+            \\
+            \\ARGS:
+            \\    [FILES...]    Test files or binary to run (default: from stig.toml)
+            \\
+            \\OPTIONS:
+            \\    -c, --config <FILE>    Config file path (default: stig.toml)
+            \\    -f, --format <FMT>     Output format: console, json, junit
+            \\    -h, --help             Show this help message
+            \\
+            \\DESCRIPTION:
+            \\    Discovers, compiles, and runs tests. Tests are written using the
+            \\    STIG_TEST macro from stig_test.h (generated by 'stig init').
+            \\
+            \\    If no files are specified, uses the test directory from stig.toml.
+            \\    If a binary is specified, runs it directly.
+            \\
+            \\OUTPUT FORMATS:
+            \\    console    Human-readable output (default)
+            \\    json       JSON output for tooling integration
+            \\    junit      JUnit XML output for CI/CD
+            \\
+            \\EXAMPLES:
+            \\    stig test                        # Run all tests from config
+            \\    stig test test/*.cpp             # Run specific test files
+            \\    stig test ./build/test_binary   # Run pre-compiled binary
+            \\    stig test -f json                # Output as JSON
+            \\
+        ;
+        std.debug.print("{s}", .{help});
+    }
+
     fn printMainHelp() void {
         const help =
             \\stig - C/C++ documentation generator
@@ -619,11 +881,13 @@ pub const ArgParser = struct {
             \\    stig [OPTIONS] <INPUT_FILES>...          (defaults to 'generate')
             \\
             \\COMMANDS:
-            \\    generate    Generate documentation from source files (default)
-            \\    check       Check documentation coverage and quality
-            \\    preprocessor    Run as mdbook preprocessor
-            \\    help        Show this help message
-            \\    version     Show version information
+            \\    generate      Generate documentation from source files (default)
+            \\    check         Check documentation coverage and quality
+            \\    init          Initialize test infrastructure
+            \\    test          Compile and run tests
+            \\    preprocessor  Run as mdbook preprocessor
+            \\    help          Show this help message
+            \\    version       Show version information
             \\
             \\GLOBAL OPTIONS:
             \\    -h, --help      Show help (use 'stig <command> --help' for command help)
@@ -637,7 +901,8 @@ pub const ArgParser = struct {
             \\    stig input.h                             # Generate markdown to stdout
             \\    stig generate -f mdbook -o docs/ src/*.h # Generate mdbook
             \\    stig check src/*.h                       # Check documentation
-            \\    stig check -f compiler src/*.h           # CI/CD friendly output
+            \\    stig init                                # Initialize test infrastructure
+            \\    stig test                                # Run tests
             \\
             \\For more information on a command, run:
             \\    stig <command> --help

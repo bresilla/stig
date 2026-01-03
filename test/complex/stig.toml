@@ -1,12 +1,16 @@
-title = "Spatial Geometry Library"
-output = "book"
+# Stig configuration file
+# See: https://github.com/your-repo/stig
+
+# Documentation settings
+title = "API Reference"
+output = "docs"
 format = "mdbook"
+inputs = ["include/**/*.hpp", "include/**/*.h"]
 
-[stig]
-inputs = ["include/spatial/*.hpp"]
-generate_intro = true
-grouping = "by_header"
-
-[book]
-authors = ["Stig Test Suite"]
-language = "en"
+# Test settings
+[test]
+dir = "test"
+compiler = "g++"
+flags = ["-std=c++17", "-Wall", "-Wextra"]
+include_paths = ["include/"]
+pattern = "test_*.cpp"
