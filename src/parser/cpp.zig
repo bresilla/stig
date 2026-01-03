@@ -929,9 +929,12 @@ pub const CppParser = struct {
                     is_deleted = true;
                 } else if (std.mem.eql(u8, child_kind, "type_identifier") or
                     std.mem.eql(u8, child_kind, "primitive_type") or
-                    std.mem.eql(u8, child_kind, "placeholder_type_specifier"))
+                    std.mem.eql(u8, child_kind, "placeholder_type_specifier") or
+                    std.mem.eql(u8, child_kind, "qualified_identifier") or
+                    std.mem.eql(u8, child_kind, "template_type"))
                 {
-                    // Handle regular types and 'auto' (placeholder_type_specifier for C++20)
+                    // Handle regular types, 'auto' (placeholder_type_specifier for C++20),
+                    // qualified types like datapod::Pose, and template types like std::vector<int>
                     if (return_type == null) {
                         return_type = self.getNodeText(child);
                     }
@@ -1222,8 +1225,12 @@ pub const CppParser = struct {
                     // Parse C++ attributes like [[nodiscard]], [[deprecated("msg")]]
                     try self.parseAttributeDeclaration(child, &attributes);
                 } else if (std.mem.eql(u8, child_kind, "type_identifier") or
-                    std.mem.eql(u8, child_kind, "primitive_type"))
+                    std.mem.eql(u8, child_kind, "primitive_type") or
+                    std.mem.eql(u8, child_kind, "qualified_identifier") or
+                    std.mem.eql(u8, child_kind, "template_type"))
                 {
+                    // Handle regular types, qualified types like datapod::Pose,
+                    // and template types like std::vector<int>
                     if (return_type == null) {
                         return_type = self.getNodeText(child);
                     }
