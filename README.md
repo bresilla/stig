@@ -1,51 +1,28 @@
 # Stig
 
-**Tree-sitter based C/C++ documentation generator with Doxygen-style comments and mdbook output**
+**Tree-sitter based C/C++ documentation generator with Doxygen-style comments**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.14.0+-orange.svg)](https://ziglang.org/)
 
 ## Overview
 
-Stig is a modern documentation generator for C and C++ codebases that parses source files using tree-sitter and extracts documentation from Doxygen-style comments. It generates clean markdown documentation that can be viewed standalone, built into an mdbook, or exported as JSON/HTML.
+Stig is a modern documentation generator for C and C++ that parses source files using tree-sitter and extracts documentation from Doxygen-style comments. It generates clean markdown documentation that can be viewed standalone, built into an mdbook, or exported as JSON/HTML.
 
 Unlike traditional documentation generators that rely on libclang, Stig uses tree-sitter for fast, accurate AST-based parsing. This makes it lightweight, portable, and easy to integrate into any build system.
 
 ### Key Features
 
-- 🚀 **Fast Tree-sitter Parsing** - No libclang dependency
-- 📚 **Multiple Output Formats** - Markdown, mdbook, JSON, HTML
-- 🔗 **Smart Cross-References** - Automatic linking with `@ref` tags
-- 📊 **Coverage Reports** - Track documentation completeness
-- 🔍 **Linting** - Validate documentation quality
-- 👀 **Watch Mode** - Auto-regenerate on file changes
-- 🔧 **CMake Integration** - Easy build system integration
-- 🎯 **GitHub Actions** - CI/CD ready
-- 🌐 **Compiler Explorer** - Interactive code examples
-
-### Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                              STIG                                    │
-├─────────────────┬─────────────────┬─────────────────┬───────────────┤
-│   Tree-sitter   │    Docstring    │     Cross-      │    Output     │
-│     Parser      │    Extractor    │   Reference     │   Generator   │
-│                 │                 │                 │               │
-│  ┌───────────┐  │  ┌───────────┐  │  ┌───────────┐  │  ┌─────────┐  │
-│  │  C/C++    │  │  │  Doxygen  │  │  │  Symbol   │  │  │Markdown │  │
-│  │  Grammar  │  │  │   Tags    │  │  │   Table   │  │  │ /mdbook │  │
-│  └───────────┘  │  └───────────┘  │  └───────────┘  │  │  JSON   │  │
-│                 │                 │                 │  │  HTML   │  │
-│                 │                 │                 │  └─────────┘  │
-└─────────────────┴─────────────────┴─────────────────┴───────────────┘
-         │                 │                 │                │
-         └─────────────────┴─────────────────┴────────────────┘
-                                   │
-                    ┌──────────────▼──────────────┐
-                    │     stig.toml (Config)      │
-                    └─────────────────────────────┘
-```
+- **Fast Tree-sitter Parsing** - No libclang dependency
+- **Multiple Output Formats** - Markdown, mdbook, JSON, HTML
+- **Smart Cross-References** - Automatic linking with `@ref` tags
+- **Coverage Reports** - Track documentation completeness
+- **Linting** - Validate documentation quality
+- **LSP Server** - Real-time documentation checking in your editor
+- **Watch Mode** - Auto-regenerate on file changes
+- **CMake Integration** - Easy build system integration
+- **GitHub Actions** - CI/CD ready
+- **Compiler Explorer** - Interactive code examples
 
 ## Installation
 
@@ -86,6 +63,9 @@ stig check -f compiler include/*.h
 
 # Watch mode with live preview
 stig generate include/*.h -f mdbook -o docs/ --serve
+
+# Run as LSP server
+stig lsp
 ```
 
 > **Note:** Following standardese and doxygen conventions, stig only processes **header files** (`.h`, `.hpp`, `.hxx`, `.hh`). Implementation files (`.cpp`, `.cc`, `.cxx`) are automatically skipped, as documentation should be in headers where declarations are, not in source files where implementations are.
@@ -127,10 +107,10 @@ stig generate include/*.h -f mdbook -o docs/ --serve
 - `@remarks`, `@sync`/`@threadsafety`, `@invariant`
 
 **Entity Commands (Standardese-compatible):**
-- `@exclude` - Exclude entities from documentation (supports `@exclude return`, `@exclude target`)
-- `@group` - Group related functions together with custom headings
+- `@exclude` - Exclude entities from documentation
+- `@group` - Group related functions together
 - `@synopsis` - Override the displayed function signature
-- `@unique_name` - Custom link target names for overloads
+- `@unique_name` - Custom link target names
 - `@module` - Logical module organization
 - `@entity` - Remote documentation for other entities
 - `@file` - File-level documentation
@@ -144,19 +124,14 @@ stig generate include/*.h -f mdbook -o docs/ --serve
 ### Output Formats
 
 #### Markdown (`-f markdown`)
-Single markdown file with all documentation. Perfect for GitHub wikis or simple projects.
+Single markdown file with all documentation.
 
 ```bash
 stig include/*.h -o api.md
 ```
 
 #### mdbook (`-f mdbook`)
-Complete mdbook structure with:
-- Automatic SUMMARY.md generation
-- Organized by modules/files
-- Cross-reference links
-- Alphabetical index
-- Custom pages support
+Complete mdbook structure with automatic SUMMARY.md generation, organized by modules/files, cross-reference links, and alphabetical index.
 
 ```bash
 stig include/*.h -f mdbook -o docs/ --title "My API"
@@ -164,7 +139,7 @@ mdbook build docs
 ```
 
 #### JSON (`-f json`)
-Structured JSON output for custom processing or integration with other tools.
+Structured JSON output for custom processing.
 
 ```bash
 stig include/*.h -f json -o api.json
@@ -177,27 +152,9 @@ Single-page HTML documentation with styling.
 stig include/*.h -f html -o api.html --title "My API"
 ```
 
-### Cross-References
-
-Automatic linking between types and functions:
-
-```cpp
-/**
- * @brief Processes a point
- * @param p A @ref Point to process
- * @return See @ref Result for details
- * 
- * This function uses @ref Point::transform() internally.
- * For more info, see @ref geometry_page "the geometry guide".
- */
-Result process(Point p);
-```
-
-Generates: `[Point](#point)`, `[the geometry guide](geometry_page.md)`
-
 ### Documentation Checking
 
-The `stig check` command combines coverage analysis and linting into a single command with multiple output formats:
+The `stig check` command combines coverage analysis and linting:
 
 **Human-Readable Report (default):**
 ```bash
@@ -230,15 +187,9 @@ Output:
 ```
 include/api.h:42:1: warning: missing @param for 'flags' 'process' (function)
 include/api.h:58:1: warning: missing @return 'validate' (function)
-include/api.h:75:1: warning: no documentation 'helper' (function)
 
-stig: 3 documentation issue(s) found
+stig: 2 documentation issue(s) found
 stig: coverage 85% (42/50 entities documented)
-```
-
-**JSON Output (for tooling):**
-```bash
-stig check -f json include/*.h
 ```
 
 **Additional Options:**
@@ -261,6 +212,31 @@ Checks for:
 - Missing return documentation
 - Broken cross-references
 - Brief description length
+
+### LSP Server
+
+Stig includes a Language Server Protocol implementation for real-time documentation checking in your editor:
+
+```bash
+# Run as LSP server
+stig lsp
+```
+
+Configure in your editor (example for Neovim):
+
+```lua
+vim.lsp.start({
+  name = 'stig',
+  cmd = {'stig', 'lsp'},
+  root_dir = vim.fs.dirname(vim.fs.find({'stig.toml'}, { upward = true })[1]),
+})
+```
+
+Features:
+- Real-time diagnostics for missing documentation
+- Warnings for incomplete parameter/return documentation
+- Error highlighting for broken cross-references
+- Only checks header files (`.h`, `.hpp`, etc.)
 
 ### Watch Mode
 
@@ -314,23 +290,6 @@ Use the provided action in your workflow:
 
 See [.github/actions/stig-docs/README.md](.github/actions/stig-docs/README.md) for details.
 
-### mdbook Preprocessor
-
-Add to your `book.toml`:
-
-```toml
-[preprocessor.stig]
-command = "stig preprocessor"
-```
-
-Use in markdown files:
-
-```markdown
-{{#stig api ../include/mylib.h}}
-{{#stig function my_function}}
-{{#stig struct MyStruct}}
-```
-
 ## Configuration
 
 Create `stig.toml` in your project root:
@@ -362,6 +321,16 @@ min_coverage = 80
 require_param_docs = true
 require_return_docs = true
 
+# Linting options
+[lint]
+enabled = true
+max_brief_length = 80
+require_brief = true
+require_param_docs = true
+require_return_docs = true
+require_tparam_docs = true
+check_cross_references = true
+
 # Output options
 [output]
 show_source_location = true
@@ -377,26 +346,6 @@ title = "Core Components"
 name = "Utils"
 patterns = ["include/util/*.hpp"]
 title = "Utility Functions"
-```
-
-### Filtering Behavior
-
-**Namespace Blacklist:** Entities in blacklisted namespaces are automatically excluded.
-
-```cpp
-namespace mylib::detail {
-    void helper();  // Excluded from docs
-}
-
-namespace mylib {
-    void public_api();  // Included in docs
-}
-```
-
-**Pattern Blacklist:** Entity names matching glob patterns are excluded.
-
-```toml
-blacklist_pattern = ["*_impl", "test_*", "internal_*"]
 ```
 
 ## Documentation Examples
@@ -491,46 +440,6 @@ p.transform(Matrix::identity());
 //! [basic_usage]
 ```
 
-### Custom Pages
-
-```cpp
-/**
- * @page getting_started Getting Started Guide
- * 
- * ## Installation
- * 
- * Download and install the library...
- * 
- * ## Basic Usage
- * 
- * See @ref Point and @ref Transform for core types.
- */
-```
-
-### TODO/Bug Tracking
-
-```cpp
-/// @brief Process data
-/// @todo Optimize for large datasets
-/// @bug Crashes with empty input (issue #123)
-void process(const Data& data);
-```
-
-Generates separate `TODO.md` and `BUGS.md` pages.
-
-### Test References
-
-```cpp
-/**
- * @brief Validates input
- * @test test_validate_basic
- * @test test_validate_edge_cases
- */
-bool validate(const Input& input);
-```
-
-Generates `TESTS.md` with links to test files.
-
 ## CLI Reference
 
 ```
@@ -539,6 +448,7 @@ stig <COMMAND> [OPTIONS] <INPUT_FILES>...
 COMMANDS:
     generate        Generate documentation (default if no subcommand)
     check           Check documentation coverage and quality
+    lsp             Run as Language Server Protocol server
     preprocessor    Run as mdbook preprocessor
     help            Show help message
     version         Show version information
@@ -560,9 +470,8 @@ CHECK OPTIONS:
     --strict               Treat warnings as errors
     -h, --help             Show help message
 
-GLOBAL OPTIONS:
-    -h, --help             Show help (use 'stig <command> --help' for details)
-    -v, --version          Show version information
+LSP OPTIONS:
+    No additional options - reads from stdin/stdout
 
 EXAMPLES:
     stig input.h                              # Generate markdown to stdout
@@ -572,71 +481,26 @@ EXAMPLES:
     stig check -f compiler src/*.h            # CI/CD-friendly output
     stig check --min-coverage 80 src/*.h      # Fail if coverage < 80%
     stig check --strict src/*.h               # Treat warnings as errors
-```
-
-## Output Structure
-
-When generating mdbook format:
-
-```
-docs/
-  book.toml
-  src/
-    SUMMARY.md
-    introduction.md
-    modules/
-      core.md
-      utils.md
-    appendix/
-      INDEX.md          # Alphabetical index
-      TODO.md           # TODO items
-      BUGS.md           # Bug tracking
-      TESTS.md          # Test references
-      INCLUDES.md       # Include dependencies
+    stig lsp                                  # Run as LSP server
 ```
 
 ## Advanced Features
 
 ### Include Dependency Graphs
 
-Automatically generates include dependency diagrams:
-
-```mermaid
-graph TD
-    vector.hpp --> types.hpp
-    vector.hpp --> geometry.hpp
-    geometry.hpp --> types.hpp
-```
+Automatically generates include dependency diagrams using Mermaid.
 
 ### Inheritance Diagrams
 
-Class hierarchies visualized with Mermaid:
-
-```mermaid
-classDiagram
-    Shape <|-- Circle
-    Shape <|-- Rectangle
-    Shape : +area()
-    Circle : +radius
-    Rectangle : +width
-    Rectangle : +height
-```
+Class hierarchies visualized with Mermaid diagrams.
 
 ### Call Graphs
 
-Function call relationships (infrastructure ready):
-
-```mermaid
-graph TD
-    main --> initialize
-    main --> process
-    process --> validate
-    process --> transform
-```
+Function call relationships (infrastructure ready).
 
 ### Compiler Explorer Integration
 
-Add interactive "Run on Compiler Explorer" links to code examples (configurable):
+Add interactive "Run on Compiler Explorer" links to code examples:
 
 ```toml
 [godbolt]
@@ -650,29 +514,6 @@ options = "-O2 -std=c++20"
 - **Build**: Zig 0.14.0+
 - **Runtime**: None (static binary)
 - **Optional**: mdbook (for building generated documentation)
-
-## Project Status
-
-**22/24 planned features complete (91.7%)**
-
-✅ Implemented:
-- Core parsing (C/C++, templates, concepts)
-- All output formats (markdown, mdbook, JSON, HTML)
-- Doxygen tag support (50+ tags)
-- Cross-references (@ref)
-- Coverage & linting
-- Watch mode
-- CMake integration
-- GitHub Actions
-- Godbolt integration
-- Call graph infrastructure
-- Include dependency graphs
-- Inheritance diagrams
-- Custom pages
-- Module organization
-- TODO/Bug tracking
-- Test references
-- External code snippets
 
 ## Contributing
 
