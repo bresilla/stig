@@ -7,7 +7,6 @@ const MarkdownGenerator = @import("output/markdown.zig").MarkdownGenerator;
 const MdbookGenerator = @import("output/mdbook.zig").MdbookGenerator;
 const MdbookConfig = @import("output/mdbook.zig").MdbookConfig;
 const JsonGenerator = @import("output/json.zig").JsonGenerator;
-const HtmlGenerator = @import("output/html.zig").HtmlGenerator;
 const xref = @import("xref.zig");
 const cli = @import("cli.zig");
 const config_mod = @import("config.zig");
@@ -854,41 +853,6 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
                 defer stdout.flush() catch {};
 
                 try stdout.writeAll(json_output);
-            }
-        },
-        .html => {
-            var html_gen = HtmlGenerator.init(allocator);
-            defer html_gen.deinit();
-
-            if (args.book_title) |title| {
-                html_gen.setTitle(title);
-            }
-
-            const html_output = html_gen.generate(modules.items) catch |err| {
-                std.debug.print("Error generating HTML: {}\n", .{err});
-                return;
-            };
-
-            if (args.output_file) |output_path| {
-                const file = std.fs.cwd().createFile(output_path, .{}) catch |err| {
-                    std.debug.print("Error: Cannot create output file '{s}': {}\n", .{ output_path, err });
-                    return;
-                };
-                defer file.close();
-
-                file.writeAll(html_output) catch |err| {
-                    std.debug.print("Error: Cannot write to file '{s}': {}\n", .{ output_path, err });
-                    return;
-                };
-
-                std.debug.print("Generated HTML documentation: {s}\n", .{output_path});
-            } else {
-                var buf: [8192]u8 = undefined;
-                var file_writer = std.fs.File.stdout().writer(&buf);
-                const stdout = &file_writer.interface;
-                defer stdout.flush() catch {};
-
-                try stdout.writeAll(html_output);
             }
         },
     }

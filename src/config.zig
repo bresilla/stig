@@ -176,7 +176,6 @@ pub const Config = struct {
         markdown,
         mdbook,
         json,
-        html,
     };
 
     pub const Grouping = enum {

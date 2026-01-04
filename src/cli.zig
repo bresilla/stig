@@ -13,15 +13,12 @@ pub const OutputFormat = enum {
     mdbook,
     /// JSON structured output
     json,
-    /// Single-page HTML file
-    html,
 
     pub fn fromConfig(cfg_format: Config.Format) OutputFormat {
         return switch (cfg_format) {
             .markdown => .markdown,
             .mdbook => .mdbook,
             .json => .json,
-            .html => .html,
         };
     }
 };
@@ -271,11 +268,11 @@ pub const ArgParser = struct {
         self.output_ptr = try parser.string("o", "output", &output_opts);
 
         var format_opts = argonaut.Options{};
-        format_opts.help = "Output format: markdown, mdbook, json, html (default: markdown)";
+        format_opts.help = "Output format: markdown, mdbook, json (default: markdown)";
         self.format_ptr = try parser.string("f", "format", &format_opts);
 
         var title_opts = argonaut.Options{};
-        title_opts.help = "Book title (for mdbook/html format)";
+        title_opts.help = "Book title (for mdbook format)";
         self.title_ptr = try parser.string("", "title", &title_opts);
 
         var config_opts = argonaut.Options{};
@@ -346,8 +343,6 @@ pub const ArgParser = struct {
                 output_format = .markdown;
             } else if (std.mem.eql(u8, format_str, "json")) {
                 output_format = .json;
-            } else if (std.mem.eql(u8, format_str, "html")) {
-                output_format = .html;
             }
         }
 
@@ -871,8 +866,8 @@ pub const ArgParser = struct {
             \\
             \\OPTIONS:
             \\    -o, --output <PATH>    Output file or directory (default: stdout)
-            \\    -f, --format <FMT>     Output format: markdown, mdbook, json, html
-            \\    --title <TITLE>        Book title (for mdbook/html format)
+            \\    -f, --format <FMT>     Output format: markdown, mdbook, json
+            \\    --title <TITLE>        Book title (for mdbook format)
             \\    -c, --config <FILE>    Config file path (default: stig.toml)
             \\    -w, --watch            Watch for file changes and regenerate
             \\    --serve                Watch mode + spawn mdbook serve for live preview

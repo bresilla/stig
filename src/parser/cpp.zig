@@ -3,6 +3,7 @@ const ts = @import("tree-sitter");
 const ts_cpp = @import("tree-sitter-cpp");
 const types = @import("../model/types.zig");
 const DocstringExtractor = @import("../docstring/extractor.zig").DocstringExtractor;
+const common = @import("common.zig");
 
 /// C++ language parser using tree-sitter
 pub const CppParser = struct {
@@ -92,12 +93,7 @@ pub const CppParser = struct {
 
     /// Gets text for a node from source
     fn getNodeText(self: *Self, node: ts.Node) []const u8 {
-        const start = node.startByte();
-        const end = node.endByte();
-        if (start < self.source.len and end <= self.source.len and start < end) {
-            return self.source[start..end];
-        }
-        return "";
+        return common.getNodeText(self.source, node);
     }
 
     /// Walks the AST and extracts declarations
@@ -1603,41 +1599,7 @@ pub const CppParser = struct {
     /// Extracts include directive information
     /// Handles both #include <...> and #include "..."
     fn extractInclude(self: *Self, node: ts.Node) ?types.IncludeInfo {
-        var path: ?[]const u8 = null;
-        var is_system = false;
-
-        var i: u32 = 0;
-        while (i < node.childCount()) : (i += 1) {
-            if (node.child(i)) |child| {
-                const child_kind = child.kind();
-                if (std.mem.eql(u8, child_kind, "system_lib_string")) {
-                    // #include <...>
-                    const text = self.getNodeText(child);
-                    // Remove < and >
-                    if (text.len >= 2) {
-                        path = text[1 .. text.len - 1];
-                        is_system = true;
-                    }
-                } else if (std.mem.eql(u8, child_kind, "string_literal")) {
-                    // #include "..."
-                    const text = self.getNodeText(child);
-                    // Remove quotes
-                    if (text.len >= 2) {
-                        path = text[1 .. text.len - 1];
-                        is_system = false;
-                    }
-                }
-            }
-        }
-
-        if (path == null) return null;
-
-        const start = node.startPoint();
-        return types.IncludeInfo{
-            .path = path.?,
-            .is_system = is_system,
-            .line = start.row + 1,
-        };
+        return common.extractInclude(self.source, node);
     }
 
     /// Extracts C++ attributes from attribute_declaration nodes
@@ -1855,51 +1817,7 @@ pub const CppParser = struct {
 
     /// Extracts custom pages from standalone doc comments containing @page or @mainpage
     fn extractPages(self: *Self, root: ts.Node, pages: *std.ArrayList(types.Page)) !void {
-        var i: u32 = 0;
-        while (i < root.childCount()) : (i += 1) {
-            if (root.child(i)) |child| {
-                const child_kind = child.kind();
-
-                if (std.mem.eql(u8, child_kind, "comment")) {
-                    const text = self.getNodeText(child);
-
-                    // Only process doc comments (/** or ///)
-                    if (!std.mem.startsWith(u8, text, "/**") and !std.mem.startsWith(u8, text, "///")) {
-                        continue;
-                    }
-
-                    // Strip comment delimiters
-                    var stripped = text;
-                    if (std.mem.startsWith(u8, stripped, "/**")) {
-                        stripped = stripped[3..];
-                    } else if (std.mem.startsWith(u8, stripped, "///")) {
-                        stripped = stripped[3..];
-                    }
-                    if (std.mem.endsWith(u8, stripped, "*/")) {
-                        stripped = stripped[0 .. stripped.len - 2];
-                    }
-                    stripped = std.mem.trim(u8, stripped, " \t\n\r");
-
-                    // Check if this comment contains @page or @mainpage
-                    if (self.docstring_extractor.containsPageCommand(stripped)) {
-                        // Check if this comment is NOT attached to a declaration
-                        // (standalone page comments should not be followed by a declaration)
-                        const next = child.nextSibling();
-                        const is_standalone = next == null or
-                            std.mem.eql(u8, next.?.kind(), "comment") or
-                            std.mem.eql(u8, next.?.kind(), "preproc_ifdef") or
-                            std.mem.eql(u8, next.?.kind(), "preproc_ifndef") or
-                            std.mem.eql(u8, next.?.kind(), "preproc_endif");
-
-                        if (is_standalone) {
-                            if (try self.docstring_extractor.parsePage(stripped)) |page| {
-                                try pages.append(self.allocator, page);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        try common.extractPages(self.allocator, self.source, root, pages, &self.docstring_extractor);
     }
 };
 
