@@ -674,7 +674,26 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
     var files_skipped: usize = 0;
     var files_rebuilt: usize = 0;
 
-    // Process each input file
+    // Pre-scan: read all files and determine which need rebuilding
+    // This is needed to correctly handle dependency chains
+    const PreScanData = struct {
+        path: []const u8,
+        source: []const u8,
+        needs_rebuild: bool,
+    };
+
+    var prescan_data: std.ArrayList(PreScanData) = .empty;
+    defer {
+        for (prescan_data.items) |data| {
+            if (!data.needs_rebuild) {
+                // Only free sources for skipped files; rebuilt files are freed later
+                allocator.free(data.source);
+            }
+        }
+        prescan_data.deinit(allocator);
+    }
+
+    // First pass: read all files
     for (input_files) |input_file| {
         // Skip implementation files - only check headers for documentation
         if (!isHeaderFile(input_file)) {
@@ -693,34 +712,69 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
             continue;
         };
 
-        // Check if file needs rebuilding
-        if (incr_cache) |*cache| {
-            const needs_rebuild = cache.needsRebuild(input_file, source) catch true;
-            if (!needs_rebuild) {
-                std.debug.print("Skipping unchanged: {s}\n", .{input_file});
-                files_skipped += 1;
-                allocator.free(source);
-                continue;
+        try prescan_data.append(allocator, .{
+            .path = input_file,
+            .source = source,
+            .needs_rebuild = true, // Default to true, will be updated below
+        });
+    }
+
+    // Second pass: determine which files need rebuilding (considering dependencies)
+    if (incr_cache) |*cache| {
+        // Collect paths and contents for pre-scan
+        var paths: std.ArrayList([]const u8) = .empty;
+        defer paths.deinit(allocator);
+        var contents: std.ArrayList([]const u8) = .empty;
+        defer contents.deinit(allocator);
+
+        for (prescan_data.items) |data| {
+            try paths.append(allocator, data.path);
+            try contents.append(allocator, data.source);
+        }
+
+        // Get set of files that need rebuilding
+        var files_to_rebuild = cache.getFilesToRebuild(paths.items, contents.items) catch |err| blk: {
+            // On error, rebuild everything (already defaulted to true)
+            std.debug.print("Warning: Cache pre-scan failed: {}, rebuilding all\n", .{err});
+            break :blk null;
+        };
+
+        if (files_to_rebuild) |*rebuild_set| {
+            defer rebuild_set.deinit();
+            // Update prescan data with rebuild decisions
+            for (prescan_data.items) |*data| {
+                data.needs_rebuild = rebuild_set.contains(data.path);
             }
+        }
+    }
+
+    // Third pass: process files that need rebuilding
+    for (prescan_data.items) |*data| {
+        if (!data.needs_rebuild) {
+            std.debug.print("Skipping unchanged: {s}\n", .{data.path});
+            files_skipped += 1;
+            continue;
         }
 
         files_rebuilt += 1;
 
-        const base_path = std.fs.path.dirname(input_file) orelse ".";
+        const base_path = std.fs.path.dirname(data.path) orelse ".";
         c_parser.setBasePath(base_path);
         cpp_parser.setBasePath(base_path);
 
-        const is_cpp = isCppFile(input_file);
+        const is_cpp = isCppFile(data.path);
         const module = if (is_cpp)
-            try cpp_parser.parse(source, input_file)
+            try cpp_parser.parse(data.source, data.path)
         else
-            try c_parser.parse(source, input_file);
+            try c_parser.parse(data.source, data.path);
 
-        try file_data.append(allocator, .{ .source = source, .module = module, .path = input_file });
+        try file_data.append(allocator, .{ .source = data.source, .module = module, .path = data.path });
 
-        // Update cache entry
+        // Update cache entry and dependencies
         if (incr_cache) |*cache| {
-            cache.updateEntry(input_file, source) catch {};
+            cache.updateEntry(data.path, data.source) catch {};
+            // Record include dependencies for incremental rebuilds
+            cache.setDependencies(data.path, module.includes) catch {};
         }
     }
 

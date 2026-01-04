@@ -9,12 +9,18 @@ pub const Cache = struct {
     cache_dir: []const u8,
     manifest: Manifest,
     dirty: bool = false,
+    /// Dependency graph: maps file -> list of files it includes
+    /// Used to determine which files need rebuilding when a dependency changes
+    dependencies: std.StringHashMap([]const []const u8),
+    /// Reverse dependency graph: maps file -> list of files that include it
+    /// Used to find all files affected when a file changes
+    reverse_deps: std.StringHashMap(std.ArrayList([]const u8)),
 
     const Self = @This();
 
     /// Manifest tracking file states
     pub const Manifest = struct {
-        version: u32 = 1,
+        version: u32 = 2, // Bumped version for dependency tracking
         entries: std.StringHashMap(FileEntry),
 
         pub fn init(allocator: std.mem.Allocator) Manifest {
@@ -56,11 +62,32 @@ pub const Cache = struct {
             .allocator = allocator,
             .cache_dir = cache_dir,
             .manifest = Manifest.init(allocator),
+            .dependencies = std.StringHashMap([]const []const u8).init(allocator),
+            .reverse_deps = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
         };
     }
 
     /// Deinitialize and free resources
     pub fn deinit(self: *Self) void {
+        // Free dependency arrays
+        var dep_iter = self.dependencies.iterator();
+        while (dep_iter.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            for (entry.value_ptr.*) |dep| {
+                self.allocator.free(dep);
+            }
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.dependencies.deinit();
+
+        // Free reverse dependency lists
+        var rev_iter = self.reverse_deps.iterator();
+        while (rev_iter.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            entry.value_ptr.deinit(self.allocator);
+        }
+        self.reverse_deps.deinit();
+
         self.manifest.deinit();
     }
 
@@ -88,9 +115,9 @@ pub const Cache = struct {
         const root = parsed.value;
         if (root != .object) return;
 
-        // Check version
+        // Check version - accept version 1 or 2
         if (root.object.get("version")) |v| {
-            if (v != .integer or v.integer != 1) {
+            if (v != .integer or (v.integer != 1 and v.integer != 2)) {
                 // Incompatible version - start fresh
                 return;
             }
@@ -133,6 +160,50 @@ pub const Cache = struct {
                 try self.manifest.entries.put(key, entry);
             }
         }
+
+        // Load dependencies (version 2+)
+        if (root.object.get("dependencies")) |deps_val| {
+            if (deps_val != .object) return;
+
+            var iter = deps_val.object.iterator();
+            while (iter.next()) |kv| {
+                const deps_array = kv.value_ptr.*;
+                if (deps_array != .array) continue;
+
+                // Parse dependency list
+                var deps = try self.allocator.alloc([]const u8, deps_array.array.items.len);
+                var valid = true;
+                for (deps_array.array.items, 0..) |item, i| {
+                    if (item != .string) {
+                        valid = false;
+                        break;
+                    }
+                    deps[i] = try self.allocator.dupe(u8, item.string);
+                }
+
+                if (!valid) {
+                    // Clean up partial allocation
+                    for (deps) |d| {
+                        if (d.len > 0) self.allocator.free(d);
+                    }
+                    self.allocator.free(deps);
+                    continue;
+                }
+
+                const key = try self.allocator.dupe(u8, kv.key_ptr.*);
+                try self.dependencies.put(key, deps);
+
+                // Rebuild reverse dependency map
+                for (deps) |dep| {
+                    const rev_result = try self.reverse_deps.getOrPut(dep);
+                    if (!rev_result.found_existing) {
+                        rev_result.key_ptr.* = try self.allocator.dupe(u8, dep);
+                        rev_result.value_ptr.* = .{};
+                    }
+                    try rev_result.value_ptr.append(self.allocator, try self.allocator.dupe(u8, kv.key_ptr.*));
+                }
+            }
+        }
     }
 
     /// Save manifest to disk
@@ -154,7 +225,7 @@ pub const Cache = struct {
         var content: std.ArrayList(u8) = .empty;
         defer content.deinit(self.allocator);
 
-        try content.appendSlice(self.allocator, "{\n  \"version\": 1,\n  \"stig_version\": \"");
+        try content.appendSlice(self.allocator, "{\n  \"version\": 2,\n  \"stig_version\": \"");
         try content.appendSlice(self.allocator, cli.VERSION);
         try content.appendSlice(self.allocator, "\",\n  \"entries\": {\n");
 
@@ -181,6 +252,33 @@ pub const Cache = struct {
             try content.appendSlice(self.allocator, line4);
 
             try content.appendSlice(self.allocator, "    }");
+        }
+
+        try content.appendSlice(self.allocator, "\n  },\n  \"dependencies\": {\n");
+
+        // Save dependencies
+        first = true;
+        var dep_iter = self.dependencies.iterator();
+        while (dep_iter.next()) |entry| {
+            if (!first) {
+                try content.appendSlice(self.allocator, ",\n");
+            }
+            first = false;
+
+            var line_buf: [1024]u8 = undefined;
+            const line1 = std.fmt.bufPrint(&line_buf, "    \"{s}\": [", .{entry.key_ptr.*}) catch continue;
+            try content.appendSlice(self.allocator, line1);
+
+            var first_dep = true;
+            for (entry.value_ptr.*) |dep| {
+                if (!first_dep) {
+                    try content.appendSlice(self.allocator, ", ");
+                }
+                first_dep = false;
+                const dep_str = std.fmt.bufPrint(&line_buf, "\"{s}\"", .{dep}) catch continue;
+                try content.appendSlice(self.allocator, dep_str);
+            }
+            try content.appendSlice(self.allocator, "]");
         }
 
         try content.appendSlice(self.allocator, "\n  }\n}\n");
@@ -245,6 +343,119 @@ pub const Cache = struct {
             self.allocator.free(kv.key);
             self.dirty = true;
         }
+    }
+
+    /// Set the include dependencies for a file
+    /// This should be called after parsing a file to record what it includes
+    pub fn setDependencies(self: *Self, file_path: []const u8, includes: []const []const u8) !void {
+        // Remove old dependencies from reverse map
+        if (self.dependencies.get(file_path)) |old_deps| {
+            for (old_deps) |dep| {
+                if (self.reverse_deps.getPtr(dep)) |rev_list| {
+                    // Remove file_path from the reverse dependency list
+                    var i: usize = 0;
+                    while (i < rev_list.items.len) {
+                        if (std.mem.eql(u8, rev_list.items[i], file_path)) {
+                            _ = rev_list.swapRemove(i);
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Store new dependencies
+        const key = try self.allocator.dupe(u8, file_path);
+        var deps = try self.allocator.alloc([]const u8, includes.len);
+        for (includes, 0..) |inc, i| {
+            deps[i] = try self.allocator.dupe(u8, inc);
+        }
+
+        // Remove old entry if exists
+        if (self.dependencies.fetchRemove(file_path)) |old| {
+            self.allocator.free(old.key);
+            for (old.value) |dep| {
+                self.allocator.free(dep);
+            }
+            self.allocator.free(old.value);
+        }
+
+        try self.dependencies.put(key, deps);
+
+        // Update reverse dependency map
+        for (deps) |dep| {
+            const rev_result = try self.reverse_deps.getOrPut(dep);
+            if (!rev_result.found_existing) {
+                rev_result.key_ptr.* = try self.allocator.dupe(u8, dep);
+                rev_result.value_ptr.* = .{};
+            }
+            // Check if already in list
+            var found = false;
+            for (rev_result.value_ptr.items) |item| {
+                if (std.mem.eql(u8, item, file_path)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                try rev_result.value_ptr.append(self.allocator, try self.allocator.dupe(u8, file_path));
+            }
+        }
+
+        self.dirty = true;
+    }
+
+    /// Get all files that depend on the given file (directly or transitively)
+    /// Returns files that need to be rebuilt when the given file changes
+    pub fn getDependents(self: *Self, file_path: []const u8) !std.ArrayList([]const u8) {
+        var result: std.ArrayList([]const u8) = .empty;
+        var visited = std.StringHashMap(void).init(self.allocator);
+        defer visited.deinit();
+
+        try self.collectDependentsRecursive(file_path, &result, &visited);
+
+        return result;
+    }
+
+    /// Recursively collect all files that depend on the given file
+    fn collectDependentsRecursive(
+        self: *Self,
+        file_path: []const u8,
+        result: *std.ArrayList([]const u8),
+        visited: *std.StringHashMap(void),
+    ) !void {
+        if (visited.contains(file_path)) return;
+        try visited.put(file_path, {});
+
+        if (self.reverse_deps.get(file_path)) |dependents| {
+            for (dependents.items) |dependent| {
+                try result.append(self.allocator, dependent);
+                // Recursively get files that depend on this dependent
+                try self.collectDependentsRecursive(dependent, result, visited);
+            }
+        }
+    }
+
+    /// Check if a file or any of its dependencies have changed
+    pub fn checkFileWithDeps(self: *Self, path: []const u8) !ChangeStatus {
+        // First check the file itself
+        const file_status = try self.checkFile(path);
+        if (file_status != .unchanged) {
+            return file_status;
+        }
+
+        // Check if any dependencies have changed
+        if (self.dependencies.get(path)) |deps| {
+            for (deps) |dep| {
+                const dep_status = try self.checkFile(dep);
+                if (dep_status == .modified or dep_status == .deleted) {
+                    return .modified; // Dependency changed, so this file needs rebuild
+                }
+            }
+        }
+
+        return .unchanged;
     }
 
     /// Get list of files that have changed
@@ -326,6 +537,8 @@ pub const IncrementalCache = struct {
     output_dir: []const u8,
     cache: Cache,
     cache_dir_owned: []const u8,
+    /// Files rebuilt in the current session (used for dependency tracking)
+    rebuilt_this_session: std.StringHashMap(void),
 
     const Self = @This();
 
@@ -340,11 +553,18 @@ pub const IncrementalCache = struct {
             .output_dir = output_dir,
             .cache = Cache.init(allocator, cache_dir),
             .cache_dir_owned = cache_dir,
+            .rebuilt_this_session = std.StringHashMap(void).init(allocator),
         };
     }
 
     /// Deinitialize and free resources
     pub fn deinit(self: *Self) void {
+        // Free keys in rebuilt_this_session
+        var iter = self.rebuilt_this_session.keyIterator();
+        while (iter.next()) |key| {
+            self.allocator.free(key.*);
+        }
+        self.rebuilt_this_session.deinit();
         self.cache.deinit();
         self.allocator.free(self.cache_dir_owned);
     }
@@ -400,11 +620,142 @@ pub const IncrementalCache = struct {
         };
 
         try self.cache.updateEntry(file_path, entry);
+
+        // Track that this file was rebuilt in this session
+        // Use absolute path for consistent matching with dependencies
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const abs_path = std.fs.cwd().realpath(file_path, &path_buf) catch file_path;
+        const key = try self.allocator.dupe(u8, abs_path);
+        try self.rebuilt_this_session.put(key, {});
     }
 
     /// Mark cache as dirty (needs saving)
     pub fn markDirty(self: *Self) void {
         self.cache.dirty = true;
+    }
+
+    /// Set the include dependencies for a file
+    /// Resolves relative include paths to absolute paths based on the file's directory
+    pub fn setDependencies(self: *Self, file_path: []const u8, includes: []const types.IncludeInfo) !void {
+        // Filter to only local includes (not system includes) and resolve paths
+        var resolved_paths: std.ArrayList([]const u8) = .{};
+        defer {
+            for (resolved_paths.items) |p| {
+                self.allocator.free(p);
+            }
+            resolved_paths.deinit(self.allocator);
+        }
+
+        const file_dir = std.fs.path.dirname(file_path) orelse ".";
+
+        for (includes) |inc| {
+            // Skip system includes - they're not part of the project
+            if (inc.is_system) continue;
+
+            // Resolve relative path to absolute
+            const resolved = std.fs.path.join(self.allocator, &.{ file_dir, inc.path }) catch continue;
+            defer self.allocator.free(resolved);
+
+            // Normalize the path
+            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const normalized = std.fs.cwd().realpath(resolved, &path_buf) catch {
+                // File doesn't exist - skip it
+                continue;
+            };
+
+            try resolved_paths.append(self.allocator, try self.allocator.dupe(u8, normalized));
+        }
+
+        // Pass to underlying cache
+        try self.cache.setDependencies(file_path, resolved_paths.items);
+    }
+
+    /// Check if a file needs rebuilding, considering dependencies
+    /// Returns true if file is new, modified, dependencies changed, or output is missing
+    pub fn needsRebuildWithDeps(self: *Self, file_path: []const u8, content: []const u8) !bool {
+        // First check if the file itself needs rebuild
+        if (try self.needsRebuild(file_path, content)) {
+            return true;
+        }
+
+        // Check if any dependencies have changed (from previous sessions)
+        const status = try self.cache.checkFileWithDeps(file_path);
+        if (status != .unchanged) {
+            return true;
+        }
+
+        // Check if any dependencies were rebuilt in this session
+        // This handles the case where a dependency was processed earlier in this run
+        if (self.cache.dependencies.get(file_path)) |deps| {
+            for (deps) |dep| {
+                if (self.rebuilt_this_session.contains(dep)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// Get all files that depend on the given file (directly or transitively)
+    /// Useful for determining what needs rebuilding when a file changes
+    pub fn getDependents(self: *Self, file_path: []const u8) !std.ArrayList([]const u8) {
+        return self.cache.getDependents(file_path);
+    }
+
+    /// Pre-scan files to determine which need rebuilding, considering dependencies
+    /// Returns a set of file paths that need to be rebuilt
+    /// This should be called before processing files to handle dependency chains correctly
+    pub fn getFilesToRebuild(self: *Self, files: []const []const u8, file_contents: []const []const u8) !std.StringHashMap(void) {
+        var needs_rebuild = std.StringHashMap(void).init(self.allocator);
+
+        // First pass: identify directly changed files
+        for (files, file_contents) |file_path, content| {
+            const needs = self.needsRebuild(file_path, content) catch true;
+            if (needs) {
+                try needs_rebuild.put(file_path, {});
+            }
+        }
+
+        // Second pass: add dependents of changed files (iterate until no new files added)
+        var added_new = true;
+        while (added_new) {
+            added_new = false;
+
+            // Collect current set of files to rebuild
+            var current_files: std.ArrayList([]const u8) = .{};
+            defer current_files.deinit(self.allocator);
+
+            var iter = needs_rebuild.iterator();
+            while (iter.next()) |entry| {
+                try current_files.append(self.allocator, entry.key_ptr.*);
+            }
+
+            for (current_files.items) |changed_file| {
+                // Get absolute path for dependency lookup
+                var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+                const abs_path = std.fs.cwd().realpath(changed_file, &path_buf) catch continue;
+
+                var dependents = self.cache.getDependents(abs_path) catch continue;
+                defer dependents.deinit(self.allocator);
+
+                for (dependents.items) |dependent| {
+                    // The dependent is stored as a relative path (from setDependencies)
+                    // Check if it's in our input files and not already marked for rebuild
+                    for (files) |file_path| {
+                        if (std.mem.eql(u8, file_path, dependent)) {
+                            if (!needs_rebuild.contains(file_path)) {
+                                try needs_rebuild.put(file_path, {});
+                                added_new = true;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        return needs_rebuild;
     }
 };
 
@@ -466,4 +817,64 @@ test "incremental cache - needs rebuild for new file" {
 
     const needs = try incr_cache.needsRebuild("new_file.h", "content");
     try std.testing.expect(needs);
+}
+
+test "cache - set and get dependencies" {
+    var cache = Cache.init(std.testing.allocator, ".stig-cache");
+    defer cache.deinit();
+
+    // Set dependencies: a.hpp depends on b.hpp and c.hpp
+    const deps = &[_][]const u8{ "b.hpp", "c.hpp" };
+    try cache.setDependencies("a.hpp", deps);
+
+    // Verify dependencies were stored
+    const stored_deps = cache.dependencies.get("a.hpp");
+    try std.testing.expect(stored_deps != null);
+    try std.testing.expectEqual(@as(usize, 2), stored_deps.?.len);
+
+    // Verify reverse dependencies
+    const b_dependents = cache.reverse_deps.get("b.hpp");
+    try std.testing.expect(b_dependents != null);
+    try std.testing.expectEqual(@as(usize, 1), b_dependents.?.items.len);
+    try std.testing.expectEqualStrings("a.hpp", b_dependents.?.items[0]);
+}
+
+test "cache - get dependents transitively" {
+    var cache = Cache.init(std.testing.allocator, ".stig-cache");
+    defer cache.deinit();
+
+    // Set up dependency chain: a.hpp -> b.hpp -> c.hpp
+    // (a includes b, b includes c)
+    try cache.setDependencies("a.hpp", &[_][]const u8{"b.hpp"});
+    try cache.setDependencies("b.hpp", &[_][]const u8{"c.hpp"});
+
+    // Get all files that depend on c.hpp (should be b.hpp and a.hpp)
+    var dependents = try cache.getDependents("c.hpp");
+    defer dependents.deinit(std.testing.allocator);
+
+    // Should have 2 dependents: b.hpp (directly) and a.hpp (transitively)
+    try std.testing.expectEqual(@as(usize, 2), dependents.items.len);
+}
+
+test "cache - update dependencies replaces old ones" {
+    var cache = Cache.init(std.testing.allocator, ".stig-cache");
+    defer cache.deinit();
+
+    // Initial dependencies
+    try cache.setDependencies("a.hpp", &[_][]const u8{ "b.hpp", "c.hpp" });
+
+    // Update with new dependencies
+    try cache.setDependencies("a.hpp", &[_][]const u8{"d.hpp"});
+
+    // Verify old dependencies are gone
+    const stored_deps = cache.dependencies.get("a.hpp");
+    try std.testing.expect(stored_deps != null);
+    try std.testing.expectEqual(@as(usize, 1), stored_deps.?.len);
+    try std.testing.expectEqualStrings("d.hpp", stored_deps.?[0]);
+
+    // Verify old reverse deps are cleaned up
+    const b_dependents = cache.reverse_deps.get("b.hpp");
+    if (b_dependents) |deps| {
+        try std.testing.expectEqual(@as(usize, 0), deps.items.len);
+    }
 }
