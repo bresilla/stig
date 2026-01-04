@@ -44,6 +44,7 @@ pub const TestRunner = struct {
     }
 
     /// Runs tests from the configured test directory
+    /// Each test file is compiled and run separately (standalone executables)
     pub fn run(self: *Self) !u8 {
         // Discover test files
         var test_files = try self.discoverTestFiles();
@@ -62,14 +63,30 @@ pub const TestRunner = struct {
             return 1;
         }
 
-        std.debug.print("Found {d} test file(s)\n", .{test_files.items.len});
+        std.debug.print("Found {d} test file(s)\n\n", .{test_files.items.len});
 
-        // Compile tests
-        const binary_path = try self.compileTests(test_files.items);
-        defer self.allocator.free(binary_path);
+        var total_failed: u8 = 0;
 
-        // Run the test binary
-        return try self.runBinary(binary_path);
+        // Compile and run each test file separately
+        for (test_files.items) |test_file| {
+            const binary_path = try self.compileSingleTest(test_file);
+            defer self.allocator.free(binary_path);
+
+            const exit_code = try self.runBinary(binary_path);
+            if (exit_code != 0) {
+                total_failed += 1;
+            }
+            std.debug.print("\n", .{});
+        }
+
+        if (total_failed > 0) {
+            std.debug.print("==========================================================\n", .{});
+            std.debug.print("{d} test file(s) failed\n", .{total_failed});
+            std.debug.print("==========================================================\n", .{});
+            return 1;
+        }
+
+        return 0;
     }
 
     /// Runs a pre-compiled test binary
@@ -142,7 +159,12 @@ pub const TestRunner = struct {
         return std.mem.eql(u8, name, pattern);
     }
 
-    /// Compiles test files into a single binary
+    /// Compiles a single test file into a standalone binary
+    fn compileSingleTest(self: *Self, test_file: []const u8) ![]const u8 {
+        return try self.compileTests(&[_][]const u8{test_file});
+    }
+
+    /// Compiles test files into a binary
     fn compileTests(self: *Self, test_files: []const []const u8) ![]const u8 {
         // Build compiler command
         var args: std.ArrayList([]const u8) = .empty;
@@ -166,14 +188,10 @@ pub const TestRunner = struct {
         const test_inc = try std.fmt.allocPrint(self.allocator, "-I{s}", .{self.config.dir});
         try args.append(self.allocator, test_inc);
 
-        // Test files
+        // Test files (each file is standalone with its own main)
         for (test_files) |file| {
             try args.append(self.allocator, file);
         }
-
-        // Main file
-        const main_file = try std.fmt.allocPrint(self.allocator, "{s}/main.cpp", .{self.config.dir});
-        try args.append(self.allocator, main_file);
 
         // Output binary
         const output_path = try std.fmt.allocPrint(self.allocator, "/tmp/stig_test_{d}", .{

@@ -1,4 +1,5 @@
 # Option 1: Use stig_add_tests() - CMake compiles the tests
+# Each test file is standalone (stig_test.h includes main())
 if(STIG_FOUND)
     stig_add_tests(spatial_tests
         SOURCES
@@ -10,16 +11,13 @@ if(STIG_FOUND)
     )
 else()
     # Fallback: compile tests manually without stig integration
-    add_executable(spatial_tests
-        test_stig_shapes.cpp
-        main.cpp
-    )
-    target_include_directories(spatial_tests PRIVATE
+    add_executable(spatial_tests_test_stig_shapes test_stig_shapes.cpp)
+    target_include_directories(spatial_tests_test_stig_shapes PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_SOURCE_DIR}/include
     )
-    target_link_libraries(spatial_tests PRIVATE spatial)
-    add_test(NAME spatial_tests COMMAND spatial_tests)
+    target_link_libraries(spatial_tests_test_stig_shapes PRIVATE spatial)
+    add_test(NAME spatial_tests_test_stig_shapes COMMAND spatial_tests_test_stig_shapes)
 endif()
 
 # Option 2: Use stig_run_tests() - stig compiles and runs tests

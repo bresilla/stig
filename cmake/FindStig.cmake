@@ -207,46 +207,49 @@ function(stig_add_tests TARGET_NAME)
     # Remove duplicates
     list(REMOVE_DUPLICATES STIG_TEST_SOURCE_FILES)
     
-    # Add main.cpp if it exists
-    if(EXISTS "${STIG_TEST_DIR}/main.cpp")
-        list(APPEND STIG_TEST_SOURCE_FILES "${STIG_TEST_DIR}/main.cpp")
-    endif()
-    
-    # Create test executable
-    add_executable(${TARGET_NAME} ${STIG_TEST_SOURCE_FILES})
-    
-    # Add include directories
-    target_include_directories(${TARGET_NAME} PRIVATE ${STIG_TEST_DIR})
-    if(STIG_TEST_INCLUDE_DIRS)
-        target_include_directories(${TARGET_NAME} PRIVATE ${STIG_TEST_INCLUDE_DIRS})
-    endif()
-    
-    # Link libraries
-    if(STIG_TEST_LIBRARIES)
-        target_link_libraries(${TARGET_NAME} PRIVATE ${STIG_TEST_LIBRARIES})
-    endif()
-    
-    # Add dependencies
-    if(STIG_TEST_DEPENDS)
-        add_dependencies(${TARGET_NAME} ${STIG_TEST_DEPENDS})
-    endif()
-    
-    # Register with CTest
-    add_test(
-        NAME ${TARGET_NAME}
-        COMMAND ${TARGET_NAME}
-        WORKING_DIRECTORY ${STIG_TEST_WORKING_DIRECTORY}
-    )
-    
-    # Print configuration
+    # Each test file is standalone (includes main via stig_test.h)
+    # Create a test executable for each source file
+    set(ALL_TEST_TARGETS "")
     message(STATUS "Stig test target '${TARGET_NAME}' configured:")
-    message(STATUS "  Sources: ${STIG_TEST_SOURCE_FILES}")
-    if(STIG_TEST_INCLUDE_DIRS)
-        message(STATUS "  Include dirs: ${STIG_TEST_INCLUDE_DIRS}")
-    endif()
-    if(STIG_TEST_LIBRARIES)
-        message(STATUS "  Libraries: ${STIG_TEST_LIBRARIES}")
-    endif()
+    
+    foreach(test_source ${STIG_TEST_SOURCE_FILES})
+        get_filename_component(test_name ${test_source} NAME_WE)
+        set(test_target "${TARGET_NAME}_${test_name}")
+        
+        add_executable(${test_target} ${test_source})
+        
+        # Add include directories
+        target_include_directories(${test_target} PRIVATE ${STIG_TEST_DIR})
+        if(STIG_TEST_INCLUDE_DIRS)
+            target_include_directories(${test_target} PRIVATE ${STIG_TEST_INCLUDE_DIRS})
+        endif()
+        
+        # Link libraries
+        if(STIG_TEST_LIBRARIES)
+            target_link_libraries(${test_target} PRIVATE ${STIG_TEST_LIBRARIES})
+        endif()
+        
+        # Add dependencies
+        if(STIG_TEST_DEPENDS)
+            add_dependencies(${test_target} ${STIG_TEST_DEPENDS})
+        endif()
+        
+        # Register with CTest
+        add_test(
+            NAME ${test_target}
+            COMMAND ${test_target}
+            WORKING_DIRECTORY ${STIG_TEST_WORKING_DIRECTORY}
+        )
+        
+        list(APPEND ALL_TEST_TARGETS ${test_target})
+        message(STATUS "  Test: ${test_target}")
+    endforeach()
+    
+    # Create a meta-target that builds all test executables
+    add_custom_target(${TARGET_NAME}
+        DEPENDS ${ALL_TEST_TARGETS}
+        COMMENT "Building all stig tests for ${TARGET_NAME}"
+    )
 endfunction()
 
 # Function to run stig test command (compile and run via stig)

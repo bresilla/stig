@@ -339,4 +339,14 @@ inline int run_all() {
         } \
     } while(0)
 
+// =============================================================================
+// MAIN - Auto-generated entry point
+// =============================================================================
+
+int main(int argc, char** argv) {
+    (void)argc;
+    (void)argv;
+    return stig::test::run_all();
+}
+
 #endif // STIG_TEST_H
