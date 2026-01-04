@@ -21,6 +21,7 @@ const cache_mod = @import("cache.zig");
 const lsp_server = @import("lsp/server.zig");
 const init_cmd = @import("init.zig");
 const testing_cmd = @import("testing.zig");
+const testcov = @import("testcov.zig");
 
 pub fn main() !void {
     // Get allocator - disable safety checks to avoid leak warnings
@@ -66,6 +67,10 @@ pub fn main() !void {
             cli.ArgParser.printTestHelp();
             return;
         },
+        .help_coverage => {
+            cli.ArgParser.printCoverageHelp();
+            return;
+        },
         .version => {
             arg_parser.printVersion();
             return;
@@ -105,6 +110,13 @@ pub fn main() !void {
             };
             const exit_code = testing_cmd.runTest(allocator, args.input_files, args.config_file, output_format) catch |err| {
                 std.debug.print("Test error: {}\n", .{err});
+                std.process.exit(1);
+            };
+            std.process.exit(exit_code);
+        },
+        .coverage => {
+            const exit_code = runCoverageCommand(allocator, &args) catch |err| {
+                std.debug.print("Coverage error: {}\n", .{err});
                 std.process.exit(1);
             };
             std.process.exit(exit_code);
@@ -350,6 +362,188 @@ fn runCheckCommand(allocator: std.mem.Allocator, args: *cli.Args) !void {
     if (exit_code != 0) {
         std.process.exit(exit_code);
     }
+}
+
+/// Runs the 'coverage' subcommand - test coverage analysis
+fn runCoverageCommand(allocator: std.mem.Allocator, args: *cli.Args) !u8 {
+    // Load config file
+    const config_path = args.config_file orelse "stig.toml";
+    var config_loader: ?*config_mod.ConfigLoader = null;
+    var config: config_mod.Config = config_mod.Config{};
+
+    if (config_mod.loadFromFile(allocator, config_path)) |result| {
+        config_loader = result.loader;
+        config = result.config;
+    } else |err| {
+        if (args.config_file != null) {
+            std.debug.print("Error: Cannot load config file '{s}': {}\n", .{ config_path, err });
+            return 1;
+        }
+    }
+
+    defer {
+        if (config_loader) |loader| {
+            loader.deinit();
+            allocator.destroy(loader);
+        }
+    }
+
+    // Get source files (headers to analyze)
+    var source_patterns = args.input_files;
+    if (source_patterns.len == 0 and config.input_patterns.len > 0) {
+        source_patterns = config.input_patterns;
+    }
+
+    // Get test file patterns from config
+    var test_patterns = config.test_coverage.test_patterns;
+    if (test_patterns.len == 0) {
+        // Default test patterns
+        test_patterns = &[_][]const u8{ "test/**/*.cpp", "tests/**/*.cpp" };
+    }
+
+    if (source_patterns.len == 0) {
+        std.debug.print("Error: No source files specified\n", .{});
+        std.debug.print("Specify header files in stig.toml [input] or on command line\n\n", .{});
+        cli.ArgParser.printCoverageHelp();
+        return 1;
+    }
+
+    // Expand source file patterns
+    var expanded_sources: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (expanded_sources.items) |f| {
+            allocator.free(f);
+        }
+        expanded_sources.deinit(allocator);
+    }
+
+    for (source_patterns) |pattern| {
+        if (std.mem.indexOfAny(u8, pattern, "*?[")) |_| {
+            try expandGlob(allocator, pattern, &expanded_sources);
+        } else {
+            const path_copy = try allocator.dupe(u8, pattern);
+            try expanded_sources.append(allocator, path_copy);
+        }
+    }
+
+    // Expand test file patterns
+    var expanded_tests: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (expanded_tests.items) |f| {
+            allocator.free(f);
+        }
+        expanded_tests.deinit(allocator);
+    }
+
+    for (test_patterns) |pattern| {
+        if (std.mem.indexOfAny(u8, pattern, "*?[")) |_| {
+            try expandGlob(allocator, pattern, &expanded_tests);
+        } else {
+            const path_copy = try allocator.dupe(u8, pattern);
+            try expanded_tests.append(allocator, path_copy);
+        }
+    }
+
+    if (expanded_sources.items.len == 0) {
+        std.debug.print("Error: No source files matched the patterns\n", .{});
+        return 1;
+    }
+
+    if (expanded_tests.items.len == 0) {
+        std.debug.print("Warning: No test files found matching patterns\n", .{});
+        std.debug.print("Configure test patterns in stig.toml:\n", .{});
+        std.debug.print("  [test_coverage]\n", .{});
+        std.debug.print("  test_patterns = [\"test/**/*.cpp\"]\n\n", .{});
+    }
+
+    // Initialize parsers
+    var c_parser = try CParser.init(allocator);
+    defer c_parser.deinit();
+
+    var cpp_parser = try CppParser.init(allocator);
+    defer cpp_parser.deinit();
+
+    // Parse source files to build symbol table
+    const FileData = struct {
+        source: []const u8,
+        module: types.Module,
+    };
+
+    var file_data: std.ArrayList(FileData) = .empty;
+    defer {
+        for (file_data.items) |data| {
+            allocator.free(data.source);
+        }
+        file_data.deinit(allocator);
+    }
+
+    for (expanded_sources.items) |input_file| {
+        // Only process header files
+        if (!isHeaderFile(input_file)) continue;
+
+        const file = std.fs.cwd().openFile(input_file, .{}) catch |err| {
+            std.debug.print("Warning: Cannot open file '{s}': {}\n", .{ input_file, err });
+            continue;
+        };
+        defer file.close();
+
+        const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
+            std.debug.print("Warning: Cannot read file '{s}': {}\n", .{ input_file, err });
+            continue;
+        };
+
+        const base_path = std.fs.path.dirname(input_file) orelse ".";
+        c_parser.setBasePath(base_path);
+        cpp_parser.setBasePath(base_path);
+
+        const is_cpp = isCppFile(input_file);
+        const module = if (is_cpp)
+            try cpp_parser.parse(source, input_file)
+        else
+            try c_parser.parse(source, input_file);
+
+        try file_data.append(allocator, .{ .source = source, .module = module });
+    }
+
+    // Collect modules and build symbol table
+    var modules: std.ArrayList(types.Module) = .empty;
+    defer modules.deinit(allocator);
+
+    for (file_data.items) |data| {
+        try modules.append(allocator, data.module);
+    }
+
+    var symbol_table = xref.SymbolTable.init(allocator);
+    defer symbol_table.deinit();
+    try symbol_table.buildFromModules(modules.items);
+
+    // Run test coverage analysis
+    var analyzer = testcov.TestCoverageAnalyzer.init(allocator, &symbol_table);
+    defer analyzer.deinit();
+
+    var report = try analyzer.analyzeTestFiles(expanded_tests.items);
+    defer report.deinit();
+
+    // Output based on format
+    switch (args.check_output_format) {
+        .human => testcov.printHumanReport(report),
+        .compiler => testcov.printCompilerReport(report),
+        .json => try testcov.printJsonReport(allocator, report),
+    }
+
+    // Check coverage threshold
+    const min_coverage = args.min_coverage orelse config.test_coverage.min_coverage;
+    if (report.stats.percentage() < @as(f64, @floatFromInt(min_coverage))) {
+        if (args.check_output_format == .human) {
+            std.debug.print("Test coverage ({d:.0}%) is below minimum threshold ({d}%)\n", .{
+                report.stats.percentage(),
+                min_coverage,
+            });
+        }
+        return 1;
+    }
+
+    return 0;
 }
 
 /// Runs the 'generate' subcommand - documentation generation

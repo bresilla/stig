@@ -2,6 +2,7 @@ const std = @import("std");
 const lsp_types = @import("types.zig");
 const lint = @import("../lint.zig");
 const coverage = @import("../coverage.zig");
+const testcov = @import("../testcov.zig");
 
 /// Converts lint issues and coverage reports to LSP diagnostics
 pub const DiagnosticConverter = struct {
@@ -93,6 +94,51 @@ pub const DiagnosticConverter = struct {
         for (report.missing_items.items) |item| {
             if (std.mem.eql(u8, item.file, file_path)) {
                 try diagnostics.append(self.allocator, self.fromMissingDoc(item));
+            }
+        }
+
+        return diagnostics.toOwnedSlice(self.allocator);
+    }
+
+    /// Convert an untested entity to an LSP Diagnostic
+    pub fn fromUntestedEntity(self: *Self, entity: testcov.UntestedEntity) lsp_types.Diagnostic {
+        _ = self;
+        // LSP uses 0-based lines, our coverage uses 1-based
+        const line: u32 = if (entity.line > 0) entity.line - 1 else 0;
+
+        const kind_str = switch (entity.kind) {
+            .function => "function",
+            .class_type => "class",
+            .struct_type => "struct",
+            .enum_type => "enum",
+            .typedef => "typedef",
+            .macro => "macro",
+        };
+
+        // Build message
+        var msg_buf: [256]u8 = undefined;
+        const message = std.fmt.bufPrint(&msg_buf, "{s} '{s}' has no tests", .{ kind_str, entity.name }) catch "entity has no tests";
+
+        return lsp_types.Diagnostic{
+            .range = .{
+                .start = .{ .line = line, .character = 0 },
+                .end = .{ .line = line, .character = 999 },
+            },
+            .severity = .hint, // Use hint for test coverage (less intrusive than warning)
+            .code = "T001",
+            .source = "stig-test",
+            .message = message,
+        };
+    }
+
+    /// Convert test coverage report for a specific file to LSP diagnostics
+    pub fn convertTestCoverageReport(self: *Self, report: testcov.TestCoverageReport, file_path: []const u8) ![]lsp_types.Diagnostic {
+        var diagnostics: std.ArrayList(lsp_types.Diagnostic) = .empty;
+        errdefer diagnostics.deinit(self.allocator);
+
+        for (report.untested.items) |entity| {
+            if (std.mem.eql(u8, entity.source_file, file_path)) {
+                try diagnostics.append(self.allocator, self.fromUntestedEntity(entity));
             }
         }
 

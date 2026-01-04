@@ -50,6 +50,8 @@ pub const Subcommand = enum {
     init,
     /// Run tests
     @"test",
+    /// Analyze test coverage (which API entities are tested)
+    coverage,
     /// Show help
     help,
     /// Show help for generate subcommand
@@ -60,6 +62,8 @@ pub const Subcommand = enum {
     help_init,
     /// Show help for test subcommand
     help_test,
+    /// Show help for coverage subcommand
+    help_coverage,
     /// Show version
     version,
 };
@@ -80,6 +84,8 @@ pub const Args = struct {
     check_output_format: CheckOutputFormat,
     min_coverage: ?u8,
     strict: bool, // treat warnings as errors
+    /// Coverage command options - test file patterns
+    test_patterns: []const []const u8,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Args) void {
@@ -169,6 +175,7 @@ pub const ArgParser = struct {
                     .check_output_format = .human,
                     .min_coverage = null,
                     .strict = false,
+                    .test_patterns = &[_][]const u8{},
                     .allocator = self.allocator,
                 };
             }
@@ -188,6 +195,7 @@ pub const ArgParser = struct {
                     .check_output_format = .human,
                     .min_coverage = null,
                     .strict = false,
+                    .test_patterns = &[_][]const u8{},
                     .allocator = self.allocator,
                 };
             }
@@ -212,6 +220,9 @@ pub const ArgParser = struct {
             } else if (std.mem.eql(u8, first_arg, "test")) {
                 subcommand = .@"test";
                 args_start = 2;
+            } else if (std.mem.eql(u8, first_arg, "coverage") or std.mem.eql(u8, first_arg, "cov")) {
+                subcommand = .coverage;
+                args_start = 2;
             }
         }
 
@@ -221,6 +232,7 @@ pub const ArgParser = struct {
             .check => try self.parseCheckArgs(process_args, args_start),
             .init => try self.parseInitArgs(process_args, args_start),
             .@"test" => try self.parseTestArgs(process_args, args_start),
+            .coverage => try self.parseCoverageArgs(process_args, args_start),
             .preprocessor => Args{
                 .subcommand = .preprocessor,
                 .input_files = &[_][]const u8{},
@@ -235,10 +247,11 @@ pub const ArgParser = struct {
                 .check_output_format = .human,
                 .min_coverage = null,
                 .strict = false,
+                .test_patterns = &[_][]const u8{},
                 .allocator = self.allocator,
             },
             .check_lsp => unreachable, // returned from parseCheckArgs
-            .help, .help_generate, .help_check, .help_init, .help_test, .version => unreachable, // handled above
+            .help, .help_generate, .help_check, .help_init, .help_test, .help_coverage, .version => unreachable, // handled above
         };
     }
 
@@ -316,6 +329,7 @@ pub const ArgParser = struct {
                 .check_output_format = .human,
                 .min_coverage = null,
                 .strict = false,
+                .test_patterns = &[_][]const u8{},
                 .allocator = self.allocator,
             };
         }
@@ -371,6 +385,7 @@ pub const ArgParser = struct {
             .check_output_format = .human,
             .min_coverage = null,
             .strict = false,
+            .test_patterns = &[_][]const u8{},
             .allocator = self.allocator,
         };
     }
@@ -436,6 +451,7 @@ pub const ArgParser = struct {
                 .check_output_format = .human,
                 .min_coverage = null,
                 .strict = false,
+                .test_patterns = &[_][]const u8{},
                 .allocator = self.allocator,
             };
         }
@@ -484,6 +500,7 @@ pub const ArgParser = struct {
                 .check_output_format = .human,
                 .min_coverage = null,
                 .strict = false,
+                .test_patterns = &[_][]const u8{},
                 .allocator = self.allocator,
             };
         }
@@ -502,6 +519,7 @@ pub const ArgParser = struct {
             .check_output_format = check_output_format,
             .min_coverage = min_coverage,
             .strict = strict,
+            .test_patterns = &[_][]const u8{},
             .allocator = self.allocator,
         };
     }
@@ -559,6 +577,7 @@ pub const ArgParser = struct {
                 .check_output_format = .human,
                 .min_coverage = null,
                 .strict = false,
+                .test_patterns = &[_][]const u8{},
                 .allocator = self.allocator,
             };
         }
@@ -584,6 +603,7 @@ pub const ArgParser = struct {
             .check_output_format = .human,
             .min_coverage = null,
             .strict = false,
+            .test_patterns = &[_][]const u8{},
             .allocator = self.allocator,
         };
     }
@@ -641,6 +661,7 @@ pub const ArgParser = struct {
                 .check_output_format = .human,
                 .min_coverage = null,
                 .strict = false,
+                .test_patterns = &[_][]const u8{},
                 .allocator = self.allocator,
             };
         }
@@ -680,6 +701,115 @@ pub const ArgParser = struct {
             .check_output_format = check_output_format,
             .min_coverage = null,
             .strict = false,
+            .test_patterns = &[_][]const u8{},
+            .allocator = self.allocator,
+        };
+    }
+
+    fn parseCoverageArgs(self: *Self, process_args: []const [:0]u8, args_start: usize) !Args {
+        // Create argonaut parser for coverage subcommand
+        self.parser = try argonaut.newParser(
+            self.allocator,
+            "stig coverage",
+            "Analyze test coverage - which API entities are tested",
+        );
+        const parser = self.parser.?;
+        parser.command.disableHelp();
+
+        // Define arguments
+        var config_opts = argonaut.Options{};
+        config_opts.help = "Config file path (default: stig.toml)";
+        self.config_ptr = try parser.string("c", "config", &config_opts);
+
+        var format_opts = argonaut.Options{};
+        format_opts.help = "Output format: human, compiler, json (default: human)";
+        self.check_format_ptr = try parser.string("f", "format", &format_opts);
+
+        var coverage_opts = argonaut.Options{};
+        coverage_opts.help = "Minimum test coverage percentage required (0-100)";
+        self.min_coverage_ptr = try parser.int("", "min-coverage", &coverage_opts);
+
+        var help_opts = argonaut.Options{};
+        help_opts.help = "Show help for coverage command";
+        self.help_ptr = try parser.flag("h", "help", &help_opts);
+
+        // Build args slice starting from args_start
+        var args_list: std.ArrayList([]const u8) = .empty;
+        defer args_list.deinit(self.allocator);
+
+        try args_list.append(self.allocator, "stig");
+        for (process_args[args_start..]) |arg| {
+            try args_list.append(self.allocator, arg);
+        }
+
+        // Parse
+        self.remainder = parser.parseWithRemainder(args_list.items) catch |err| {
+            return err;
+        };
+
+        // Check for help
+        if (self.help_ptr.?.*) {
+            return Args{
+                .subcommand = .help_coverage,
+                .input_files = &[_][]const u8{},
+                .output_file = null,
+                .output_format = .markdown,
+                .format_explicitly_set = false,
+                .book_title = null,
+                .config_file = null,
+                .watch_mode = false,
+                .serve_mode = false,
+                .force_rebuild = false,
+                .check_output_format = .human,
+                .min_coverage = null,
+                .strict = false,
+                .test_patterns = &[_][]const u8{},
+                .allocator = self.allocator,
+            };
+        }
+
+        // Get config file
+        const config_str = self.config_ptr.?.*;
+        const config_file: ?[]const u8 = if (config_str.len > 0) config_str else null;
+
+        // Parse output format
+        const format_str = if (self.check_format_ptr) |ptr| ptr.* else "";
+        var check_output_format: CheckOutputFormat = .human;
+        if (format_str.len > 0) {
+            if (std.mem.eql(u8, format_str, "compiler") or std.mem.eql(u8, format_str, "gcc")) {
+                check_output_format = .compiler;
+            } else if (std.mem.eql(u8, format_str, "json")) {
+                check_output_format = .json;
+            }
+        }
+
+        // Get min coverage
+        const min_coverage_val = self.min_coverage_ptr.?.*;
+        const min_coverage: ?u8 = if (min_coverage_val > 0) @intCast(@min(min_coverage_val, 100)) else null;
+
+        // Get input files (header files) and test patterns from remainder
+        // Format: stig coverage <headers...> --tests <test_files...>
+        // For now, we'll use config file for test patterns
+        const input_files = if (self.remainder) |rem|
+            try self.allocator.dupe([]const u8, rem)
+        else
+            &[_][]const u8{};
+
+        return Args{
+            .subcommand = .coverage,
+            .input_files = input_files,
+            .output_file = null,
+            .output_format = .markdown,
+            .format_explicitly_set = false,
+            .book_title = null,
+            .config_file = config_file,
+            .watch_mode = false,
+            .serve_mode = false,
+            .force_rebuild = false,
+            .check_output_format = check_output_format,
+            .min_coverage = min_coverage,
+            .strict = false,
+            .test_patterns = &[_][]const u8{},
             .allocator = self.allocator,
         };
     }
@@ -699,6 +829,7 @@ pub const ArgParser = struct {
             .check_output_format = .human,
             .min_coverage = null,
             .strict = false,
+            .test_patterns = &[_][]const u8{},
             .allocator = allocator,
         };
     }
@@ -873,6 +1004,55 @@ pub const ArgParser = struct {
         std.debug.print("{s}", .{help});
     }
 
+    /// Prints help for coverage subcommand
+    pub fn printCoverageHelp() void {
+        const help =
+            \\stig coverage - Analyze test coverage (which API entities are tested)
+            \\
+            \\USAGE:
+            \\    stig coverage [OPTIONS]
+            \\    stig cov [OPTIONS]                       (alias)
+            \\
+            \\OPTIONS:
+            \\    -c, --config <FILE>       Config file path (default: stig.toml)
+            \\    -f, --format <FMT>        Output format: human, compiler, json
+            \\    --min-coverage <N>        Minimum test coverage percentage (0-100)
+            \\    -h, --help                Show this help message
+            \\
+            \\DESCRIPTION:
+            \\    Analyzes which documented API entities (functions, classes, methods)
+            \\    are being exercised by your test files. This is NOT line coverage -
+            \\    it's API coverage showing which parts of your public API have tests.
+            \\
+            \\    The command:
+            \\    1. Parses header files to build a symbol table of documented entities
+            \\    2. Parses test files to find which entities are called/used
+            \\    3. Reports which documented entities have tests vs which don't
+            \\
+            \\CONFIG FILE (stig.toml):
+            \\    [coverage]
+            \\    sources = ["include/**/*.hpp"]    # Header files to analyze
+            \\    tests = ["test/**/*.cpp"]         # Test files to scan
+            \\    min_coverage = 80                 # Minimum coverage threshold
+            \\
+            \\OUTPUT FORMATS:
+            \\    human      Human-readable report with summary (default)
+            \\    compiler   Compiler-style output for CI/CD integration
+            \\    json       JSON output for tooling integration
+            \\
+            \\EXIT CODES:
+            \\    0    Coverage meets threshold
+            \\    1    Coverage below threshold
+            \\
+            \\EXAMPLES:
+            \\    stig coverage                            # Use config file
+            \\    stig coverage --min-coverage 80         # Fail if < 80% tested
+            \\    stig coverage -f json                   # JSON output for CI
+            \\
+        ;
+        std.debug.print("{s}", .{help});
+    }
+
     fn printMainHelp() void {
         const help =
             \\stig - C/C++ documentation generator
@@ -884,8 +1064,9 @@ pub const ArgParser = struct {
             \\COMMANDS:
             \\    generate      Generate documentation from source files (default)
             \\    check         Check documentation coverage and quality
+            \\    coverage      Analyze test coverage (which API entities are tested)
             \\    init          Initialize test infrastructure
-            \\    test          Compile and run tests
+            \\    test          Run pre-compiled test binaries
             \\    preprocessor  Run as mdbook preprocessor
             \\    help          Show this help message
             \\    version       Show version information
@@ -902,8 +1083,9 @@ pub const ArgParser = struct {
             \\    stig input.h                             # Generate markdown to stdout
             \\    stig generate -f mdbook -o docs/ src/*.h # Generate mdbook
             \\    stig check src/*.h                       # Check documentation
+            \\    stig coverage                            # Analyze test coverage
             \\    stig init                                # Initialize test infrastructure
-            \\    stig test                                # Run tests
+            \\    stig test ./build/test_*                 # Run tests
             \\
             \\For more information on a command, run:
             \\    stig <command> --help

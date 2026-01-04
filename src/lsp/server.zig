@@ -7,6 +7,7 @@ const CppParser = @import("../parser/cpp.zig").CppParser;
 const types = @import("../model/types.zig");
 const lint = @import("../lint.zig");
 const coverage = @import("../coverage.zig");
+const testcov = @import("../testcov.zig");
 const xref = @import("../xref.zig");
 const config_mod = @import("../config.zig");
 
@@ -15,6 +16,20 @@ const DocumentState = struct {
     uri: []const u8,
     content: []const u8,
     version: i64,
+};
+
+/// Cached test coverage data (computed once on startup/config change)
+const TestCoverageCache = struct {
+    report: ?testcov.TestCoverageReport = null,
+    symbol_table: ?*xref.SymbolTable = null,
+
+    pub fn deinit(self: *TestCoverageCache, allocator: std.mem.Allocator) void {
+        if (self.report) |*r| r.deinit();
+        if (self.symbol_table) |st| {
+            st.deinit();
+            allocator.destroy(st);
+        }
+    }
 };
 
 /// LSP Server for stig documentation checker
@@ -27,6 +42,7 @@ pub const Server = struct {
     config: config_mod.Config,
     c_parser: ?CParser = null,
     cpp_parser: ?CppParser = null,
+    test_coverage_cache: TestCoverageCache = .{},
 
     const Self = @This();
 
@@ -52,6 +68,7 @@ pub const Server = struct {
         if (self.c_parser) |*p| p.deinit();
         if (self.cpp_parser) |*p| p.deinit();
 
+        self.test_coverage_cache.deinit(self.allocator);
         self.transport.deinit();
     }
 
@@ -68,6 +85,11 @@ pub const Server = struct {
         } else |_| {
             // Use defaults
         }
+
+        // Build test coverage cache if test patterns are configured
+        self.buildTestCoverageCache() catch {
+            // Ignore errors - test coverage is optional
+        };
 
         // Main message loop
         while (!self.shutdown_requested) {
@@ -338,11 +360,117 @@ pub const Server = struct {
         const cov_diags = try converter.convertCoverageReport(coverage_report, file_path);
         defer converter.freeDiagnostics(cov_diags);
 
-        const merged = try converter.mergeDiagnostics(lint_diags, cov_diags);
+        var merged = try converter.mergeDiagnostics(lint_diags, cov_diags);
         defer converter.freeDiagnostics(merged);
+
+        // Add test coverage diagnostics if available
+        if (self.test_coverage_cache.report) |report| {
+            const test_diags = try converter.convertTestCoverageReport(report, file_path);
+            defer converter.freeDiagnostics(test_diags);
+
+            // Merge test coverage diagnostics
+            const all_diags = try converter.mergeDiagnostics(merged, test_diags);
+            converter.freeDiagnostics(merged);
+            merged = all_diags;
+        }
 
         // Send diagnostics
         try self.sendDiagnostics(uri, merged);
+    }
+
+    /// Build test coverage cache by scanning test files
+    fn buildTestCoverageCache(self: *Self) !void {
+        // Get test file patterns from config
+        var test_patterns = self.config.test_coverage.test_patterns;
+        if (test_patterns.len == 0) {
+            // Try default patterns
+            test_patterns = &[_][]const u8{ "test/**/*.cpp", "tests/**/*.cpp" };
+        }
+
+        // Get source patterns
+        const source_patterns = self.config.input_patterns;
+        if (source_patterns.len == 0) {
+            // No sources configured, skip test coverage
+            return;
+        }
+
+        // Expand source patterns and parse headers
+        var expanded_sources: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (expanded_sources.items) |f| self.allocator.free(f);
+            expanded_sources.deinit(self.allocator);
+        }
+
+        for (source_patterns) |pattern| {
+            if (std.mem.indexOfAny(u8, pattern, "*?[")) |_| {
+                try expandGlob(self.allocator, pattern, &expanded_sources);
+            } else {
+                const path_copy = try self.allocator.dupe(u8, pattern);
+                try expanded_sources.append(self.allocator, path_copy);
+            }
+        }
+
+        if (expanded_sources.items.len == 0) return;
+
+        // Expand test patterns
+        var expanded_tests: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (expanded_tests.items) |f| self.allocator.free(f);
+            expanded_tests.deinit(self.allocator);
+        }
+
+        for (test_patterns) |pattern| {
+            if (std.mem.indexOfAny(u8, pattern, "*?[")) |_| {
+                try expandGlob(self.allocator, pattern, &expanded_tests);
+            } else {
+                const path_copy = try self.allocator.dupe(u8, pattern);
+                try expanded_tests.append(self.allocator, path_copy);
+            }
+        }
+
+        if (expanded_tests.items.len == 0) return;
+
+        // Parse source files
+        var c_parser = self.c_parser orelse return;
+        var cpp_parser = self.cpp_parser orelse return;
+
+        var modules: std.ArrayList(types.Module) = .empty;
+        defer modules.deinit(self.allocator);
+
+        for (expanded_sources.items) |input_file| {
+            if (!isHeaderFile(input_file)) continue;
+
+            const file = std.fs.cwd().openFile(input_file, .{}) catch continue;
+            defer file.close();
+
+            const source = file.readToEndAlloc(self.allocator, 10 * 1024 * 1024) catch continue;
+            defer self.allocator.free(source);
+
+            const is_cpp = isCppFile(input_file);
+            const module = if (is_cpp)
+                cpp_parser.parse(source, input_file) catch continue
+            else
+                c_parser.parse(source, input_file) catch continue;
+
+            try modules.append(self.allocator, module);
+        }
+
+        if (modules.items.len == 0) return;
+
+        // Build symbol table
+        const symbol_table = try self.allocator.create(xref.SymbolTable);
+        symbol_table.* = xref.SymbolTable.init(self.allocator);
+        try symbol_table.buildFromModules(modules.items);
+
+        // Run test coverage analysis
+        var analyzer = testcov.TestCoverageAnalyzer.init(self.allocator, symbol_table);
+        defer analyzer.deinit();
+
+        const report = try analyzer.analyzeTestFiles(expanded_tests.items);
+
+        // Store in cache
+        self.test_coverage_cache.symbol_table = symbol_table;
+        self.test_coverage_cache.report = report;
     }
 
     /// Send diagnostics notification to client
@@ -385,6 +513,114 @@ fn isCppFile(filename: []const u8) bool {
         }
     }
     return false;
+}
+
+/// Expands a glob pattern to matching file paths
+fn expandGlob(allocator: std.mem.Allocator, pattern: []const u8, results: *std.ArrayList([]const u8)) !void {
+    // Check for recursive pattern (**)
+    if (std.mem.indexOf(u8, pattern, "**")) |double_star_pos| {
+        const prefix = if (double_star_pos > 0 and pattern[double_star_pos - 1] == '/')
+            pattern[0 .. double_star_pos - 1]
+        else if (double_star_pos > 0)
+            pattern[0..double_star_pos]
+        else
+            ".";
+
+        const suffix_start = double_star_pos + 2;
+        const suffix = if (suffix_start >= pattern.len)
+            "*"
+        else if (pattern[suffix_start] == '/')
+            pattern[suffix_start + 1 ..]
+        else
+            pattern[suffix_start..];
+
+        const file_pattern = if (suffix.len > 0 and suffix[0] == '.') blk: {
+            var buf: [256]u8 = undefined;
+            const result = std.fmt.bufPrint(&buf, "*{s}", .{suffix}) catch suffix;
+            break :blk result;
+        } else suffix;
+
+        try expandRecursive(allocator, prefix, file_pattern, results);
+    } else {
+        const last_sep = std.mem.lastIndexOfScalar(u8, pattern, '/');
+        const dir_path = if (last_sep) |idx| pattern[0..idx] else ".";
+        const file_pattern = if (last_sep) |idx| pattern[idx + 1 ..] else pattern;
+
+        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+        defer dir.close();
+
+        var iter = dir.iterate();
+        while (try iter.next()) |entry| {
+            if (entry.kind != .file) continue;
+
+            if (globMatch(file_pattern, entry.name)) {
+                const full_path = if (last_sep != null)
+                    try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, entry.name })
+                else
+                    try allocator.dupe(u8, entry.name);
+
+                try results.append(allocator, full_path);
+            }
+        }
+    }
+}
+
+/// Recursively expand directories and match files
+fn expandRecursive(allocator: std.mem.Allocator, base_dir: []const u8, file_pattern: []const u8, results: *std.ArrayList([]const u8)) !void {
+    var dir = std.fs.cwd().openDir(base_dir, .{ .iterate = true }) catch return;
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        const full_path = if (std.mem.eql(u8, base_dir, "."))
+            try allocator.dupe(u8, entry.name)
+        else
+            try std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_dir, entry.name });
+
+        if (entry.kind == .directory) {
+            try expandRecursive(allocator, full_path, file_pattern, results);
+            allocator.free(full_path);
+        } else if (entry.kind == .file) {
+            if (globMatch(file_pattern, entry.name)) {
+                try results.append(allocator, full_path);
+            } else {
+                allocator.free(full_path);
+            }
+        } else {
+            allocator.free(full_path);
+        }
+    }
+}
+
+/// Simple glob pattern matching (supports * and ?)
+fn globMatch(pattern: []const u8, name: []const u8) bool {
+    var pi: usize = 0;
+    var ni: usize = 0;
+    var star_pi: ?usize = null;
+    var star_ni: usize = 0;
+
+    while (ni < name.len) {
+        if (pi < pattern.len and (pattern[pi] == '?' or pattern[pi] == name[ni])) {
+            pi += 1;
+            ni += 1;
+        } else if (pi < pattern.len and pattern[pi] == '*') {
+            star_pi = pi;
+            star_ni = ni;
+            pi += 1;
+        } else if (star_pi) |sp| {
+            pi = sp + 1;
+            star_ni += 1;
+            ni = star_ni;
+        } else {
+            return false;
+        }
+    }
+
+    while (pi < pattern.len and pattern[pi] == '*') {
+        pi += 1;
+    }
+
+    return pi == pattern.len;
 }
 
 /// Entry point for running the LSP server

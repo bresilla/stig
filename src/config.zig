@@ -62,6 +62,8 @@ pub const Config = struct {
     lint: LintOptions = .{},
     /// Godbolt (Compiler Explorer) integration options
     godbolt: GodboltOptions = .{},
+    /// Test coverage options
+    test_coverage: TestCoverageOptions = .{},
     /// Module definitions for organizing documentation into packages
     modules: []const ModuleConfig = &[_]ModuleConfig{},
 
@@ -89,7 +91,7 @@ pub const Config = struct {
         exclude_patterns: []const []const u8 = &[_][]const u8{},
     };
 
-    /// Coverage analysis options for --coverage mode
+    /// Coverage analysis options for --coverage mode (documentation coverage)
     pub const CoverageOptions = struct {
         /// Minimum coverage percentage threshold (0-100)
         min_coverage: u8 = 80,
@@ -101,6 +103,16 @@ pub const Config = struct {
         require_return_docs: bool = true,
         /// Require @tparam documentation for template parameters
         require_tparam_docs: bool = true,
+    };
+
+    /// Test coverage options for `stig coverage` command
+    pub const TestCoverageOptions = struct {
+        /// Minimum test coverage percentage threshold (0-100)
+        min_coverage: u8 = 0,
+        /// Test file patterns (glob patterns)
+        test_patterns: []const []const u8 = &[_][]const u8{},
+        /// Patterns to exclude from test coverage analysis
+        exclude_patterns: []const []const u8 = &[_][]const u8{},
     };
 
     /// Output formatting options
