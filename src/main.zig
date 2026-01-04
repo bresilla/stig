@@ -756,6 +756,7 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
                 .generate_intro = config.generate_intro,
                 .grouping = grouping_strategy,
                 .module_configs = config.modules,
+                .external_docs = config.external_docs,
             };
 
             var mdbook_gen = MdbookGenerator.initWithConfig(allocator, mdbook_config);
@@ -780,7 +781,7 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
             std.debug.print("Run 'mdbook build {s}' to build the book\n", .{output_dir});
         },
         .markdown => {
-            var symbol_table = xref.SymbolTable.init(allocator);
+            var symbol_table = xref.SymbolTable.initWithConfig(allocator, config);
             defer symbol_table.deinit();
             try symbol_table.buildFromModules(modules.items);
 

@@ -22,6 +22,8 @@ pub const MdbookConfig = struct {
     grouping: GroupingStrategy = .by_header,
     /// Module configurations for by_module grouping
     module_configs: []const config_mod.ModuleConfig = &[_]config_mod.ModuleConfig{},
+    /// External documentation links (e.g., std:: -> cppreference)
+    external_docs: []const config_mod.ExternalDocLink = &[_]config_mod.ExternalDocLink{},
 
     pub const GroupingStrategy = enum {
         /// Group by source header file
@@ -57,12 +59,16 @@ pub const MdbookGenerator = struct {
         };
     }
 
-    pub fn initWithConfig(allocator: std.mem.Allocator, config: MdbookConfig) Self {
+    pub fn initWithConfig(allocator: std.mem.Allocator, mdbook_config: MdbookConfig) Self {
+        // Create a config with external_docs for the symbol table
+        const xref_config = config_mod.Config{
+            .external_docs = mdbook_config.external_docs,
+        };
         return Self{
             .allocator = allocator,
-            .config = config,
+            .config = mdbook_config,
             .markdown_gen = MarkdownGenerator.init(allocator),
-            .symbol_table = xref.SymbolTable.init(allocator),
+            .symbol_table = xref.SymbolTable.initWithConfig(allocator, xref_config),
             .snippet_extractor = snippet.SnippetExtractor.init(allocator),
         };
     }

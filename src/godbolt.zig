@@ -47,21 +47,6 @@ pub const GodboltUrlGenerator = struct {
         return url;
     }
 
-    /// Generates a simpler, shorter Godbolt URL (may not preserve all settings)
-    pub fn generateSimpleUrl(self: *Self, source: []const u8) ![]const u8 {
-        const encoded_source = try self.urlEncode(source);
-        defer self.allocator.free(encoded_source);
-
-        // Simpler URL format
-        const url = try std.fmt.allocPrint(
-            self.allocator,
-            "https://godbolt.org/z/{s}",
-            .{encoded_source},
-        );
-
-        return url;
-    }
-
     /// URL encodes a string (percent encoding)
     fn urlEncode(self: *Self, input: []const u8) ![]const u8 {
         var result: std.ArrayList(u8) = .empty;

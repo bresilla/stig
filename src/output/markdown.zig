@@ -649,6 +649,28 @@ pub const MarkdownGenerator = struct {
                     }
                     return;
                 }
+            } else if (table.getExternalLink(base_type)) |ext_url| {
+                // Found an external documentation link (e.g., std:: -> cppreference)
+                defer self.allocator.free(ext_url);
+
+                if (std.mem.indexOf(u8, type_str, base_type)) |start| {
+                    // Write prefix (e.g., "const ")
+                    if (start > 0) {
+                        try self.writeEscaped(type_str[0..start]);
+                    }
+                    // Write external link
+                    try self.writeString("[");
+                    try self.writeEscaped(base_type);
+                    try self.writeString("](");
+                    try self.writeString(ext_url);
+                    try self.writeString(")");
+                    // Write suffix (e.g., " *" or "<T>")
+                    const end = start + base_type.len;
+                    if (end < type_str.len) {
+                        try self.writeEscaped(type_str[end..]);
+                    }
+                    return;
+                }
             }
         }
         // No cross-reference - write plain type with HTML escaping
@@ -662,6 +684,15 @@ pub const MarkdownGenerator = struct {
                 const link = try self.generateLink(symbol_name, info);
                 defer if (link.needs_free) self.allocator.free(link.text);
                 try self.writeString(link.text);
+                return;
+            } else if (table.getExternalLink(symbol_name)) |ext_url| {
+                // Found an external documentation link (e.g., std::vector -> cppreference)
+                defer self.allocator.free(ext_url);
+                try self.writeString("[");
+                try self.writeString(symbol_name);
+                try self.writeString("](");
+                try self.writeString(ext_url);
+                try self.writeString(")");
                 return;
             }
         }

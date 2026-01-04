@@ -402,19 +402,9 @@ pub const SymbolTable = struct {
 
     /// Checks if a symbol matches an external documentation prefix
     /// Returns the external URL if matched, null otherwise
+    /// Note: This allocates memory - caller must free the result
     pub fn getExternalLink(self: *Self, symbol_name: []const u8) ?[]const u8 {
-        for (self.external_docs) |ext| {
-            if (std.mem.startsWith(u8, symbol_name, ext.prefix)) {
-                // Extract the symbol part after the prefix
-                const symbol_part = symbol_name[ext.prefix.len..];
-
-                // Replace $$ in template with symbol part
-                // For now, just return the template (full implementation would allocate)
-                _ = symbol_part;
-                return ext.url_template;
-            }
-        }
-        return null;
+        return self.generateExternalUrl(symbol_name) catch null;
     }
 
     /// Generates an external documentation URL for a symbol
