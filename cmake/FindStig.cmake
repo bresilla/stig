@@ -18,12 +18,21 @@
 #       CONFIG ${CMAKE_SOURCE_DIR}/stig.toml
 #   )
 
+# Handle CMP0144 - use STIG_ROOT variable
+if(DEFINED STIG_ROOT)
+    set(_STIG_ROOT_HINT ${STIG_ROOT})
+elseif(DEFINED ENV{STIG_ROOT})
+    set(_STIG_ROOT_HINT $ENV{STIG_ROOT})
+else()
+    set(_STIG_ROOT_HINT "")
+endif()
+
 # Find the stig executable
 find_program(STIG_EXECUTABLE
     NAMES stig
     HINTS
-        ${STIG_ROOT}
-        $ENV{STIG_ROOT}
+        ${_STIG_ROOT_HINT}
+        ${_STIG_ROOT_HINT}/bin
         ${CMAKE_INSTALL_PREFIX}
     PATH_SUFFIXES bin
     DOC "Path to the stig documentation generator"
