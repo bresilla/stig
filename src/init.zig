@@ -70,14 +70,6 @@ pub const InitCommand = struct {
             \\format = "mdbook"
             \\inputs = ["include/**/*.hpp", "include/**/*.h"]
             \\
-            \\# Test settings
-            \\[test]
-            \\dir = "test"
-            \\compiler = "g++"
-            \\flags = ["-std=c++17", "-Wall", "-Wextra"]
-            \\include_paths = ["include/"]
-            \\pattern = "test_*.cpp"
-            \\
         ;
 
         const file = try std.fs.cwd().createFile(self.config_path, .{});

@@ -64,24 +64,6 @@ pub const Config = struct {
     godbolt: GodboltOptions = .{},
     /// Module definitions for organizing documentation into packages
     modules: []const ModuleConfig = &[_]ModuleConfig{},
-    /// Test configuration
-    test_config: TestOptions = .{},
-
-    /// Test options for 'stig test' command
-    pub const TestOptions = struct {
-        /// Directory containing test files
-        dir: []const u8 = "test",
-        /// Compiler to use
-        compiler: []const u8 = "g++",
-        /// Compiler flags
-        flags: []const []const u8 = &[_][]const u8{ "-std=c++17", "-Wall", "-Wextra" },
-        /// Include paths
-        include_paths: []const []const u8 = &[_][]const u8{},
-        /// Libraries to link
-        libraries: []const []const u8 = &[_][]const u8{},
-        /// Test file pattern
-        pattern: []const u8 = "test_*.cpp",
-    };
 
     /// Lint options for --lint mode
     pub const LintOptions = struct {
