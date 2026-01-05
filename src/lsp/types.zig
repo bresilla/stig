@@ -120,10 +120,20 @@ pub const PublishDiagnosticsParams = struct {
 /// LSP Server Capabilities
 pub const ServerCapabilities = struct {
     textDocumentSync: TextDocumentSyncOptions,
+    completionProvider: ?CompletionOptions = null,
+    codeActionProvider: ?CodeActionOptions = null,
 
     pub fn jsonStringify(self: ServerCapabilities, writer: anytype) !void {
         try writer.writeAll("{\"textDocumentSync\":");
         try self.textDocumentSync.jsonStringify(writer);
+        if (self.completionProvider) |comp| {
+            try writer.writeAll(",\"completionProvider\":");
+            try comp.jsonStringify(writer);
+        }
+        if (self.codeActionProvider) |ca| {
+            try writer.writeAll(",\"codeActionProvider\":");
+            try ca.jsonStringify(writer);
+        }
         try writer.writeAll("}");
     }
 };
@@ -239,6 +249,261 @@ pub fn uriToPath(allocator: std.mem.Allocator, uri: []const u8) ![]const u8 {
     }
     return try allocator.dupe(u8, uri);
 }
+
+// =============================================================================
+// Completion Types
+// =============================================================================
+
+/// LSP Completion Item Kind
+pub const CompletionItemKind = enum(u8) {
+    text = 1,
+    method = 2,
+    function = 3,
+    constructor = 4,
+    field = 5,
+    variable = 6,
+    class = 7,
+    interface = 8,
+    module = 9,
+    property = 10,
+    unit = 11,
+    value = 12,
+    @"enum" = 13,
+    keyword = 14,
+    snippet = 15,
+    color = 16,
+    file = 17,
+    reference = 18,
+    folder = 19,
+    enum_member = 20,
+    constant = 21,
+    @"struct" = 22,
+    event = 23,
+    operator = 24,
+    type_parameter = 25,
+};
+
+/// LSP Insert Text Format
+pub const InsertTextFormat = enum(u8) {
+    plain_text = 1,
+    snippet = 2,
+};
+
+/// LSP Completion Item
+pub const CompletionItem = struct {
+    label: []const u8,
+    kind: ?CompletionItemKind = null,
+    detail: ?[]const u8 = null,
+    documentation: ?[]const u8 = null,
+    insert_text: ?[]const u8 = null,
+    insert_text_format: ?InsertTextFormat = null,
+
+    pub fn jsonStringify(self: CompletionItem, writer: anytype) !void {
+        try writer.writeAll("{\"label\":\"");
+        try writeJsonEscaped(writer, self.label);
+        try writer.writeByte('"');
+
+        if (self.kind) |kind| {
+            try writer.print(",\"kind\":{d}", .{@intFromEnum(kind)});
+        }
+
+        if (self.detail) |detail| {
+            try writer.writeAll(",\"detail\":\"");
+            try writeJsonEscaped(writer, detail);
+            try writer.writeByte('"');
+        }
+
+        if (self.documentation) |doc| {
+            try writer.writeAll(",\"documentation\":\"");
+            try writeJsonEscaped(writer, doc);
+            try writer.writeByte('"');
+        }
+
+        if (self.insert_text) |text| {
+            try writer.writeAll(",\"insertText\":\"");
+            try writeJsonEscaped(writer, text);
+            try writer.writeByte('"');
+        }
+
+        if (self.insert_text_format) |format| {
+            try writer.print(",\"insertTextFormat\":{d}", .{@intFromEnum(format)});
+        }
+
+        try writer.writeByte('}');
+    }
+};
+
+/// LSP Completion List
+pub const CompletionList = struct {
+    is_incomplete: bool = false,
+    items: []const CompletionItem,
+
+    pub fn jsonStringify(self: CompletionList, allocator: std.mem.Allocator) ![]const u8 {
+        var buffer: std.ArrayList(u8) = .empty;
+        errdefer buffer.deinit(allocator);
+
+        try buffer.appendSlice(allocator, "{\"isIncomplete\":");
+        try buffer.appendSlice(allocator, if (self.is_incomplete) "true" else "false");
+        try buffer.appendSlice(allocator, ",\"items\":[");
+
+        for (self.items, 0..) |item, i| {
+            if (i > 0) try buffer.append(allocator, ',');
+            try item.jsonStringify(buffer.writer(allocator));
+        }
+
+        try buffer.appendSlice(allocator, "]}");
+        return buffer.toOwnedSlice(allocator);
+    }
+};
+
+/// LSP Completion Options (for server capabilities)
+pub const CompletionOptions = struct {
+    trigger_characters: []const []const u8 = &[_][]const u8{ "@", "\\" },
+    resolve_provider: bool = false,
+
+    pub fn jsonStringify(self: CompletionOptions, writer: anytype) !void {
+        try writer.writeAll("{\"triggerCharacters\":[");
+        for (self.trigger_characters, 0..) |char, i| {
+            if (i > 0) try writer.writeByte(',');
+            try writer.writeByte('"');
+            try writeJsonEscaped(writer, char);
+            try writer.writeByte('"');
+        }
+        try writer.writeAll("],\"resolveProvider\":");
+        try writer.writeAll(if (self.resolve_provider) "true" else "false");
+        try writer.writeByte('}');
+    }
+};
+
+// =============================================================================
+// Code Action Types
+// =============================================================================
+
+/// LSP Code Action Kind
+pub const CodeActionKind = enum {
+    quickfix,
+    refactor,
+    source,
+
+    pub fn toString(self: CodeActionKind) []const u8 {
+        return switch (self) {
+            .quickfix => "quickfix",
+            .refactor => "refactor",
+            .source => "source",
+        };
+    }
+};
+
+/// LSP Text Edit - a change to a text document
+pub const TextEdit = struct {
+    range: Range,
+    new_text: []const u8,
+
+    pub fn jsonStringify(self: TextEdit, writer: anytype) !void {
+        try writer.writeAll("{\"range\":");
+        try self.range.jsonStringify(writer);
+        try writer.writeAll(",\"newText\":\"");
+        try writeJsonEscaped(writer, self.new_text);
+        try writer.writeAll("\"}");
+    }
+};
+
+/// LSP Workspace Edit - changes to multiple documents
+pub const WorkspaceEdit = struct {
+    /// Map of document URI to text edits
+    changes: []const DocumentChange,
+
+    pub const DocumentChange = struct {
+        uri: []const u8,
+        edits: []const TextEdit,
+    };
+
+    pub fn jsonStringify(self: WorkspaceEdit, allocator: std.mem.Allocator) ![]const u8 {
+        var buffer: std.ArrayList(u8) = .empty;
+        errdefer buffer.deinit(allocator);
+
+        try buffer.appendSlice(allocator, "{\"changes\":{");
+
+        for (self.changes, 0..) |change, i| {
+            if (i > 0) try buffer.append(allocator, ',');
+            try buffer.append(allocator, '"');
+            try writeJsonEscapedToList(&buffer, allocator, change.uri);
+            try buffer.appendSlice(allocator, "\":[");
+
+            for (change.edits, 0..) |edit, j| {
+                if (j > 0) try buffer.append(allocator, ',');
+                try edit.jsonStringify(buffer.writer(allocator));
+            }
+            try buffer.append(allocator, ']');
+        }
+
+        try buffer.appendSlice(allocator, "}}");
+        return buffer.toOwnedSlice(allocator);
+    }
+};
+
+/// LSP Code Action
+pub const CodeAction = struct {
+    title: []const u8,
+    kind: ?CodeActionKind = null,
+    diagnostics: []const Diagnostic = &[_]Diagnostic{},
+    edit: ?WorkspaceEdit = null,
+    is_preferred: bool = false,
+
+    pub fn jsonStringify(self: CodeAction, allocator: std.mem.Allocator) ![]const u8 {
+        var buffer: std.ArrayList(u8) = .empty;
+        errdefer buffer.deinit(allocator);
+
+        try buffer.appendSlice(allocator, "{\"title\":\"");
+        try writeJsonEscapedToList(&buffer, allocator, self.title);
+        try buffer.append(allocator, '"');
+
+        if (self.kind) |kind| {
+            try buffer.appendSlice(allocator, ",\"kind\":\"");
+            try buffer.appendSlice(allocator, kind.toString());
+            try buffer.append(allocator, '"');
+        }
+
+        if (self.is_preferred) {
+            try buffer.appendSlice(allocator, ",\"isPreferred\":true");
+        }
+
+        if (self.diagnostics.len > 0) {
+            try buffer.appendSlice(allocator, ",\"diagnostics\":[");
+            for (self.diagnostics, 0..) |diag, i| {
+                if (i > 0) try buffer.append(allocator, ',');
+                try diag.jsonStringify(buffer.writer(allocator));
+            }
+            try buffer.append(allocator, ']');
+        }
+
+        if (self.edit) |edit| {
+            try buffer.appendSlice(allocator, ",\"edit\":");
+            const edit_json = try edit.jsonStringify(allocator);
+            defer allocator.free(edit_json);
+            try buffer.appendSlice(allocator, edit_json);
+        }
+
+        try buffer.append(allocator, '}');
+        return buffer.toOwnedSlice(allocator);
+    }
+};
+
+/// LSP Code Action Options (for server capabilities)
+pub const CodeActionOptions = struct {
+    code_action_kinds: []const CodeActionKind = &[_]CodeActionKind{.quickfix},
+
+    pub fn jsonStringify(self: CodeActionOptions, writer: anytype) !void {
+        try writer.writeAll("{\"codeActionKinds\":[");
+        for (self.code_action_kinds, 0..) |kind, i| {
+            if (i > 0) try writer.writeByte(',');
+            try writer.writeByte('"');
+            try writer.writeAll(kind.toString());
+            try writer.writeByte('"');
+        }
+        try writer.writeAll("]}");
+    }
+};
 
 // Tests
 test "position json" {

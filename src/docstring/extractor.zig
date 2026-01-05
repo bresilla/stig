@@ -210,15 +210,151 @@ pub const DocstringExtractor = struct {
         return null;
     }
 
+    // Placeholder characters for escaped sequences
+    // Using Unicode private use area characters that won't appear in normal text
+    const ESCAPED_AT: u8 = 0x01; // Placeholder for @@
+    const ESCAPED_BACKSLASH: u8 = 0x02; // Placeholder for \\
+
+    /// Processes escaped characters in docstring text
+    /// Replaces @@ with placeholder and \\ with placeholder
+    /// These are restored after parsing by restoreEscapedChars
+    fn processEscapedChars(self: *Self, raw: []const u8) ![]const u8 {
+        var result: std.ArrayList(u8) = .empty;
+        var i: usize = 0;
+
+        while (i < raw.len) {
+            if (i + 1 < raw.len) {
+                // Check for @@ (escaped @)
+                if (raw[i] == '@' and raw[i + 1] == '@') {
+                    try result.append(self.allocator, ESCAPED_AT);
+                    i += 2;
+                    continue;
+                }
+                // Check for \\ (escaped \)
+                if (raw[i] == '\\' and raw[i + 1] == '\\') {
+                    try result.append(self.allocator, ESCAPED_BACKSLASH);
+                    i += 2;
+                    continue;
+                }
+            }
+            try result.append(self.allocator, raw[i]);
+            i += 1;
+        }
+
+        return try result.toOwnedSlice(self.allocator);
+    }
+
+    /// Restores escaped characters from placeholders to their literal values
+    /// Called after parsing to convert placeholders back to @ and \
+    fn restoreEscapedChars(self: *Self, text: []const u8) ![]const u8 {
+        var result: std.ArrayList(u8) = .empty;
+
+        for (text) |c| {
+            if (c == ESCAPED_AT) {
+                try result.append(self.allocator, '@');
+            } else if (c == ESCAPED_BACKSLASH) {
+                try result.append(self.allocator, '\\');
+            } else {
+                try result.append(self.allocator, c);
+            }
+        }
+
+        return try result.toOwnedSlice(self.allocator);
+    }
+
+    /// Checks if text contains any escaped character placeholders
+    fn hasEscapedPlaceholders(text: []const u8) bool {
+        for (text) |c| {
+            if (c == ESCAPED_AT or c == ESCAPED_BACKSLASH) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Joins continuation lines in docstring text
+    /// A continuation line is one that:
+    /// 1. Doesn't start with @ or \ (not a new tag)
+    /// 2. Follows a line that started with a tag
+    /// 3. Is not empty
+    /// Continuation lines are joined to the previous tag line with a space
+    fn joinContinuationLines(self: *Self, raw: []const u8) ![]const u8 {
+        var result: std.ArrayList(u8) = .empty;
+        var in_tag = false;
+        var in_block = false; // Track if we're in @code/@mermaid block
+
+        var lines = std.mem.splitScalar(u8, raw, '\n');
+        var first_line = true;
+
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r*");
+
+            // Track block state
+            if (startsWithCommand(trimmed, "code") or startsWithCommand(trimmed, "mermaid")) {
+                in_block = true;
+            } else if (startsWithCommand(trimmed, "endcode") or startsWithCommand(trimmed, "endmermaid")) {
+                in_block = false;
+            }
+
+            // Don't join lines inside code/mermaid blocks
+            if (in_block) {
+                if (!first_line) {
+                    try result.append(self.allocator, '\n');
+                }
+                try result.appendSlice(self.allocator, line);
+                first_line = false;
+                continue;
+            }
+
+            // Check if this line starts with a tag
+            const is_tag_line = trimmed.len > 0 and (trimmed[0] == '@' or trimmed[0] == '\\');
+
+            if (is_tag_line) {
+                // New tag - start fresh
+                if (!first_line) {
+                    try result.append(self.allocator, '\n');
+                }
+                try result.appendSlice(self.allocator, line);
+                in_tag = true;
+            } else if (in_tag and trimmed.len > 0) {
+                // Continuation line - join with space instead of newline
+                try result.append(self.allocator, ' ');
+                try result.appendSlice(self.allocator, trimmed);
+            } else {
+                // Empty line or non-continuation - preserve as-is
+                if (!first_line) {
+                    try result.append(self.allocator, '\n');
+                }
+                try result.appendSlice(self.allocator, line);
+                // Empty line ends continuation
+                if (trimmed.len == 0) {
+                    in_tag = false;
+                }
+            }
+
+            first_line = false;
+        }
+
+        return try result.toOwnedSlice(self.allocator);
+    }
+
     /// Parses Doxygen-style docstrings
     fn parseDoxygen(self: *Self, raw: []const u8) !types.DocString {
         var doc = types.DocString{ .raw = raw };
 
-        // Extract brief
-        doc.brief = self.extractBrief(raw);
+        // Pre-process: First handle escaped characters (@@ and \\)
+        const escaped_processed = try self.processEscapedChars(raw);
 
-        // Extract details (text between brief and first @ tag, excluding brief line)
-        doc.details = self.extractDetails(raw);
+        // Pre-process raw text to join continuation lines
+        // A continuation line is one that doesn't start with @ or \ and follows a tag line
+        // Note: We don't free processed_raw because parsed content references slices from it
+        const processed_raw = try self.joinContinuationLines(escaped_processed);
+        // Store the processed raw in the doc so it stays alive
+        doc.raw = processed_raw;
+
+        // Extract brief and details from processed text (after escape handling)
+        doc.brief = self.extractBrief(processed_raw);
+        doc.details = self.extractDetails(processed_raw);
 
         // Parse all Doxygen tags
         var params: std.ArrayList(types.ParamDoc) = .empty;
@@ -255,7 +391,7 @@ pub const DocstringExtractor = struct {
         var code_language: ?[]const u8 = null;
         var code_lineno: bool = false;
 
-        var lines = std.mem.splitScalar(u8, raw, '\n');
+        var lines = std.mem.splitScalar(u8, processed_raw, '\n');
         while (lines.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \t\r*");
 
@@ -360,11 +496,15 @@ pub const DocstringExtractor = struct {
                 const rest = trimmed[7..];
                 var parts = std.mem.splitScalar(u8, rest, ' ');
                 if (parts.next()) |param_name| {
-                    const desc_start = 7 + param_name.len + 1;
-                    if (desc_start < trimmed.len) {
+                    if (param_name.len > 0) {
+                        const desc_start = 7 + param_name.len + 1;
+                        const description = if (desc_start < trimmed.len)
+                            trimmed[desc_start..]
+                        else
+                            ""; // Empty description
                         try params.append(self.allocator, types.ParamDoc{
                             .name = param_name,
-                            .description = trimmed[desc_start..],
+                            .description = description,
                         });
                     }
                 }
@@ -389,10 +529,15 @@ pub const DocstringExtractor = struct {
                     }
                 }
             }
-            // @return / @returns / \return / \returns
+            // @return / @returns / \return / \returns (with or without description)
             else if (startsWithCommand(trimmed, "return ") or startsWithCommand(trimmed, "returns ")) {
                 const prefix_len: usize = if (startsWithCommand(trimmed, "returns ")) 9 else 8;
                 doc.returns = trimmed[prefix_len..];
+            } else if (std.mem.eql(u8, trimmed, "@return") or std.mem.eql(u8, trimmed, "\\return") or
+                std.mem.eql(u8, trimmed, "@returns") or std.mem.eql(u8, trimmed, "\\returns"))
+            {
+                // @return with no description
+                doc.returns = "";
             }
             // @retval or \retval <value> <description>
             else if (startsWithCommand(trimmed, "retval ")) {
@@ -760,29 +905,132 @@ pub const DocstringExtractor = struct {
             doc.code_blocks = try code_blocks.toOwnedSlice(self.allocator);
         }
 
-        // Extract inline @ref tags from brief and details
-        if (doc.brief) |brief| {
-            if (containsRef(brief)) {
-                const inline_refs = try self.extractInlineRefs(brief);
-                for (inline_refs) |ref| {
-                    try refs.append(self.allocator, ref);
+        // Extract inline @ref tags from all text fields
+        // Helper to extract refs from a single text field
+        const extractRefsFromText = struct {
+            fn call(extractor: *Self, text: []const u8, ref_list: *std.ArrayList(types.RefLink)) !void {
+                if (containsRef(text)) {
+                    const inline_refs = try extractor.extractInlineRefs(text);
+                    for (inline_refs) |ref| {
+                        try ref_list.append(extractor.allocator, ref);
+                    }
+                    extractor.allocator.free(inline_refs);
                 }
-                self.allocator.free(inline_refs);
             }
+        }.call;
+
+        // Extract from brief and details
+        if (doc.brief) |brief| {
+            try extractRefsFromText(self, brief, &refs);
+        }
+        if (doc.details) |details| {
+            try extractRefsFromText(self, details, &refs);
         }
 
-        if (doc.details) |details| {
-            if (containsRef(details)) {
-                const inline_refs = try self.extractInlineRefs(details);
-                for (inline_refs) |ref| {
-                    try refs.append(self.allocator, ref);
-                }
-                self.allocator.free(inline_refs);
-            }
+        // Extract from notes
+        for (doc.notes) |note| {
+            try extractRefsFromText(self, note, &refs);
+        }
+
+        // Extract from warnings
+        for (doc.warnings) |warning| {
+            try extractRefsFromText(self, warning, &refs);
+        }
+
+        // Extract from param descriptions
+        for (doc.params) |param| {
+            try extractRefsFromText(self, param.description, &refs);
+        }
+
+        // Extract from return description
+        if (doc.returns) |returns| {
+            try extractRefsFromText(self, returns, &refs);
+        }
+
+        // Extract from preconditions
+        for (doc.preconditions) |pre| {
+            try extractRefsFromText(self, pre, &refs);
+        }
+
+        // Extract from postconditions
+        for (doc.postconditions) |post| {
+            try extractRefsFromText(self, post, &refs);
+        }
+
+        // Extract from remarks
+        for (doc.remarks) |remark| {
+            try extractRefsFromText(self, remark, &refs);
+        }
+
+        // Extract from see_also
+        for (doc.see_also) |see| {
+            try extractRefsFromText(self, see, &refs);
+        }
+
+        // Extract from attention
+        for (doc.attention) |att| {
+            try extractRefsFromText(self, att, &refs);
+        }
+
+        // Extract from important
+        for (doc.important) |imp| {
+            try extractRefsFromText(self, imp, &refs);
+        }
+
+        // Extract from deprecated
+        if (doc.deprecated) |deprecated| {
+            try extractRefsFromText(self, deprecated, &refs);
+        }
+
+        // Extract from tparam descriptions
+        for (doc.tparams) |tparam| {
+            try extractRefsFromText(self, tparam.description, &refs);
+        }
+
+        // Extract from exception descriptions
+        for (doc.exceptions) |exc| {
+            try extractRefsFromText(self, exc.description, &refs);
         }
 
         if (refs.items.len > 0) {
             doc.refs = try refs.toOwnedSlice(self.allocator);
+        }
+
+        // Restore escaped characters in text fields
+        // Brief and details may contain placeholders that need to be converted back
+        if (doc.brief) |brief| {
+            if (hasEscapedPlaceholders(brief)) {
+                doc.brief = try self.restoreEscapedChars(brief);
+            }
+        }
+        if (doc.details) |details| {
+            if (hasEscapedPlaceholders(details)) {
+                doc.details = try self.restoreEscapedChars(details);
+            }
+        }
+
+        // Restore escaped characters in param descriptions
+        // We need to create new ParamDoc entries with restored descriptions
+        if (doc.params.len > 0) {
+            var restored_params: std.ArrayList(types.ParamDoc) = .empty;
+            for (doc.params) |param| {
+                const restored_desc = if (hasEscapedPlaceholders(param.description))
+                    try self.restoreEscapedChars(param.description)
+                else
+                    param.description;
+                try restored_params.append(self.allocator, types.ParamDoc{
+                    .name = param.name,
+                    .description = restored_desc,
+                });
+            }
+            doc.params = try restored_params.toOwnedSlice(self.allocator);
+        }
+
+        // Restore escaped characters in return description
+        if (doc.returns) |returns| {
+            if (hasEscapedPlaceholders(returns)) {
+                doc.returns = try self.restoreEscapedChars(returns);
+            }
         }
 
         return doc;
@@ -840,6 +1088,76 @@ pub const DocstringExtractor = struct {
             return true;
         }
         return false;
+    }
+
+    /// Checks if a docstring contains @defgroup or @addtogroup command
+    pub fn containsGroupCommand(_: *Self, text: []const u8) bool {
+        // Look for @defgroup or @addtogroup (or \ prefix)
+        if (std.mem.indexOf(u8, text, "@defgroup") != null or
+            std.mem.indexOf(u8, text, "\\defgroup") != null or
+            std.mem.indexOf(u8, text, "@addtogroup") != null or
+            std.mem.indexOf(u8, text, "\\addtogroup") != null)
+        {
+            return true;
+        }
+        return false;
+    }
+
+    /// Parses a @defgroup or @addtogroup docstring into a Group struct
+    /// Format: @defgroup group_id Group Title
+    ///         Optional brief description on following lines
+    /// Or:     @addtogroup group_id
+    pub fn parseGroup(self: *Self, text: []const u8) ?types.Group {
+        var lines = std.mem.splitScalar(u8, text, '\n');
+
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r*");
+
+            // Look for @defgroup group_id Title
+            if (startsWithCommand(trimmed, "defgroup ")) {
+                const rest = std.mem.trim(u8, trimmed[10..], " \t");
+                // Parse: group_id Title
+                var parts = std.mem.splitScalar(u8, rest, ' ');
+                if (parts.next()) |group_id| {
+                    // Rest is the title
+                    const title_start = 10 + group_id.len + 1;
+                    const title = if (title_start < trimmed.len)
+                        std.mem.trim(u8, trimmed[title_start..], " \t")
+                    else
+                        group_id; // Use ID as title if no title provided
+
+                    // Look for brief description on following lines
+                    var brief: ?[]const u8 = null;
+                    if (lines.next()) |next_line| {
+                        const next_trimmed = std.mem.trim(u8, next_line, " \t\r*");
+                        // If next line doesn't start with @ or \, it's the brief
+                        if (next_trimmed.len > 0 and next_trimmed[0] != '@' and next_trimmed[0] != '\\') {
+                            brief = next_trimmed;
+                        }
+                    }
+
+                    return types.Group{
+                        .id = group_id,
+                        .name = title,
+                        .brief = brief,
+                    };
+                }
+            }
+            // Look for @addtogroup group_id (just references existing group)
+            else if (startsWithCommand(trimmed, "addtogroup ")) {
+                const group_id = std.mem.trim(u8, trimmed[12..], " \t");
+                if (group_id.len > 0) {
+                    return types.Group{
+                        .id = group_id,
+                        .name = group_id, // Use ID as name for addtogroup
+                        .brief = null,
+                    };
+                }
+            }
+        }
+
+        _ = self;
+        return null;
     }
 
     /// Checks if text contains @ref or \ref tags for cross-references
@@ -1745,4 +2063,254 @@ test "parse test with backslash prefix" {
     try std.testing.expect(doc.tests[0].file == null);
     try std.testing.expectEqualStrings("test_edge_case", doc.tests[1].name);
     try std.testing.expectEqualStrings("test/edge.cpp", doc.tests[1].file.?);
+}
+
+test "multi-line param continuation" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Brief description.
+        \\* @param buffer The buffer to write to. This buffer must be
+        \\*               at least 256 bytes in size.
+        \\* @param size The size
+    );
+    defer std.testing.allocator.free(doc.params);
+    defer std.testing.allocator.free(doc.raw);
+
+    try std.testing.expectEqual(@as(usize, 2), doc.params.len);
+    try std.testing.expectEqualStrings("buffer", doc.params[0].name);
+    // The continuation should be joined with a space
+    try std.testing.expect(std.mem.indexOf(u8, doc.params[0].description, "at least 256 bytes") != null);
+}
+
+test "multi-line return continuation" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Brief description.
+        \\* @return The number of bytes written, or -1 on error. If the
+        \\*         buffer is too small, returns 0.
+    );
+    defer std.testing.allocator.free(doc.raw);
+
+    try std.testing.expect(doc.returns != null);
+    // The continuation should be joined
+    try std.testing.expect(std.mem.indexOf(u8, doc.returns.?, "buffer is too small") != null);
+}
+
+test "continuation ends at new tag" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Brief description.
+        \\* @param x First param with
+        \\*          continuation.
+        \\* @param y Second param
+    );
+    defer std.testing.allocator.free(doc.params);
+    defer std.testing.allocator.free(doc.raw);
+
+    try std.testing.expectEqual(@as(usize, 2), doc.params.len);
+    try std.testing.expectEqualStrings("x", doc.params[0].name);
+    try std.testing.expect(std.mem.indexOf(u8, doc.params[0].description, "continuation") != null);
+    try std.testing.expectEqualStrings("y", doc.params[1].name);
+}
+
+test "code block not joined" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Brief description.
+        \\* @code
+        \\* int x = 5;
+        \\* int y = 10;
+        \\* @endcode
+    );
+    defer std.testing.allocator.free(doc.code_blocks);
+    defer std.testing.allocator.free(doc.raw);
+
+    try std.testing.expectEqual(@as(usize, 1), doc.code_blocks.len);
+    // Code block lines should be preserved with newlines, not joined
+    try std.testing.expect(std.mem.indexOf(u8, doc.code_blocks[0].content, "\n") != null);
+}
+
+// =============================================================================
+// Escaped Character Tests
+// =============================================================================
+
+test "escaped @@ produces literal @" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Contact: user@@domain.com
+    );
+    defer std.testing.allocator.free(doc.raw);
+
+    // Brief should contain literal @ not @@
+    try std.testing.expect(doc.brief != null);
+    try std.testing.expect(std.mem.indexOf(u8, doc.brief.?, "user@domain.com") != null);
+    // Should NOT contain @@
+    try std.testing.expect(std.mem.indexOf(u8, doc.brief.?, "@@") == null);
+}
+
+test "escaped \\\\ produces literal \\" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Path: C:\\Users\\name
+    );
+    defer std.testing.allocator.free(doc.raw);
+
+    // Brief should contain single backslashes
+    try std.testing.expect(doc.brief != null);
+    try std.testing.expect(std.mem.indexOf(u8, doc.brief.?, "C:\\Users\\name") != null);
+}
+
+test "escaped @@ in @brief" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* @brief Email is user@@example.com
+    );
+    defer std.testing.allocator.free(doc.raw);
+
+    try std.testing.expect(doc.brief != null);
+    try std.testing.expect(std.mem.indexOf(u8, doc.brief.?, "user@example.com") != null);
+}
+
+test "mixed escaped and real tags" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* @brief Send email to user@@domain.com
+        \\* @param email The email address
+    );
+    defer std.testing.allocator.free(doc.raw);
+    defer std.testing.allocator.free(doc.params);
+
+    // Brief should have literal @
+    try std.testing.expect(doc.brief != null);
+    try std.testing.expect(std.mem.indexOf(u8, doc.brief.?, "user@domain.com") != null);
+    // Param should be parsed correctly
+    try std.testing.expectEqual(@as(usize, 1), doc.params.len);
+    try std.testing.expectEqualStrings("email", doc.params[0].name);
+}
+
+// =============================================================================
+// @ref Extraction Tests
+// =============================================================================
+
+test "extract @ref from warning" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Brief description.
+        \\* @warning Using @ref DangerousAPI may crash!
+    );
+    defer std.testing.allocator.free(doc.warnings);
+    defer std.testing.allocator.free(doc.refs);
+    defer std.testing.allocator.free(doc.raw);
+
+    try std.testing.expectEqual(@as(usize, 1), doc.warnings.len);
+    try std.testing.expectEqual(@as(usize, 1), doc.refs.len);
+    try std.testing.expectEqualStrings("DangerousAPI", doc.refs[0].target);
+}
+
+test "extract @ref from param description" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Brief description.
+        \\* @param callback See @ref CallbackType for details
+    );
+    defer std.testing.allocator.free(doc.params);
+    defer std.testing.allocator.free(doc.refs);
+    defer std.testing.allocator.free(doc.raw);
+
+    try std.testing.expectEqual(@as(usize, 1), doc.params.len);
+    try std.testing.expectEqual(@as(usize, 1), doc.refs.len);
+    try std.testing.expectEqualStrings("CallbackType", doc.refs[0].target);
+}
+
+test "extract @ref from note" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Brief description.
+        \\* @note See @ref OtherClass for more info
+    );
+    defer std.testing.allocator.free(doc.notes);
+    defer std.testing.allocator.free(doc.refs);
+    defer std.testing.allocator.free(doc.raw);
+
+    try std.testing.expectEqual(@as(usize, 1), doc.notes.len);
+    try std.testing.expectEqual(@as(usize, 1), doc.refs.len);
+    try std.testing.expectEqualStrings("OtherClass", doc.refs[0].target);
+}
+
+test "extract @ref from return description" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* Brief description.
+        \\* @return A @ref Result object
+    );
+    defer std.testing.allocator.free(doc.refs);
+    defer std.testing.allocator.free(doc.raw);
+
+    try std.testing.expect(doc.returns != null);
+    try std.testing.expectEqual(@as(usize, 1), doc.refs.len);
+    try std.testing.expectEqualStrings("Result", doc.refs[0].target);
+}
+
+test "extract multiple @ref from different tags" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const doc = try extractor.parse(
+        \\* See @ref MainClass for overview.
+        \\* @param x Uses @ref TypeA
+        \\* @warning May throw @ref Exception
+        \\* @return A @ref Result
+    );
+    defer std.testing.allocator.free(doc.params);
+    defer std.testing.allocator.free(doc.warnings);
+    defer std.testing.allocator.free(doc.refs);
+    defer std.testing.allocator.free(doc.raw);
+
+    // Should have refs from brief, param, warning, and return
+    try std.testing.expectEqual(@as(usize, 4), doc.refs.len);
+}
+
+// =============================================================================
+// @defgroup and @addtogroup Tests
+// =============================================================================
+
+test "containsGroupCommand" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    try std.testing.expect(extractor.containsGroupCommand("@defgroup math_utils Math Utilities"));
+    try std.testing.expect(extractor.containsGroupCommand("\\defgroup math_utils Math Utilities"));
+    try std.testing.expect(extractor.containsGroupCommand("@addtogroup math_utils"));
+    try std.testing.expect(extractor.containsGroupCommand("\\addtogroup math_utils"));
+    try std.testing.expect(!extractor.containsGroupCommand("@param x A parameter"));
+    try std.testing.expect(!extractor.containsGroupCommand("Just some text"));
+}
+
+test "parseGroup with @defgroup" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const group = extractor.parseGroup("@defgroup math_utils Math Utilities");
+
+    try std.testing.expect(group != null);
+    try std.testing.expectEqualStrings("math_utils", group.?.id);
+    try std.testing.expectEqualStrings("Math Utilities", group.?.name);
+}
+
+test "parseGroup with @defgroup and brief" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const group = extractor.parseGroup(
+        \\@defgroup io_utils I/O Utilities
+        \\Functions for input/output operations
+    );
+
+    try std.testing.expect(group != null);
+    try std.testing.expectEqualStrings("io_utils", group.?.id);
+    try std.testing.expectEqualStrings("I/O Utilities", group.?.name);
+    try std.testing.expect(group.?.brief != null);
+    try std.testing.expect(std.mem.indexOf(u8, group.?.brief.?, "input/output") != null);
+}
+
+test "parseGroup with @addtogroup" {
+    var extractor = DocstringExtractor.init(std.testing.allocator);
+    const group = extractor.parseGroup("@addtogroup math_utils");
+
+    try std.testing.expect(group != null);
+    try std.testing.expectEqualStrings("math_utils", group.?.id);
+    // For addtogroup, name defaults to id
+    try std.testing.expectEqualStrings("math_utils", group.?.name);
 }

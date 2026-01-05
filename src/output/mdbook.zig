@@ -227,6 +227,7 @@ pub const MdbookGenerator = struct {
         // Collect all functions and types across modules
         var has_functions = false;
         var has_structs = false;
+        var has_unions = false;
         var has_enums = false;
         var has_typedefs = false;
         var has_macros = false;
@@ -236,6 +237,7 @@ pub const MdbookGenerator = struct {
         for (modules) |module| {
             if (module.functions.len > 0) has_functions = true;
             if (module.structs.len > 0) has_structs = true;
+            if (module.unions.len > 0) has_unions = true;
             if (module.enums.len > 0) has_enums = true;
             if (module.typedefs.len > 0) has_typedefs = true;
             if (module.macros.len > 0) has_macros = true;
@@ -259,11 +261,11 @@ pub const MdbookGenerator = struct {
             try content.appendSlice(self.allocator, "\n");
         }
 
-        // Types section (includes structs, enums, typedefs, classes, and concepts)
-        if (has_structs or has_enums or has_typedefs or has_classes or has_concepts) {
+        // Types section (includes structs, unions, enums, typedefs, classes, and concepts)
+        if (has_structs or has_unions or has_enums or has_typedefs or has_classes or has_concepts) {
             try content.appendSlice(self.allocator, "# Types\n\n");
             for (modules) |module| {
-                if (module.structs.len > 0 or module.enums.len > 0 or module.typedefs.len > 0 or module.classes.len > 0 or module.concepts.len > 0) {
+                if (module.structs.len > 0 or module.unions.len > 0 or module.enums.len > 0 or module.typedefs.len > 0 or module.classes.len > 0 or module.concepts.len > 0) {
                     const basename = self.getBasename(module.name);
                     try content.appendSlice(self.allocator, "- [");
                     try content.appendSlice(self.allocator, basename);
@@ -414,7 +416,7 @@ pub const MdbookGenerator = struct {
 
                     for (group_modules.items) |mod| {
                         if (mod.functions.len > 0) has_functions = true;
-                        if (mod.structs.len > 0 or mod.enums.len > 0 or mod.typedefs.len > 0 or mod.classes.len > 0 or mod.concepts.len > 0) has_types = true;
+                        if (mod.structs.len > 0 or mod.unions.len > 0 or mod.enums.len > 0 or mod.typedefs.len > 0 or mod.classes.len > 0 or mod.concepts.len > 0) has_types = true;
                         if (mod.macros.len > 0) has_macros = true;
                     }
 
@@ -452,7 +454,7 @@ pub const MdbookGenerator = struct {
                     try content.appendSlice(self.allocator, self.sanitizeFilename(basename));
                     try content.appendSlice(self.allocator, ".md)\n");
                 }
-                if (mod.structs.len > 0 or mod.enums.len > 0 or mod.typedefs.len > 0 or mod.classes.len > 0 or mod.concepts.len > 0) {
+                if (mod.structs.len > 0 or mod.unions.len > 0 or mod.enums.len > 0 or mod.typedefs.len > 0 or mod.classes.len > 0 or mod.concepts.len > 0) {
                     const basename = self.getBasename(mod.name);
                     try content.appendSlice(self.allocator, "- [");
                     try content.appendSlice(self.allocator, basename);
@@ -506,12 +508,14 @@ pub const MdbookGenerator = struct {
         // Statistics
         var total_functions: usize = 0;
         var total_structs: usize = 0;
+        var total_unions: usize = 0;
         var total_enums: usize = 0;
         var total_typedefs: usize = 0;
 
         for (modules) |module| {
             total_functions += module.functions.len;
             total_structs += module.structs.len;
+            total_unions += module.unions.len;
             total_enums += module.enums.len;
             total_typedefs += module.typedefs.len;
         }
@@ -527,6 +531,10 @@ pub const MdbookGenerator = struct {
         }
         if (total_structs > 0) {
             const num = try std.fmt.bufPrint(&buf, "- **{d}** structures\n", .{total_structs});
+            try content.appendSlice(self.allocator, num);
+        }
+        if (total_unions > 0) {
+            const num = try std.fmt.bufPrint(&buf, "- **{d}** unions\n", .{total_unions});
             try content.appendSlice(self.allocator, num);
         }
         if (total_enums > 0) {
@@ -590,12 +598,13 @@ pub const MdbookGenerator = struct {
                 try file.writeAll(markdown);
             }
 
-            // Generate types page if there are types (structs, enums, typedefs, classes, or concepts)
-            if (module.structs.len > 0 or module.enums.len > 0 or module.typedefs.len > 0 or module.classes.len > 0 or module.concepts.len > 0) {
+            // Generate types page if there are types (structs, unions, enums, typedefs, classes, or concepts)
+            if (module.structs.len > 0 or module.unions.len > 0 or module.enums.len > 0 or module.typedefs.len > 0 or module.classes.len > 0 or module.concepts.len > 0) {
                 const types_module = types.Module{
                     .name = module.name,
                     .functions = &[_]types.Function{},
                     .structs = module.structs,
+                    .unions = module.unions,
                     .enums = module.enums,
                     .typedefs = module.typedefs,
                     .classes = module.classes,
@@ -653,6 +662,9 @@ pub const MdbookGenerator = struct {
         var all_structs: std.ArrayList(types.Struct) = .empty;
         defer all_structs.deinit(self.allocator);
 
+        var all_unions: std.ArrayList(types.Union) = .empty;
+        defer all_unions.deinit(self.allocator);
+
         var all_enums: std.ArrayList(types.Enum) = .empty;
         defer all_enums.deinit(self.allocator);
 
@@ -668,6 +680,9 @@ pub const MdbookGenerator = struct {
             }
             for (module.structs) |s| {
                 try all_structs.append(self.allocator, s);
+            }
+            for (module.unions) |u| {
+                try all_unions.append(self.allocator, u);
             }
             for (module.enums) |e| {
                 try all_enums.append(self.allocator, e);
@@ -703,11 +718,12 @@ pub const MdbookGenerator = struct {
         }
 
         // Generate types page
-        if (all_structs.items.len > 0 or all_enums.items.len > 0 or all_typedefs.items.len > 0 or all_classes.items.len > 0) {
+        if (all_structs.items.len > 0 or all_unions.items.len > 0 or all_enums.items.len > 0 or all_typedefs.items.len > 0 or all_classes.items.len > 0) {
             const types_module = types.Module{
                 .name = "Types",
                 .functions = &[_]types.Function{},
                 .structs = all_structs.items,
+                .unions = all_unions.items,
                 .enums = all_enums.items,
                 .typedefs = all_typedefs.items,
                 .classes = all_classes.items,
@@ -815,6 +831,8 @@ pub const MdbookGenerator = struct {
         defer all_functions.deinit(self.allocator);
         var all_structs: std.ArrayList(types.Struct) = .empty;
         defer all_structs.deinit(self.allocator);
+        var all_unions: std.ArrayList(types.Union) = .empty;
+        defer all_unions.deinit(self.allocator);
         var all_enums: std.ArrayList(types.Enum) = .empty;
         defer all_enums.deinit(self.allocator);
         var all_typedefs: std.ArrayList(types.Typedef) = .empty;
@@ -829,6 +847,7 @@ pub const MdbookGenerator = struct {
         for (modules) |module| {
             for (module.functions) |f| try all_functions.append(self.allocator, f);
             for (module.structs) |s| try all_structs.append(self.allocator, s);
+            for (module.unions) |u| try all_unions.append(self.allocator, u);
             for (module.enums) |e| try all_enums.append(self.allocator, e);
             for (module.typedefs) |t| try all_typedefs.append(self.allocator, t);
             for (module.classes) |c| try all_classes_in_mod.append(self.allocator, c);
@@ -855,11 +874,12 @@ pub const MdbookGenerator = struct {
         }
 
         // Generate types.md
-        if (all_structs.items.len > 0 or all_enums.items.len > 0 or all_typedefs.items.len > 0 or all_classes_in_mod.items.len > 0 or all_concepts.items.len > 0) {
+        if (all_structs.items.len > 0 or all_unions.items.len > 0 or all_enums.items.len > 0 or all_typedefs.items.len > 0 or all_classes_in_mod.items.len > 0 or all_concepts.items.len > 0) {
             const types_mod = types.Module{
                 .name = mod_config.title,
                 .functions = &[_]types.Function{},
                 .structs = all_structs.items,
+                .unions = all_unions.items,
                 .enums = all_enums.items,
                 .typedefs = all_typedefs.items,
                 .classes = all_classes_in_mod.items,

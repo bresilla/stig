@@ -36,6 +36,10 @@ pub fn main() !void {
         switch (err) {
             error.MissingOutputFile => std.debug.print("Error: -o/--output requires a file path\n", .{}),
             error.MissingConfigFile => std.debug.print("Error: -c/--config requires a file path\n", .{}),
+            error.MissingInputFiles => {
+                // Error message already printed in parseCheckArgs
+                return;
+            },
             error.UnknownOption => {},
             else => std.debug.print("Error parsing arguments: {}\n", .{err}),
         }
@@ -56,6 +60,10 @@ pub fn main() !void {
         },
         .help_check => {
             cli.ArgParser.printCheckHelp();
+            return;
+        },
+        .help_lsp => {
+            cli.ArgParser.printLspHelp();
             return;
         },
         .help_init => {
@@ -86,7 +94,7 @@ pub fn main() !void {
             try runCheckCommand(allocator, &args);
             return;
         },
-        .check_lsp => {
+        .lsp => {
             // Run as LSP server for editor integration
             lsp_server.runServer(allocator) catch |err| {
                 std.debug.print("LSP server error: {}\n", .{err});
@@ -277,6 +285,7 @@ fn runCheckCommand(allocator: std.mem.Allocator, args: *cli.Args) !void {
         .check_cross_references = config.lint.check_cross_references,
         .require_brief_period = config.lint.require_brief_period,
         .exclude_patterns = config.lint.exclude_patterns,
+        .rules = config.lint.rules,
     };
 
     var linter = lint.Linter.init(allocator, lint_config);
@@ -1078,4 +1087,11 @@ test "parser initialization" {
         const root = t.rootNode();
         try std.testing.expectEqualStrings("translation_unit", root.kind());
     }
+}
+
+// Reference all parser tests
+comptime {
+    _ = @import("parser/c.zig");
+    _ = @import("parser/cpp.zig");
+    _ = @import("docstring/extractor.zig");
 }

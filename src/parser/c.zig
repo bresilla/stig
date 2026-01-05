@@ -59,26 +59,33 @@ pub const CParser = struct {
 
         var functions: std.ArrayList(types.Function) = .empty;
         var structs: std.ArrayList(types.Struct) = .empty;
+        var unions: std.ArrayList(types.Union) = .empty;
         var enums: std.ArrayList(types.Enum) = .empty;
         var typedefs: std.ArrayList(types.Typedef) = .empty;
         var macros: std.ArrayList(types.Macro) = .empty;
         var pages: std.ArrayList(types.Page) = .empty;
+        var groups: std.ArrayList(types.Group) = .empty;
         var includes: std.ArrayList(types.IncludeInfo) = .empty;
 
         const root = tree.?.rootNode();
-        try self.walkNode(root, &functions, &structs, &enums, &typedefs, &macros, &includes, filename);
+        try self.walkNode(root, &functions, &structs, &unions, &enums, &typedefs, &macros, &includes, filename);
 
         // Extract custom pages (@page, @mainpage) from standalone doc comments
         try self.extractPages(root, &pages);
+
+        // Extract group definitions (@defgroup, @addtogroup) from standalone doc comments
+        try self.extractGroups(root, &groups);
 
         return types.Module{
             .name = filename,
             .functions = try functions.toOwnedSlice(self.allocator),
             .structs = try structs.toOwnedSlice(self.allocator),
+            .unions = try unions.toOwnedSlice(self.allocator),
             .enums = try enums.toOwnedSlice(self.allocator),
             .typedefs = try typedefs.toOwnedSlice(self.allocator),
             .macros = try macros.toOwnedSlice(self.allocator),
             .pages = try pages.toOwnedSlice(self.allocator),
+            .groups = try groups.toOwnedSlice(self.allocator),
             .includes = try includes.toOwnedSlice(self.allocator),
         };
     }
@@ -89,6 +96,7 @@ pub const CParser = struct {
         node: ts.Node,
         functions: *std.ArrayList(types.Function),
         structs: *std.ArrayList(types.Struct),
+        unions: *std.ArrayList(types.Union),
         enums: *std.ArrayList(types.Enum),
         typedefs: *std.ArrayList(types.Typedef),
         macros: *std.ArrayList(types.Macro),
@@ -111,6 +119,10 @@ pub const CParser = struct {
         } else if (std.mem.eql(u8, kind, "struct_specifier")) {
             if (try self.extractStruct(node, filename)) |s| {
                 try structs.append(self.allocator, s);
+            }
+        } else if (std.mem.eql(u8, kind, "union_specifier")) {
+            if (try self.extractUnion(node, filename)) |u| {
+                try unions.append(self.allocator, u);
             }
         } else if (std.mem.eql(u8, kind, "enum_specifier")) {
             if (try self.extractEnum(node, filename)) |e| {
@@ -140,7 +152,7 @@ pub const CParser = struct {
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {
-                try self.walkNode(child, functions, structs, enums, typedefs, macros, includes, filename);
+                try self.walkNode(child, functions, structs, unions, enums, typedefs, macros, includes, filename);
             }
         }
     }
@@ -495,6 +507,60 @@ pub const CParser = struct {
         };
     }
 
+    /// Extracts a union definition
+    fn extractUnion(self: *Self, node: ts.Node, filename: []const u8) !?types.Union {
+        // Get union name
+        var name: []const u8 = "";
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                if (std.mem.eql(u8, child.kind(), "type_identifier")) {
+                    name = self.getNodeText(child);
+                    break;
+                }
+            }
+        }
+
+        if (name.len == 0) return null;
+
+        // Get fields with their trailing comments (reuse struct field extraction)
+        var fields: std.ArrayList(types.StructField) = .empty;
+        const body = node.childByFieldName("body");
+        if (body) |field_list| {
+            var j: u32 = 0;
+            while (j < field_list.childCount()) : (j += 1) {
+                if (field_list.child(j)) |field_node| {
+                    if (std.mem.eql(u8, field_node.kind(), "field_declaration")) {
+                        if (self.extractField(field_node)) |field| {
+                            try fields.append(self.allocator, field);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Find docstring for the union
+        var doc: ?types.DocString = null;
+        if (node.parent()) |parent| {
+            doc = self.findPrecedingDocstring(parent);
+        }
+        if (doc == null) {
+            doc = self.findPrecedingDocstring(node);
+        }
+
+        const start = node.startPoint();
+        return types.Union{
+            .name = name,
+            .fields = try fields.toOwnedSlice(self.allocator),
+            .doc = doc,
+            .location = types.SourceLocation{
+                .file = filename,
+                .line = start.row + 1,
+                .column = start.column + 1,
+            },
+        };
+    }
+
     /// Extracts a struct field with optional trailing comment
     fn extractField(self: *Self, node: ts.Node) ?types.StructField {
         var type_str: []const u8 = "";
@@ -803,6 +869,11 @@ pub const CParser = struct {
     /// Extracts custom pages from standalone doc comments containing @page or @mainpage
     fn extractPages(self: *Self, root: ts.Node, pages: *std.ArrayList(types.Page)) !void {
         try common.extractPages(self.allocator, self.source, root, pages, &self.docstring_extractor);
+    }
+
+    /// Extracts group definitions from standalone doc comments containing @defgroup or @addtogroup
+    fn extractGroups(self: *Self, root: ts.Node, groups: *std.ArrayList(types.Group)) !void {
+        try common.extractGroups(self.allocator, self.source, root, groups, &self.docstring_extractor);
     }
 };
 

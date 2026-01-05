@@ -134,6 +134,50 @@ pub fn extractPages(
     }
 }
 
+/// Extracts group definitions from standalone doc comments containing @defgroup or @addtogroup
+pub fn extractGroups(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    root: ts.Node,
+    groups: *std.ArrayList(types.Group),
+    docstring_extractor: *DocstringExtractor,
+) !void {
+    var i: u32 = 0;
+    while (i < root.childCount()) : (i += 1) {
+        if (root.child(i)) |child| {
+            const child_kind = child.kind();
+
+            if (std.mem.eql(u8, child_kind, "comment")) {
+                const text = getNodeText(source, child);
+
+                // Only process doc comments (/** or ///)
+                if (!std.mem.startsWith(u8, text, "/**") and !std.mem.startsWith(u8, text, "///")) {
+                    continue;
+                }
+
+                // Strip comment delimiters
+                var stripped = text;
+                if (std.mem.startsWith(u8, stripped, "/**")) {
+                    stripped = stripped[3..];
+                } else if (std.mem.startsWith(u8, stripped, "///")) {
+                    stripped = stripped[3..];
+                }
+                if (std.mem.endsWith(u8, stripped, "*/")) {
+                    stripped = stripped[0 .. stripped.len - 2];
+                }
+                stripped = std.mem.trim(u8, stripped, " \t\n\r");
+
+                // Check if this comment contains @defgroup or @addtogroup
+                if (docstring_extractor.containsGroupCommand(stripped)) {
+                    if (docstring_extractor.parseGroup(stripped)) |group| {
+                        try groups.append(allocator, group);
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Tests
 test "getNodeText empty source" {
     const source = "";

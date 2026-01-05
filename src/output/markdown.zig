@@ -258,6 +258,24 @@ pub const MarkdownGenerator = struct {
             }
         }
 
+        // Unions section
+        if (module.unions.len > 0) {
+            var has_visible_unions = false;
+            for (module.unions) |u| {
+                if (!self.shouldExclude(u.name, u.doc)) {
+                    has_visible_unions = true;
+                    break;
+                }
+            }
+            if (has_visible_unions) {
+                try self.writeString("## Unions\n\n");
+                for (module.unions) |u| {
+                    if (self.shouldExclude(u.name, u.doc)) continue;
+                    try self.writeUnion(u);
+                }
+            }
+        }
+
         // Enums section
         if (module.enums.len > 0) {
             var has_visible_enums = false;
@@ -844,8 +862,14 @@ pub const MarkdownGenerator = struct {
     }
 
     /// Formats template parameters as a signature string for code blocks
-    /// e.g., "template<typename T, usize N>\n"
+    /// e.g., "template<typename T, usize N>\n" or with requires clause
     fn formatTemplateSignature(self: *Self, template_params: []const types.TemplateParam) !void {
+        try self.formatTemplateSignatureWithRequires(template_params, null);
+    }
+
+    /// Formats template parameters with optional requires clause
+    /// e.g., "template<typename T>\nrequires std::integral<T>\n"
+    fn formatTemplateSignatureWithRequires(self: *Self, template_params: []const types.TemplateParam, requires_clause: ?[]const u8) !void {
         if (template_params.len == 0) return;
 
         try self.writeString("template<");
@@ -863,6 +887,13 @@ pub const MarkdownGenerator = struct {
             }
         }
         try self.writeString(">\n");
+
+        // Add requires clause if present
+        if (requires_clause) |req| {
+            try self.writeString("requires ");
+            try self.writeString(req);
+            try self.writeString("\n");
+        }
     }
 
     /// Formats template parameters as a short param list for headings
@@ -971,7 +1002,7 @@ pub const MarkdownGenerator = struct {
             try self.writeAttributeList(func.attributes);
             try self.writeString("\n");
         }
-        try self.formatTemplateSignature(func.template_params);
+        try self.formatTemplateSignatureWithRequires(func.template_params, func.requires_clause);
         // Hide return type if @exclude return is specified
         if (hide_return_type) {
             try self.writeString("/* see below */ ");
@@ -1655,6 +1686,55 @@ pub const MarkdownGenerator = struct {
         try self.writeString("---\n\n");
     }
 
+    fn writeUnion(self: *Self, u: types.Union) !void {
+        // Union name as heading
+        try self.writeString("### `");
+        try self.writeString(u.name);
+        try self.writeString("`\n\n");
+
+        // Code block with definition
+        try self.writeString("```c\nunion ");
+        try self.writeString(u.name);
+        try self.writeString(" {\n");
+
+        for (u.fields) |field| {
+            try self.writeString("    ");
+            try self.writeString(field.type_str);
+            try self.writeString(" ");
+            try self.writeString(field.name);
+            try self.writeString(";\n");
+        }
+        try self.writeString("};\n```\n\n");
+
+        // Documentation
+        if (u.doc) |doc| {
+            if (doc.brief) |brief| {
+                try self.writeTextWithRefs(brief, self.all_pages);
+                try self.writeString("\n\n");
+            }
+        }
+
+        // Fields documentation with type links
+        if (u.fields.len > 0) {
+            try self.writeString("**Fields:**\n");
+            for (u.fields) |field| {
+                try self.writeString("- `");
+                try self.writeString(field.name);
+                try self.writeString("` (");
+                try self.writeTypeWithLink(field.type_str);
+                try self.writeString(")");
+                if (field.doc) |doc| {
+                    try self.writeString(": ");
+                    try self.writeString(doc);
+                }
+                try self.writeString("\n");
+            }
+            try self.writeString("\n");
+        }
+
+        try self.writeString("---\n\n");
+    }
+
     fn writeEnum(self: *Self, e: types.Enum) !void {
         // Enum name as heading
         try self.writeString("### `");
@@ -1877,7 +1957,7 @@ pub const MarkdownGenerator = struct {
             try self.writeAttributeList(class.attributes);
             try self.writeString("\n");
         }
-        try self.formatTemplateSignature(class.template_params);
+        try self.formatTemplateSignatureWithRequires(class.template_params, class.requires_clause);
         try self.writeString("class ");
         try self.writeString(class.name);
 
@@ -1956,6 +2036,11 @@ pub const MarkdownGenerator = struct {
                         }
                         try self.writeString(")");
                         if (method.is_const) try self.writeString(" const");
+                        if (method.is_override) try self.writeString(" override");
+                        if (method.is_final) try self.writeString(" final");
+                        if (method.is_pure_virtual) {
+                            try self.writeString(" = 0");
+                        }
                         try self.writeString(";\n");
                     }
                 }

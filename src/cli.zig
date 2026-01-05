@@ -39,8 +39,8 @@ pub const Subcommand = enum {
     generate,
     /// Check documentation coverage and quality (linter-style output)
     check,
-    /// Run as LSP server for editor integration (stig check with no args)
-    check_lsp,
+    /// Run as LSP server for editor integration
+    lsp,
     /// Run as mdbook preprocessor
     preprocessor,
     /// Initialize test infrastructure
@@ -55,6 +55,8 @@ pub const Subcommand = enum {
     help_generate,
     /// Show help for check subcommand
     help_check,
+    /// Show help for lsp subcommand
+    help_lsp,
     /// Show help for init subcommand
     help_init,
     /// Show help for test subcommand
@@ -220,6 +222,9 @@ pub const ArgParser = struct {
             } else if (std.mem.eql(u8, first_arg, "coverage") or std.mem.eql(u8, first_arg, "cov")) {
                 subcommand = .coverage;
                 args_start = 2;
+            } else if (std.mem.eql(u8, first_arg, "lsp")) {
+                subcommand = .lsp;
+                args_start = 2;
             }
         }
 
@@ -247,8 +252,49 @@ pub const ArgParser = struct {
                 .test_patterns = &[_][]const u8{},
                 .allocator = self.allocator,
             },
-            .check_lsp => unreachable, // returned from parseCheckArgs
-            .help, .help_generate, .help_check, .help_init, .help_test, .help_coverage, .version => unreachable, // handled above
+            .lsp => blk: {
+                // Check for help flag
+                if (process_args.len > args_start) {
+                    const arg = process_args[args_start];
+                    if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "help")) {
+                        break :blk Args{
+                            .subcommand = .help_lsp,
+                            .input_files = &[_][]const u8{},
+                            .output_file = null,
+                            .output_format = .markdown,
+                            .format_explicitly_set = false,
+                            .book_title = null,
+                            .config_file = null,
+                            .watch_mode = false,
+                            .serve_mode = false,
+                            .force_rebuild = false,
+                            .check_output_format = .human,
+                            .min_coverage = null,
+                            .strict = false,
+                            .test_patterns = &[_][]const u8{},
+                            .allocator = self.allocator,
+                        };
+                    }
+                }
+                break :blk Args{
+                    .subcommand = .lsp,
+                    .input_files = &[_][]const u8{},
+                    .output_file = null,
+                    .output_format = .markdown,
+                    .format_explicitly_set = false,
+                    .book_title = null,
+                    .config_file = null,
+                    .watch_mode = false,
+                    .serve_mode = false,
+                    .force_rebuild = false,
+                    .check_output_format = .human,
+                    .min_coverage = null,
+                    .strict = false,
+                    .test_patterns = &[_][]const u8{},
+                    .allocator = self.allocator,
+                };
+            },
+            .help, .help_generate, .help_check, .help_lsp, .help_init, .help_test, .help_coverage, .version => unreachable, // handled above
         };
     }
 
@@ -479,25 +525,12 @@ pub const ArgParser = struct {
         else
             &[_][]const u8{};
 
-        // If `stig check` with no arguments at all, run as LSP server
-        if (input_files.len == 0 and config_file == null and min_coverage == null and !strict and format_str.len == 0) {
-            return Args{
-                .subcommand = .check_lsp,
-                .input_files = input_files,
-                .output_file = null,
-                .output_format = .markdown,
-                .format_explicitly_set = false,
-                .book_title = null,
-                .config_file = null,
-                .watch_mode = false,
-                .serve_mode = false,
-                .force_rebuild = false,
-                .check_output_format = .human,
-                .min_coverage = null,
-                .strict = false,
-                .test_patterns = &[_][]const u8{},
-                .allocator = self.allocator,
-            };
+        // If no input files and no config file, show error
+        if (input_files.len == 0 and config_file == null) {
+            std.debug.print("Error: No input files specified.\n", .{});
+            std.debug.print("Usage: stig check [OPTIONS] <INPUT_FILES>...\n", .{});
+            std.debug.print("\nFor LSP server mode, use: stig lsp\n", .{});
+            return error.MissingInputFiles;
         }
 
         return Args{
@@ -891,7 +924,6 @@ pub const ArgParser = struct {
             \\
             \\USAGE:
             \\    stig check [OPTIONS] <INPUT_FILES>...
-            \\    stig check                               (LSP server mode)
             \\
             \\ARGS:
             \\    <INPUT_FILES>...    C/C++ header files to check
@@ -909,22 +941,55 @@ pub const ArgParser = struct {
             \\               file:line:col: severity: message
             \\    json       JSON output for tooling integration
             \\
-            \\LSP MODE:
-            \\    When called with no arguments, stig check runs as an LSP server
-            \\    for editor integration (VS Code, Neovim, etc.). The server
-            \\    provides real-time documentation diagnostics.
-            \\
             \\EXIT CODES:
             \\    0    All checks passed
             \\    1    Errors found (undocumented items, invalid references)
             \\    2    Warnings found (with --strict) or coverage below threshold
             \\
             \\EXAMPLES:
-            \\    stig check                               # Start LSP server
             \\    stig check src/*.h                       # Human-readable report
             \\    stig check -f compiler src/*.h           # CI/CD friendly output
             \\    stig check --min-coverage 80 src/*.h     # Fail if < 80% coverage
             \\    stig check --strict src/*.h              # Treat warnings as errors
+            \\
+            \\SEE ALSO:
+            \\    stig lsp    Run as LSP server for editor integration
+            \\
+        ;
+        std.debug.print("{s}", .{help});
+    }
+
+    /// Prints help for lsp subcommand
+    pub fn printLspHelp() void {
+        const help =
+            \\stig lsp - Run as LSP server for editor integration
+            \\
+            \\USAGE:
+            \\    stig lsp
+            \\
+            \\DESCRIPTION:
+            \\    Starts stig as a Language Server Protocol (LSP) server for
+            \\    real-time documentation checking in editors like VS Code,
+            \\    Neovim, Emacs, etc.
+            \\
+            \\FEATURES:
+            \\    - Real-time diagnostics for documentation issues
+            \\    - Auto-completion for Doxygen tags (@brief, @param, etc.)
+            \\    - Quick fixes for common documentation problems
+            \\    - Documentation coverage warnings
+            \\
+            \\EDITOR SETUP:
+            \\    VS Code:   Install the stig extension or configure a custom LSP
+            \\    Neovim:    Add to your LSP configuration:
+            \\               require('lspconfig').stig.setup{}
+            \\    Emacs:     Configure with lsp-mode or eglot
+            \\
+            \\CONFIGURATION:
+            \\    The LSP server reads stig.toml from the workspace root for
+            \\    lint rules, coverage thresholds, and other settings.
+            \\
+            \\EXAMPLES:
+            \\    stig lsp                                 # Start LSP server
             \\
         ;
         std.debug.print("{s}", .{help});
@@ -1059,6 +1124,7 @@ pub const ArgParser = struct {
             \\COMMANDS:
             \\    generate      Generate documentation from source files (default)
             \\    check         Check documentation coverage and quality
+            \\    lsp           Run as LSP server for editor integration
             \\    coverage      Analyze test coverage (which API entities are tested)
             \\    init          Initialize test infrastructure
             \\    test          Run pre-compiled test binaries
@@ -1078,6 +1144,7 @@ pub const ArgParser = struct {
             \\    stig input.h                             # Generate markdown to stdout
             \\    stig generate -f mdbook -o docs/ src/*.h # Generate mdbook
             \\    stig check src/*.h                       # Check documentation
+            \\    stig lsp                                 # Start LSP server
             \\    stig coverage                            # Analyze test coverage
             \\    stig init                                # Initialize test infrastructure
             \\    stig test ./build/test_*                 # Run tests

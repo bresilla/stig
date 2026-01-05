@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("model/types.zig");
 const CParser = @import("parser/c.zig").CParser;
 const CppParser = @import("parser/cpp.zig").CppParser;
@@ -6,6 +7,8 @@ const MdbookGenerator = @import("output/mdbook.zig").MdbookGenerator;
 const MdbookConfig = @import("output/mdbook.zig").MdbookConfig;
 const MarkdownGenerator = @import("output/markdown.zig").MarkdownGenerator;
 const Cache = @import("cache.zig").Cache;
+const FileWatcher = @import("filewatcher.zig").FileWatcher;
+const Config = @import("config.zig").Config;
 
 /// File watcher for automatic regeneration with incremental updates
 pub const Watcher = struct {
@@ -15,11 +18,14 @@ pub const Watcher = struct {
     book_title: []const u8,
     serve_mode: bool,
     mdbook_process: ?std.process.Child = null,
-    last_mod_times: std.StringHashMap(i128),
     debounce_ns: u64 = 100 * std.time.ns_per_ms, // 100ms debounce
     cache: Cache,
     /// Cached modules from previous parse (for incremental updates)
     cached_modules: std.StringHashMap(types.Module),
+    /// Native file watcher (inotify on Linux, polling fallback)
+    file_watcher: FileWatcher,
+    /// Patterns to ignore (glob patterns)
+    ignore_patterns: []const []const u8,
 
     const Self = @This();
 
@@ -30,6 +36,17 @@ pub const Watcher = struct {
         book_title: []const u8,
         serve_mode: bool,
     ) Self {
+        return initWithConfig(allocator, input_files, output_dir, book_title, serve_mode, .{});
+    }
+
+    pub fn initWithConfig(
+        allocator: std.mem.Allocator,
+        input_files: []const []const u8,
+        output_dir: []const u8,
+        book_title: []const u8,
+        serve_mode: bool,
+        watch_config: Config.WatchOptions,
+    ) Self {
         // Cache directory inside output dir - allocate properly
         const cache_dir = std.fs.path.join(allocator, &.{ output_dir, ".stig-cache" }) catch output_dir;
 
@@ -39,15 +56,17 @@ pub const Watcher = struct {
             .output_dir = output_dir,
             .book_title = book_title,
             .serve_mode = serve_mode,
-            .last_mod_times = std.StringHashMap(i128).init(allocator),
+            .debounce_ns = @as(u64, watch_config.debounce_ms) * std.time.ns_per_ms,
             .cache = Cache.init(allocator, cache_dir),
             .cached_modules = std.StringHashMap(types.Module).init(allocator),
+            .file_watcher = FileWatcher.init(allocator),
+            .ignore_patterns = watch_config.ignore_patterns,
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.stopMdbook();
-        self.last_mod_times.deinit();
+        self.file_watcher.deinit();
         self.cache.save() catch {}; // Save cache on exit
         self.cache.deinit();
         self.cached_modules.deinit();
@@ -62,7 +81,8 @@ pub const Watcher = struct {
 
         // Initial generation
         self.clearScreen();
-        std.debug.print("🔍 Stinger Watch Mode (with incremental updates)\n", .{});
+        const backend_name = if (builtin.os.tag == .linux) "inotify" else "polling";
+        std.debug.print("🔍 Stinger Watch Mode (using {s})\n", .{backend_name});
         std.debug.print("   Watching {d} file(s)\n", .{self.input_files.len});
         std.debug.print("   Output: {s}\n\n", .{self.output_dir});
 
@@ -74,52 +94,59 @@ pub const Watcher = struct {
             try self.startMdbook();
         }
 
-        // Initialize modification times
+        // Add all files to the native watcher
         for (self.input_files) |file| {
-            const mtime = self.getModTime(file);
-            try self.last_mod_times.put(file, mtime);
+            self.file_watcher.addWatch(file) catch |err| {
+                std.debug.print("   ⚠️  Cannot watch {s}: {}\n", .{ file, err });
+            };
         }
 
         std.debug.print("👀 Watching for changes... (Ctrl+C to stop)\n\n", .{});
 
-        // Watch loop
+        // Watch loop using native file watcher
         var last_change: i64 = 0;
         while (true) {
-            var changed_files: std.ArrayList([]const u8) = .empty;
-            defer changed_files.deinit(self.allocator);
+            // Wait for file changes (with 1 second timeout to allow Ctrl+C)
+            const events = self.file_watcher.waitForChanges(1000) catch null;
 
-            for (self.input_files) |file| {
-                const current_mtime = self.getModTime(file);
-                const last_mtime = self.last_mod_times.get(file) orelse 0;
+            if (events) |evts| {
+                var events_list = evts;
+                defer events_list.deinit(self.allocator);
 
-                if (current_mtime > last_mtime) {
-                    try changed_files.append(self.allocator, file);
-                    try self.last_mod_times.put(file, current_mtime);
-                }
-            }
+                if (events_list.items.len > 0) {
+                    // Filter out ignored files
+                    var changed_files: std.ArrayList([]const u8) = .empty;
+                    defer changed_files.deinit(self.allocator);
 
-            if (changed_files.items.len > 0) {
-                const now = std.time.milliTimestamp();
-                // Debounce: only regenerate if enough time has passed
-                if (now - last_change > @as(i64, @intCast(self.debounce_ns / std.time.ns_per_ms))) {
-                    last_change = now;
-                    self.clearScreen();
-                    std.debug.print("🔄 Change detected in {d} file(s):\n", .{changed_files.items.len});
-                    for (changed_files.items) |f| {
-                        std.debug.print("   - {s}\n", .{f});
+                    for (events_list.items) |event| {
+                        if (!shouldIgnore(event.path, self.ignore_patterns)) {
+                            try changed_files.append(self.allocator, event.path);
+                        }
                     }
-                    std.debug.print("\n", .{});
 
-                    // Incremental regeneration - only re-parse changed files
-                    self.regenerate(changed_files.items) catch |err| {
-                        std.debug.print("❌ Error regenerating: {}\n", .{err});
-                    };
-                    std.debug.print("\n👀 Watching for changes... (Ctrl+C to stop)\n\n", .{});
+                    // Only proceed if there are non-ignored changes
+                    if (changed_files.items.len > 0) {
+                        const now = std.time.milliTimestamp();
+                        // Debounce: only regenerate if enough time has passed
+                        if (now - last_change > @as(i64, @intCast(self.debounce_ns / std.time.ns_per_ms))) {
+                            last_change = now;
+                            self.clearScreen();
+                            std.debug.print("🔄 Change detected in {d} file(s):\n", .{changed_files.items.len});
+
+                            for (changed_files.items) |path| {
+                                std.debug.print("   - {s}\n", .{path});
+                            }
+                            std.debug.print("\n", .{});
+
+                            // Incremental regeneration - only re-parse changed files
+                            self.regenerate(changed_files.items) catch |err| {
+                                std.debug.print("❌ Error regenerating: {}\n", .{err});
+                            };
+                            std.debug.print("\n👀 Watching for changes... (Ctrl+C to stop)\n\n", .{});
+                        }
+                    }
                 }
             }
-
-            // Sleep for a bit before checking again
-            std.Thread.sleep(200 * std.time.ns_per_ms);
         }
     }
 
@@ -256,16 +283,6 @@ pub const Watcher = struct {
         }
     }
 
-    /// Gets file modification time
-    fn getModTime(self: *Self, path: []const u8) i128 {
-        _ = self;
-        const file = std.fs.cwd().openFile(path, .{}) catch return 0;
-        defer file.close();
-
-        const stat = file.stat() catch return 0;
-        return stat.mtime;
-    }
-
     /// Clears the terminal screen
     fn clearScreen(self: *Self) void {
         _ = self;
@@ -302,6 +319,107 @@ fn isCppFile(filename: []const u8) bool {
     return false;
 }
 
+/// Matches a path against a glob pattern
+/// Supports: * (any chars except /), ** (any chars including /), ? (single char)
+fn matchGlob(pattern: []const u8, path: []const u8) bool {
+    var pi: usize = 0; // pattern index
+    var si: usize = 0; // string (path) index
+    var star_pi: ?usize = null; // position after last * in pattern
+    var star_si: usize = 0; // position in string when we hit last *
+
+    while (si < path.len) {
+        if (pi < pattern.len) {
+            // Check for **
+            if (pi + 1 < pattern.len and pattern[pi] == '*' and pattern[pi + 1] == '*') {
+                // ** matches any sequence including /
+                pi += 2;
+                // Skip trailing / after **
+                if (pi < pattern.len and pattern[pi] == '/') {
+                    pi += 1;
+                }
+                // If ** is at end, match everything
+                if (pi >= pattern.len) {
+                    return true;
+                }
+                // Try to match rest of pattern at each position
+                while (si <= path.len) {
+                    if (matchGlob(pattern[pi..], path[si..])) {
+                        return true;
+                    }
+                    if (si < path.len) {
+                        si += 1;
+                    } else {
+                        break;
+                    }
+                }
+                return false;
+            }
+
+            // Check for single *
+            if (pattern[pi] == '*') {
+                star_pi = pi + 1;
+                star_si = si;
+                pi += 1;
+                continue;
+            }
+
+            // Check for ?
+            if (pattern[pi] == '?') {
+                if (path[si] != '/') {
+                    pi += 1;
+                    si += 1;
+                    continue;
+                }
+            }
+
+            // Exact character match
+            if (pattern[pi] == path[si]) {
+                pi += 1;
+                si += 1;
+                continue;
+            }
+        }
+
+        // No match - backtrack to last * if possible
+        if (star_pi) |spi| {
+            // * doesn't match /
+            if (path[star_si] == '/') {
+                return false;
+            }
+            pi = spi;
+            star_si += 1;
+            si = star_si;
+            continue;
+        }
+
+        return false;
+    }
+
+    // Consume trailing *s in pattern
+    while (pi < pattern.len and pattern[pi] == '*') {
+        pi += 1;
+    }
+
+    return pi >= pattern.len;
+}
+
+/// Check if a path should be ignored based on ignore patterns
+fn shouldIgnore(path: []const u8, ignore_patterns: []const []const u8) bool {
+    for (ignore_patterns) |pattern| {
+        if (matchGlob(pattern, path)) {
+            return true;
+        }
+        // Also check if any path component matches (for patterns like ".git")
+        var it = std.mem.splitScalar(u8, path, '/');
+        while (it.next()) |component| {
+            if (matchGlob(pattern, component)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // Tests
 test "watcher init" {
     var watcher = Watcher.init(
@@ -312,4 +430,50 @@ test "watcher init" {
         false,
     );
     defer watcher.deinit();
+}
+
+test "glob matching - exact" {
+    try std.testing.expect(matchGlob("foo.h", "foo.h"));
+    try std.testing.expect(!matchGlob("foo.h", "bar.h"));
+    try std.testing.expect(!matchGlob("foo.h", "foo.hpp"));
+}
+
+test "glob matching - single star" {
+    try std.testing.expect(matchGlob("*.h", "foo.h"));
+    try std.testing.expect(matchGlob("*.h", "bar.h"));
+    try std.testing.expect(!matchGlob("*.h", "foo.hpp"));
+    try std.testing.expect(matchGlob("foo.*", "foo.h"));
+    try std.testing.expect(matchGlob("foo.*", "foo.cpp"));
+    // * doesn't match /
+    try std.testing.expect(!matchGlob("*.h", "src/foo.h"));
+}
+
+test "glob matching - double star" {
+    try std.testing.expect(matchGlob("**/*.h", "foo.h"));
+    try std.testing.expect(matchGlob("**/*.h", "src/foo.h"));
+    try std.testing.expect(matchGlob("**/*.h", "src/sub/foo.h"));
+    try std.testing.expect(matchGlob(".git/**", ".git/config"));
+    try std.testing.expect(matchGlob(".git/**", ".git/objects/pack/foo"));
+}
+
+test "glob matching - question mark" {
+    try std.testing.expect(matchGlob("foo?.h", "foo1.h"));
+    try std.testing.expect(matchGlob("foo?.h", "foox.h"));
+    try std.testing.expect(!matchGlob("foo?.h", "foo.h"));
+    try std.testing.expect(!matchGlob("foo?.h", "foo12.h"));
+}
+
+test "shouldIgnore - default patterns" {
+    const patterns = &[_][]const u8{ ".git/**", ".git", "node_modules/**", "build/**", "*.o" };
+
+    // Should ignore
+    try std.testing.expect(shouldIgnore(".git/config", patterns));
+    try std.testing.expect(shouldIgnore(".git/objects/pack/foo", patterns));
+    try std.testing.expect(shouldIgnore("node_modules/lodash/index.js", patterns));
+    try std.testing.expect(shouldIgnore("build/output.txt", patterns));
+    try std.testing.expect(shouldIgnore("main.o", patterns));
+
+    // Should not ignore
+    try std.testing.expect(!shouldIgnore("src/main.cpp", patterns));
+    try std.testing.expect(!shouldIgnore("include/header.h", patterns));
 }

@@ -16,6 +16,30 @@ const DocumentState = struct {
     uri: []const u8,
     content: []const u8,
     version: i64,
+    /// Cached diagnostic metadata for code actions
+    diagnostic_metadata: std.ArrayList(DiagnosticMetadata) = .empty,
+};
+
+/// Metadata for a diagnostic that enables code action generation
+const DiagnosticMetadata = struct {
+    /// The diagnostic code (e.g., "W001", "W003")
+    code: []const u8,
+    /// Line number (0-based)
+    line: u32,
+    /// Entity name (function, class, etc.)
+    entity_name: []const u8,
+    /// Entity type
+    entity_type: []const u8,
+    /// For W003/W004: the missing parameter/tparam name
+    missing_name: ?[]const u8 = null,
+    /// For E001: the suggested correct name
+    suggestion: ?[]const u8 = null,
+    /// Function parameters (for generating doc stubs)
+    params: []const []const u8 = &[_][]const u8{},
+    /// Function return type (for generating doc stubs)
+    return_type: ?[]const u8 = null,
+    /// Template parameters
+    tparams: []const []const u8 = &[_][]const u8{},
 };
 
 /// Cached test coverage data (computed once on startup/config change)
@@ -62,6 +86,7 @@ pub const Server = struct {
             self.allocator.free(entry.key_ptr.*);
             self.allocator.free(entry.value_ptr.uri);
             self.allocator.free(entry.value_ptr.content);
+            entry.value_ptr.diagnostic_metadata.deinit(self.allocator);
         }
         self.documents.deinit();
 
@@ -125,6 +150,10 @@ pub const Server = struct {
             try self.handleInitialize(id, params);
         } else if (std.mem.eql(u8, method, "shutdown")) {
             try self.handleShutdown(id);
+        } else if (std.mem.eql(u8, method, "textDocument/completion")) {
+            try self.handleCompletion(id, params);
+        } else if (std.mem.eql(u8, method, "textDocument/codeAction")) {
+            try self.handleCodeAction(id, params);
         } else {
             // Unknown method
             try self.transport.sendError(id, .method_not_found, "Method not found");
@@ -158,13 +187,20 @@ pub const Server = struct {
             .capabilities = .{
                 .textDocumentSync = .{
                     .openClose = true,
-                    .change = .full,
+                    .change = .incremental,
                     .save = .{ .includeText = true },
+                },
+                .completionProvider = .{
+                    .trigger_characters = &[_][]const u8{ "@", "\\" },
+                    .resolve_provider = false,
+                },
+                .codeActionProvider = .{
+                    .code_action_kinds = &[_]lsp_types.CodeActionKind{.quickfix},
                 },
             },
         };
 
-        var buffer: [500]u8 = undefined;
+        var buffer: [1024]u8 = undefined;
         var fbs = std.io.fixedBufferStream(&buffer);
         try result.jsonStringify(fbs.writer());
 
@@ -175,6 +211,543 @@ pub const Server = struct {
     fn handleShutdown(self: *Self, id: jsonrpc.JsonId) !void {
         self.shutdown_requested = true;
         try self.transport.sendResponse(id, "null");
+    }
+
+    /// Handle textDocument/completion request
+    fn handleCompletion(self: *Self, id: jsonrpc.JsonId, params: ?std.json.Value) !void {
+        const p = params orelse {
+            try self.transport.sendResponse(id, "null");
+            return;
+        };
+        if (p != .object) {
+            try self.transport.sendResponse(id, "null");
+            return;
+        }
+
+        // Get the document URI and position
+        const text_doc = p.object.get("textDocument") orelse {
+            try self.transport.sendResponse(id, "null");
+            return;
+        };
+        if (text_doc != .object) {
+            try self.transport.sendResponse(id, "null");
+            return;
+        }
+
+        const uri_val = text_doc.object.get("uri") orelse {
+            try self.transport.sendResponse(id, "null");
+            return;
+        };
+        if (uri_val != .string) {
+            try self.transport.sendResponse(id, "null");
+            return;
+        }
+
+        // Get document content to check context
+        const doc = self.documents.get(uri_val.string) orelse {
+            try self.transport.sendResponse(id, "null");
+            return;
+        };
+
+        // Get position
+        const position = p.object.get("position") orelse {
+            try self.transport.sendResponse(id, "null");
+            return;
+        };
+        if (position != .object) {
+            try self.transport.sendResponse(id, "null");
+            return;
+        }
+
+        const line_val = position.object.get("line") orelse {
+            try self.transport.sendResponse(id, "null");
+            return;
+        };
+        const char_val = position.object.get("character") orelse {
+            try self.transport.sendResponse(id, "null");
+            return;
+        };
+
+        const line: usize = if (line_val == .integer) @intCast(line_val.integer) else {
+            try self.transport.sendResponse(id, "null");
+            return;
+        };
+        const character: usize = if (char_val == .integer) @intCast(char_val.integer) else {
+            try self.transport.sendResponse(id, "null");
+            return;
+        };
+
+        // Check if we're in a documentation comment context
+        if (!self.isInDocComment(doc.content, line, character)) {
+            try self.transport.sendResponse(id, "null");
+            return;
+        }
+
+        // Return Doxygen tag completions
+        const completion_list = lsp_types.CompletionList{
+            .is_incomplete = false,
+            .items = &doxygen_completions,
+        };
+
+        const json = try completion_list.jsonStringify(self.allocator);
+        defer self.allocator.free(json);
+
+        try self.transport.sendResponse(id, json);
+    }
+
+    /// Check if the cursor is inside a documentation comment
+    fn isInDocComment(self: *Self, content: []const u8, line: usize, character: usize) bool {
+        _ = self;
+        _ = character;
+
+        // Find the line in content
+        var current_line: usize = 0;
+        var line_start: usize = 0;
+
+        for (content, 0..) |c, i| {
+            if (current_line == line) {
+                line_start = i;
+                break;
+            }
+            if (c == '\n') {
+                current_line += 1;
+            }
+        }
+
+        // Find line end
+        var line_end = line_start;
+        while (line_end < content.len and content[line_end] != '\n') {
+            line_end += 1;
+        }
+
+        const line_content = content[line_start..line_end];
+
+        // Check if line starts with doc comment markers
+        const trimmed = std.mem.trimLeft(u8, line_content, " \t");
+
+        // Doxygen comment styles:
+        // /// - C++ triple slash
+        // //! - C++ exclamation
+        // /** - C-style block start
+        // * - Inside C-style block
+        // /*! - C-style block with exclamation
+        if (std.mem.startsWith(u8, trimmed, "///") or
+            std.mem.startsWith(u8, trimmed, "//!") or
+            std.mem.startsWith(u8, trimmed, "/**") or
+            std.mem.startsWith(u8, trimmed, "/*!") or
+            std.mem.startsWith(u8, trimmed, "* ") or
+            std.mem.startsWith(u8, trimmed, "*\t") or
+            std.mem.eql(u8, trimmed, "*"))
+        {
+            return true;
+        }
+
+        // Also check if we're inside a multi-line block comment
+        // by looking backwards for /** or /*!
+        var in_block = false;
+        var i: usize = line_start;
+        while (i > 0) {
+            i -= 1;
+            if (i > 0 and content[i] == '/' and content[i - 1] == '*') {
+                // Found end of block comment before our line
+                break;
+            }
+            if (i > 0 and content[i] == '*' and (content[i - 1] == '/' or (i > 1 and content[i - 1] == '*' and content[i - 2] == '/'))) {
+                // Check if it's a doc comment
+                if (i > 1 and content[i - 1] == '*' and content[i - 2] == '/') {
+                    in_block = true;
+                } else if (i > 0 and content[i - 1] == '/') {
+                    // Check next char for ! or *
+                    if (i + 1 < content.len and (content[i + 1] == '!' or content[i + 1] == '*')) {
+                        in_block = true;
+                    }
+                }
+                break;
+            }
+        }
+
+        return in_block;
+    }
+
+    /// Handle textDocument/codeAction request
+    fn handleCodeAction(self: *Self, id: jsonrpc.JsonId, params: ?std.json.Value) !void {
+        const p = params orelse {
+            try self.transport.sendResponse(id, "[]");
+            return;
+        };
+        if (p != .object) {
+            try self.transport.sendResponse(id, "[]");
+            return;
+        }
+
+        // Get the document URI
+        const text_doc = p.object.get("textDocument") orelse {
+            try self.transport.sendResponse(id, "[]");
+            return;
+        };
+        if (text_doc != .object) {
+            try self.transport.sendResponse(id, "[]");
+            return;
+        }
+
+        const uri_val = text_doc.object.get("uri") orelse {
+            try self.transport.sendResponse(id, "[]");
+            return;
+        };
+        if (uri_val != .string) {
+            try self.transport.sendResponse(id, "[]");
+            return;
+        }
+
+        // Get the range
+        const range_val = p.object.get("range") orelse {
+            try self.transport.sendResponse(id, "[]");
+            return;
+        };
+        if (range_val != .object) {
+            try self.transport.sendResponse(id, "[]");
+            return;
+        }
+
+        const start_val = range_val.object.get("start") orelse {
+            try self.transport.sendResponse(id, "[]");
+            return;
+        };
+        if (start_val != .object) {
+            try self.transport.sendResponse(id, "[]");
+            return;
+        }
+
+        const line_val = start_val.object.get("line") orelse {
+            try self.transport.sendResponse(id, "[]");
+            return;
+        };
+        const request_line: u32 = if (line_val == .integer) @intCast(line_val.integer) else {
+            try self.transport.sendResponse(id, "[]");
+            return;
+        };
+
+        // Get document and its diagnostic metadata
+        const doc = self.documents.get(uri_val.string) orelse {
+            try self.transport.sendResponse(id, "[]");
+            return;
+        };
+
+        // Find diagnostics that match the requested line
+        var actions: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (actions.items) |a| self.allocator.free(a);
+            actions.deinit(self.allocator);
+        }
+
+        for (doc.diagnostic_metadata.items) |metadata| {
+            // Check if this diagnostic is on or near the requested line
+            // LSP lines are 0-based, our lines are 1-based
+            const diag_line = if (metadata.line > 0) metadata.line - 1 else 0;
+            if (diag_line != request_line) continue;
+
+            // Generate code action based on diagnostic code
+            if (try self.generateCodeAction(uri_val.string, doc.content, metadata)) |action_json| {
+                try actions.append(self.allocator, action_json);
+            }
+        }
+
+        // Build response array
+        var response: std.ArrayList(u8) = .empty;
+        defer response.deinit(self.allocator);
+
+        try response.append(self.allocator, '[');
+        for (actions.items, 0..) |action, i| {
+            if (i > 0) try response.append(self.allocator, ',');
+            try response.appendSlice(self.allocator, action);
+        }
+        try response.append(self.allocator, ']');
+
+        try self.transport.sendResponse(id, response.items);
+    }
+
+    /// Generate a code action for a specific diagnostic
+    fn generateCodeAction(self: *Self, uri: []const u8, content: []const u8, metadata: DiagnosticMetadata) !?[]const u8 {
+        if (std.mem.eql(u8, metadata.code, "W001")) {
+            // No documentation - generate doc stub
+            return try self.generateDocStubAction(uri, content, metadata);
+        } else if (std.mem.eql(u8, metadata.code, "W003")) {
+            // Missing @param - add param tag
+            return try self.generateAddParamAction(uri, content, metadata);
+        } else if (std.mem.eql(u8, metadata.code, "W005")) {
+            // Missing @return - add return tag
+            return try self.generateAddReturnAction(uri, content, metadata);
+        } else if (std.mem.eql(u8, metadata.code, "E001")) {
+            // Wrong param name - suggest fix
+            return try self.generateFixParamNameAction(uri, content, metadata);
+        }
+        return null;
+    }
+
+    /// Generate a code action to add a documentation stub
+    fn generateDocStubAction(self: *Self, uri: []const u8, content: []const u8, metadata: DiagnosticMetadata) ![]const u8 {
+        // Find the line where we need to insert the doc comment
+        const insert_line = if (metadata.line > 0) metadata.line - 1 else 0;
+
+        // Find the indentation of the target line
+        var line_start: usize = 0;
+        var current_line: u32 = 0;
+        for (content, 0..) |c, i| {
+            if (current_line == insert_line) {
+                line_start = i;
+                break;
+            }
+            if (c == '\n') current_line += 1;
+        }
+
+        // Get indentation
+        var indent_end = line_start;
+        while (indent_end < content.len and (content[indent_end] == ' ' or content[indent_end] == '\t')) {
+            indent_end += 1;
+        }
+        const indent = content[line_start..indent_end];
+
+        // Build the doc comment
+        var doc_comment: std.ArrayList(u8) = .empty;
+        defer doc_comment.deinit(self.allocator);
+
+        try doc_comment.appendSlice(self.allocator, indent);
+        try doc_comment.appendSlice(self.allocator, "/// @brief TODO: Add description\n");
+
+        // Add @param for each parameter
+        for (metadata.params) |param| {
+            try doc_comment.appendSlice(self.allocator, indent);
+            try doc_comment.appendSlice(self.allocator, "/// @param ");
+            try doc_comment.appendSlice(self.allocator, param);
+            try doc_comment.appendSlice(self.allocator, " TODO: Document parameter\n");
+        }
+
+        // Add @tparam for each template parameter
+        for (metadata.tparams) |tparam| {
+            try doc_comment.appendSlice(self.allocator, indent);
+            try doc_comment.appendSlice(self.allocator, "/// @tparam ");
+            try doc_comment.appendSlice(self.allocator, tparam);
+            try doc_comment.appendSlice(self.allocator, " TODO: Document template parameter\n");
+        }
+
+        // Add @return if non-void
+        if (metadata.return_type) |ret| {
+            const trimmed = std.mem.trim(u8, ret, " \t");
+            if (!std.mem.eql(u8, trimmed, "void") and trimmed.len > 0) {
+                try doc_comment.appendSlice(self.allocator, indent);
+                try doc_comment.appendSlice(self.allocator, "/// @return TODO: Document return value\n");
+            }
+        }
+
+        // Create the text edit
+        const edit = lsp_types.TextEdit{
+            .range = .{
+                .start = .{ .line = insert_line, .character = 0 },
+                .end = .{ .line = insert_line, .character = 0 },
+            },
+            .new_text = doc_comment.items,
+        };
+
+        // Create the workspace edit
+        const doc_change = lsp_types.WorkspaceEdit.DocumentChange{
+            .uri = uri,
+            .edits = &[_]lsp_types.TextEdit{edit},
+        };
+
+        const workspace_edit = lsp_types.WorkspaceEdit{
+            .changes = &[_]lsp_types.WorkspaceEdit.DocumentChange{doc_change},
+        };
+
+        // Create the code action
+        const action = lsp_types.CodeAction{
+            .title = "Add documentation stub",
+            .kind = .quickfix,
+            .edit = workspace_edit,
+            .is_preferred = true,
+        };
+
+        return try action.jsonStringify(self.allocator);
+    }
+
+    /// Generate a code action to add a missing @param tag
+    fn generateAddParamAction(self: *Self, uri: []const u8, content: []const u8, metadata: DiagnosticMetadata) ![]const u8 {
+        const param_name = metadata.missing_name orelse return error.MissingParamName;
+
+        // Find the doc comment for this entity and insert after the last @param or @brief
+        const insert_pos = try self.findParamInsertPosition(content, metadata.line);
+
+        // Get indentation from the line
+        var line_start: usize = 0;
+        var current_line: u32 = 0;
+        for (content, 0..) |c, i| {
+            if (current_line == insert_pos.line) {
+                line_start = i;
+                break;
+            }
+            if (c == '\n') current_line += 1;
+        }
+
+        var indent_end = line_start;
+        while (indent_end < content.len and (content[indent_end] == ' ' or content[indent_end] == '\t')) {
+            indent_end += 1;
+        }
+        const indent = content[line_start..indent_end];
+
+        // Build the new param line
+        var new_text: std.ArrayList(u8) = .empty;
+        defer new_text.deinit(self.allocator);
+
+        try new_text.appendSlice(self.allocator, "\n");
+        try new_text.appendSlice(self.allocator, indent);
+        try new_text.appendSlice(self.allocator, "/// @param ");
+        try new_text.appendSlice(self.allocator, param_name);
+        try new_text.appendSlice(self.allocator, " TODO: Document parameter");
+
+        const edit = lsp_types.TextEdit{
+            .range = .{
+                .start = .{ .line = insert_pos.line, .character = insert_pos.character },
+                .end = .{ .line = insert_pos.line, .character = insert_pos.character },
+            },
+            .new_text = new_text.items,
+        };
+
+        const doc_change = lsp_types.WorkspaceEdit.DocumentChange{
+            .uri = uri,
+            .edits = &[_]lsp_types.TextEdit{edit},
+        };
+
+        const workspace_edit = lsp_types.WorkspaceEdit{
+            .changes = &[_]lsp_types.WorkspaceEdit.DocumentChange{doc_change},
+        };
+
+        const title = try std.fmt.allocPrint(self.allocator, "Add @param {s}", .{param_name});
+        defer self.allocator.free(title);
+
+        const action = lsp_types.CodeAction{
+            .title = title,
+            .kind = .quickfix,
+            .edit = workspace_edit,
+        };
+
+        return try action.jsonStringify(self.allocator);
+    }
+
+    /// Generate a code action to add a missing @return tag
+    fn generateAddReturnAction(self: *Self, uri: []const u8, content: []const u8, metadata: DiagnosticMetadata) ![]const u8 {
+        // Find the doc comment for this entity and insert after the last tag
+        const insert_pos = try self.findReturnInsertPosition(content, metadata.line);
+
+        // Get indentation from the line
+        var line_start: usize = 0;
+        var current_line: u32 = 0;
+        for (content, 0..) |c, i| {
+            if (current_line == insert_pos.line) {
+                line_start = i;
+                break;
+            }
+            if (c == '\n') current_line += 1;
+        }
+
+        var indent_end = line_start;
+        while (indent_end < content.len and (content[indent_end] == ' ' or content[indent_end] == '\t')) {
+            indent_end += 1;
+        }
+        const indent = content[line_start..indent_end];
+
+        // Build the new return line
+        var new_text: std.ArrayList(u8) = .empty;
+        defer new_text.deinit(self.allocator);
+
+        try new_text.appendSlice(self.allocator, "\n");
+        try new_text.appendSlice(self.allocator, indent);
+        try new_text.appendSlice(self.allocator, "/// @return TODO: Document return value");
+
+        const edit = lsp_types.TextEdit{
+            .range = .{
+                .start = .{ .line = insert_pos.line, .character = insert_pos.character },
+                .end = .{ .line = insert_pos.line, .character = insert_pos.character },
+            },
+            .new_text = new_text.items,
+        };
+
+        const doc_change = lsp_types.WorkspaceEdit.DocumentChange{
+            .uri = uri,
+            .edits = &[_]lsp_types.TextEdit{edit},
+        };
+
+        const workspace_edit = lsp_types.WorkspaceEdit{
+            .changes = &[_]lsp_types.WorkspaceEdit.DocumentChange{doc_change},
+        };
+
+        const action = lsp_types.CodeAction{
+            .title = "Add @return documentation",
+            .kind = .quickfix,
+            .edit = workspace_edit,
+        };
+
+        return try action.jsonStringify(self.allocator);
+    }
+
+    /// Generate a code action to fix a wrong parameter name
+    fn generateFixParamNameAction(self: *Self, uri: []const u8, content: []const u8, metadata: DiagnosticMetadata) ![]const u8 {
+        const correct_name = metadata.suggestion orelse return error.MissingSuggestion;
+        _ = content;
+
+        // For now, just suggest the fix - finding the exact position would require more parsing
+        const title = try std.fmt.allocPrint(self.allocator, "Change to @param {s}", .{correct_name});
+        defer self.allocator.free(title);
+
+        // Create a simple action without edit (user will need to manually fix)
+        const action = lsp_types.CodeAction{
+            .title = title,
+            .kind = .quickfix,
+        };
+
+        _ = uri;
+        return try action.jsonStringify(self.allocator);
+    }
+
+    /// Find the position to insert a new @param tag
+    fn findParamInsertPosition(self: *Self, content: []const u8, entity_line: u32) !lsp_types.Position {
+        _ = self;
+        // Search backwards from entity_line to find the doc comment
+        // and find the last @param or @brief line
+        var best_line: u32 = if (entity_line > 0) entity_line - 1 else 0;
+        var best_char: u32 = 0;
+
+        var current_line: u32 = 0;
+        var line_start: usize = 0;
+
+        for (content, 0..) |c, i| {
+            if (c == '\n') {
+                // Check if this line is a doc comment line before entity_line
+                if (current_line < entity_line and current_line >= (if (entity_line > 10) entity_line - 10 else 0)) {
+                    const line_content = content[line_start..i];
+                    const trimmed = std.mem.trimLeft(u8, line_content, " \t");
+
+                    if (std.mem.startsWith(u8, trimmed, "///") or std.mem.startsWith(u8, trimmed, "*")) {
+                        // Check if it's a @param or @brief line
+                        if (std.mem.indexOf(u8, trimmed, "@param") != null or
+                            std.mem.indexOf(u8, trimmed, "@brief") != null or
+                            std.mem.indexOf(u8, trimmed, "@tparam") != null)
+                        {
+                            best_line = current_line;
+                            best_char = @intCast(i - line_start);
+                        }
+                    }
+                }
+                current_line += 1;
+                line_start = i + 1;
+            }
+        }
+
+        return .{ .line = best_line, .character = best_char };
+    }
+
+    /// Find the position to insert a new @return tag
+    fn findReturnInsertPosition(self: *Self, content: []const u8, entity_line: u32) !lsp_types.Position {
+        // Similar to findParamInsertPosition but looks for the last doc line
+        return self.findParamInsertPosition(content, entity_line);
     }
 
     /// Handle textDocument/didOpen notification
@@ -208,6 +781,7 @@ pub const Server = struct {
     }
 
     /// Handle textDocument/didChange notification
+    /// Supports both full and incremental sync modes
     fn handleDidChange(self: *Self, params: ?std.json.Value) !void {
         const p = params orelse return;
         if (p != .object) return;
@@ -221,21 +795,88 @@ pub const Server = struct {
         const changes = p.object.get("contentChanges") orelse return;
         if (changes != .array or changes.array.items.len == 0) return;
 
-        // Get the full text from the last change (we use full sync)
-        const last_change = changes.array.items[changes.array.items.len - 1];
-        if (last_change != .object) return;
+        // Get document
+        const doc = self.documents.getPtr(uri_val.string) orelse return;
 
-        const text_val = last_change.object.get("text") orelse return;
-        if (text_val != .string) return;
+        // Apply each change in order
+        for (changes.array.items) |change| {
+            if (change != .object) continue;
 
-        // Update document
-        if (self.documents.getPtr(uri_val.string)) |doc| {
-            self.allocator.free(doc.content);
-            doc.content = try self.allocator.dupe(u8, text_val.string);
+            const text_val = change.object.get("text") orelse continue;
+            if (text_val != .string) continue;
 
-            // Run diagnostics on change
-            try self.publishDiagnostics(doc.uri, doc.content);
+            // Check if this is an incremental change (has range) or full change
+            if (change.object.get("range")) |range_val| {
+                // Incremental change - apply the edit
+                if (range_val != .object) continue;
+
+                const start = range_val.object.get("start") orelse continue;
+                const end = range_val.object.get("end") orelse continue;
+                if (start != .object or end != .object) continue;
+
+                const start_line = if (start.object.get("line")) |l| (if (l == .integer) @as(usize, @intCast(l.integer)) else continue) else continue;
+                const start_char = if (start.object.get("character")) |c| (if (c == .integer) @as(usize, @intCast(c.integer)) else continue) else continue;
+                const end_line = if (end.object.get("line")) |l| (if (l == .integer) @as(usize, @intCast(l.integer)) else continue) else continue;
+                const end_char = if (end.object.get("character")) |c| (if (c == .integer) @as(usize, @intCast(c.integer)) else continue) else continue;
+
+                // Convert line/character positions to byte offsets
+                const start_offset = self.positionToOffset(doc.content, start_line, start_char);
+                const end_offset = self.positionToOffset(doc.content, end_line, end_char);
+
+                // Apply the change
+                const new_content = try self.applyTextChange(doc.content, start_offset, end_offset, text_val.string);
+                self.allocator.free(doc.content);
+                doc.content = new_content;
+            } else {
+                // Full change - replace entire content
+                self.allocator.free(doc.content);
+                doc.content = try self.allocator.dupe(u8, text_val.string);
+            }
         }
+
+        // Run diagnostics on change
+        try self.publishDiagnostics(doc.uri, doc.content);
+    }
+
+    /// Convert line/character position to byte offset
+    fn positionToOffset(self: *Self, content: []const u8, line: usize, character: usize) usize {
+        _ = self;
+        var current_line: usize = 0;
+        var current_char: usize = 0;
+
+        for (content, 0..) |c, i| {
+            if (current_line == line and current_char == character) {
+                return i;
+            }
+            if (c == '\n') {
+                if (current_line == line) {
+                    // Character is beyond end of line, return end of line
+                    return i;
+                }
+                current_line += 1;
+                current_char = 0;
+            } else {
+                current_char += 1;
+            }
+        }
+
+        // Position is at or beyond end of content
+        return content.len;
+    }
+
+    /// Apply a text change to content
+    fn applyTextChange(self: *Self, content: []const u8, start: usize, end: usize, new_text: []const u8) ![]u8 {
+        const before = content[0..@min(start, content.len)];
+        const after = if (end < content.len) content[end..] else "";
+
+        const new_len = before.len + new_text.len + after.len;
+        const result = try self.allocator.alloc(u8, new_len);
+
+        @memcpy(result[0..before.len], before);
+        @memcpy(result[before.len .. before.len + new_text.len], new_text);
+        @memcpy(result[before.len + new_text.len ..], after);
+
+        return result;
     }
 
     /// Handle textDocument/didSave notification
@@ -282,6 +923,8 @@ pub const Server = struct {
             self.allocator.free(kv.key);
             self.allocator.free(kv.value.uri);
             self.allocator.free(kv.value.content);
+            var metadata = kv.value.diagnostic_metadata;
+            metadata.deinit(self.allocator);
 
             // Clear diagnostics by publishing empty array
             try self.sendDiagnostics(uri_val.string, &[_]lsp_types.Diagnostic{});
@@ -327,6 +970,7 @@ pub const Server = struct {
             .check_cross_references = self.config.lint.check_cross_references,
             .require_brief_period = self.config.lint.require_brief_period,
             .exclude_patterns = self.config.lint.exclude_patterns,
+            .rules = self.config.lint.rules,
         };
 
         var linter = lint.Linter.init(self.allocator, lint_config);
@@ -374,9 +1018,105 @@ pub const Server = struct {
             merged = all_diags;
         }
 
+        // Build diagnostic metadata for code actions
+        try self.buildDiagnosticMetadata(uri, lint_report, &modules);
+
         // Send diagnostics
         try self.sendDiagnostics(uri, merged);
     }
+
+    /// Build diagnostic metadata from lint report for code action generation
+    fn buildDiagnosticMetadata(self: *Self, uri: []const u8, lint_report: lint.LintReport, modules: []const types.Module) !void {
+        const doc = self.documents.getPtr(uri) orelse return;
+
+        // Clear existing metadata
+        doc.diagnostic_metadata.clearRetainingCapacity();
+
+        // Build a map of entity names to their info for quick lookup
+        var entity_info = std.StringHashMap(EntityInfo).init(self.allocator);
+        defer entity_info.deinit();
+
+        for (modules) |module| {
+            for (module.functions) |func| {
+                var param_names: std.ArrayList([]const u8) = .empty;
+                for (func.params) |p| {
+                    try param_names.append(self.allocator, p.name);
+                }
+                var tparam_names: std.ArrayList([]const u8) = .empty;
+                for (func.template_params) |tp| {
+                    try tparam_names.append(self.allocator, tp.name);
+                }
+                try entity_info.put(func.name, .{
+                    .params = param_names.items,
+                    .tparams = tparam_names.items,
+                    .return_type = func.return_type,
+                    .line = func.location.line,
+                });
+            }
+            for (module.classes) |class| {
+                for (class.methods) |method| {
+                    var param_names: std.ArrayList([]const u8) = .empty;
+                    for (method.params) |p| {
+                        try param_names.append(self.allocator, p.name);
+                    }
+                    const full_name = try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ class.name, method.name });
+                    try entity_info.put(full_name, .{
+                        .params = param_names.items,
+                        .tparams = &[_][]const u8{},
+                        .return_type = method.return_type,
+                        .line = method.location.line,
+                    });
+                }
+            }
+        }
+
+        // Convert lint issues to metadata
+        for (lint_report.issues.items) |issue| {
+            var metadata = DiagnosticMetadata{
+                .code = issue.code,
+                .line = issue.line,
+                .entity_name = issue.entity_name,
+                .entity_type = issue.entity_type,
+            };
+
+            // Extract additional info based on issue type
+            if (std.mem.eql(u8, issue.code, "W003") or std.mem.eql(u8, issue.code, "W004")) {
+                // Missing @param or @tparam - extract the name from message
+                // Message format: "missing @param for 'name'" or "missing @tparam for 'name'"
+                if (std.mem.indexOf(u8, issue.message, "'")) |start| {
+                    if (std.mem.indexOfPos(u8, issue.message, start + 1, "'")) |end| {
+                        metadata.missing_name = issue.message[start + 1 .. end];
+                    }
+                }
+            } else if (std.mem.eql(u8, issue.code, "E001")) {
+                // Wrong param name - extract suggestion
+                if (issue.suggestion) |sug| {
+                    // Suggestion format: "Did you mean 'name'?"
+                    if (std.mem.indexOf(u8, sug, "'")) |start| {
+                        if (std.mem.indexOfPos(u8, sug, start + 1, "'")) |end| {
+                            metadata.suggestion = sug[start + 1 .. end];
+                        }
+                    }
+                }
+            }
+
+            // Add entity info if available
+            if (entity_info.get(issue.entity_name)) |info| {
+                metadata.params = info.params;
+                metadata.tparams = info.tparams;
+                metadata.return_type = info.return_type;
+            }
+
+            try doc.diagnostic_metadata.append(self.allocator, metadata);
+        }
+    }
+
+    const EntityInfo = struct {
+        params: []const []const u8,
+        tparams: []const []const u8,
+        return_type: []const u8,
+        line: u32,
+    };
 
     /// Build test coverage cache by scanning test files
     fn buildTestCoverageCache(self: *Self) !void {
@@ -629,3 +1369,321 @@ pub fn runServer(allocator: std.mem.Allocator) !void {
     defer server.deinit();
     try server.run();
 }
+
+// =============================================================================
+// Doxygen Tag Completions
+// =============================================================================
+
+/// Doxygen documentation tag completion items
+const doxygen_completions = [_]lsp_types.CompletionItem{
+    // Brief description
+    .{
+        .label = "@brief",
+        .kind = .keyword,
+        .detail = "Brief description",
+        .documentation = "Starts a paragraph that serves as a brief description.",
+        .insert_text = "@brief ${1:description}",
+        .insert_text_format = .snippet,
+    },
+    // Parameters
+    .{
+        .label = "@param",
+        .kind = .keyword,
+        .detail = "Parameter documentation",
+        .documentation = "Documents a function parameter.",
+        .insert_text = "@param ${1:name} ${2:description}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@param[in]",
+        .kind = .keyword,
+        .detail = "Input parameter",
+        .documentation = "Documents an input parameter.",
+        .insert_text = "@param[in] ${1:name} ${2:description}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@param[out]",
+        .kind = .keyword,
+        .detail = "Output parameter",
+        .documentation = "Documents an output parameter.",
+        .insert_text = "@param[out] ${1:name} ${2:description}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@param[in,out]",
+        .kind = .keyword,
+        .detail = "Input/output parameter",
+        .documentation = "Documents a parameter used for both input and output.",
+        .insert_text = "@param[in,out] ${1:name} ${2:description}",
+        .insert_text_format = .snippet,
+    },
+    // Template parameters
+    .{
+        .label = "@tparam",
+        .kind = .keyword,
+        .detail = "Template parameter",
+        .documentation = "Documents a template parameter.",
+        .insert_text = "@tparam ${1:name} ${2:description}",
+        .insert_text_format = .snippet,
+    },
+    // Return value
+    .{
+        .label = "@return",
+        .kind = .keyword,
+        .detail = "Return value",
+        .documentation = "Documents the return value of a function.",
+        .insert_text = "@return ${1:description}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@returns",
+        .kind = .keyword,
+        .detail = "Return value (alias)",
+        .documentation = "Documents the return value of a function.",
+        .insert_text = "@returns ${1:description}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@retval",
+        .kind = .keyword,
+        .detail = "Specific return value",
+        .documentation = "Documents a specific return value.",
+        .insert_text = "@retval ${1:value} ${2:description}",
+        .insert_text_format = .snippet,
+    },
+    // Exceptions
+    .{
+        .label = "@throws",
+        .kind = .keyword,
+        .detail = "Exception documentation",
+        .documentation = "Documents an exception that may be thrown.",
+        .insert_text = "@throws ${1:exception_type} ${2:description}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@throw",
+        .kind = .keyword,
+        .detail = "Exception documentation (alias)",
+        .documentation = "Documents an exception that may be thrown.",
+        .insert_text = "@throw ${1:exception_type} ${2:description}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@exception",
+        .kind = .keyword,
+        .detail = "Exception documentation (alias)",
+        .documentation = "Documents an exception that may be thrown.",
+        .insert_text = "@exception ${1:exception_type} ${2:description}",
+        .insert_text_format = .snippet,
+    },
+    // Cross-references
+    .{
+        .label = "@see",
+        .kind = .keyword,
+        .detail = "See also reference",
+        .documentation = "Adds a cross-reference to related documentation.",
+        .insert_text = "@see ${1:reference}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@ref",
+        .kind = .keyword,
+        .detail = "Reference link",
+        .documentation = "Creates a reference to another documented entity.",
+        .insert_text = "@ref ${1:name}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@copydoc",
+        .kind = .keyword,
+        .detail = "Copy documentation",
+        .documentation = "Copies documentation from another entity.",
+        .insert_text = "@copydoc ${1:name}",
+        .insert_text_format = .snippet,
+    },
+    // Notes and warnings
+    .{
+        .label = "@note",
+        .kind = .keyword,
+        .detail = "Note block",
+        .documentation = "Adds a note paragraph.",
+        .insert_text = "@note ${1:text}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@warning",
+        .kind = .keyword,
+        .detail = "Warning block",
+        .documentation = "Adds a warning paragraph.",
+        .insert_text = "@warning ${1:text}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@attention",
+        .kind = .keyword,
+        .detail = "Attention block",
+        .documentation = "Adds an attention paragraph.",
+        .insert_text = "@attention ${1:text}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@remark",
+        .kind = .keyword,
+        .detail = "Remark block",
+        .documentation = "Adds a remark paragraph.",
+        .insert_text = "@remark ${1:text}",
+        .insert_text_format = .snippet,
+    },
+    // Deprecation
+    .{
+        .label = "@deprecated",
+        .kind = .keyword,
+        .detail = "Deprecation notice",
+        .documentation = "Marks an entity as deprecated.",
+        .insert_text = "@deprecated ${1:reason}",
+        .insert_text_format = .snippet,
+    },
+    // Pre/post conditions
+    .{
+        .label = "@pre",
+        .kind = .keyword,
+        .detail = "Precondition",
+        .documentation = "Documents a precondition.",
+        .insert_text = "@pre ${1:condition}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@post",
+        .kind = .keyword,
+        .detail = "Postcondition",
+        .documentation = "Documents a postcondition.",
+        .insert_text = "@post ${1:condition}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@invariant",
+        .kind = .keyword,
+        .detail = "Invariant",
+        .documentation = "Documents an invariant condition.",
+        .insert_text = "@invariant ${1:condition}",
+        .insert_text_format = .snippet,
+    },
+    // Code examples
+    .{
+        .label = "@code",
+        .kind = .keyword,
+        .detail = "Code block start",
+        .documentation = "Starts a code block.",
+        .insert_text = "@code{.${1:cpp}}\n${2:code}\n@endcode",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@endcode",
+        .kind = .keyword,
+        .detail = "Code block end",
+        .documentation = "Ends a code block.",
+        .insert_text = "@endcode",
+        .insert_text_format = .plain_text,
+    },
+    .{
+        .label = "@example",
+        .kind = .keyword,
+        .detail = "Example file",
+        .documentation = "References an example file.",
+        .insert_text = "@example ${1:filename}",
+        .insert_text_format = .snippet,
+    },
+    // Versioning
+    .{
+        .label = "@since",
+        .kind = .keyword,
+        .detail = "Since version",
+        .documentation = "Documents when an entity was introduced.",
+        .insert_text = "@since ${1:version}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@version",
+        .kind = .keyword,
+        .detail = "Version info",
+        .documentation = "Documents the version.",
+        .insert_text = "@version ${1:version}",
+        .insert_text_format = .snippet,
+    },
+    // Authors
+    .{
+        .label = "@author",
+        .kind = .keyword,
+        .detail = "Author info",
+        .documentation = "Documents the author.",
+        .insert_text = "@author ${1:name}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@authors",
+        .kind = .keyword,
+        .detail = "Authors info",
+        .documentation = "Documents multiple authors.",
+        .insert_text = "@authors ${1:names}",
+        .insert_text_format = .snippet,
+    },
+    // Grouping
+    .{
+        .label = "@defgroup",
+        .kind = .keyword,
+        .detail = "Define group",
+        .documentation = "Defines a documentation group.",
+        .insert_text = "@defgroup ${1:name} ${2:title}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@addtogroup",
+        .kind = .keyword,
+        .detail = "Add to group",
+        .documentation = "Adds entities to a group.",
+        .insert_text = "@addtogroup ${1:name}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@ingroup",
+        .kind = .keyword,
+        .detail = "In group",
+        .documentation = "Marks an entity as belonging to a group.",
+        .insert_text = "@ingroup ${1:name}",
+        .insert_text_format = .snippet,
+    },
+    // Other
+    .{
+        .label = "@details",
+        .kind = .keyword,
+        .detail = "Detailed description",
+        .documentation = "Starts the detailed description.",
+        .insert_text = "@details ${1:description}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@todo",
+        .kind = .keyword,
+        .detail = "TODO item",
+        .documentation = "Adds a TODO item.",
+        .insert_text = "@todo ${1:description}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@bug",
+        .kind = .keyword,
+        .detail = "Bug description",
+        .documentation = "Documents a known bug.",
+        .insert_text = "@bug ${1:description}",
+        .insert_text_format = .snippet,
+    },
+    .{
+        .label = "@file",
+        .kind = .keyword,
+        .detail = "File documentation",
+        .documentation = "Documents the current file.",
+        .insert_text = "@file ${1:filename}",
+        .insert_text_format = .snippet,
+    },
+};

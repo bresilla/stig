@@ -66,6 +66,34 @@ pub const Config = struct {
     test_coverage: TestCoverageOptions = .{},
     /// Module definitions for organizing documentation into packages
     modules: []const ModuleConfig = &[_]ModuleConfig{},
+    /// Watch mode options
+    watch: WatchOptions = .{},
+
+    /// Rule severity override for per-rule configuration
+    pub const RuleSeverity = enum {
+        /// Ignore this rule completely
+        ignore,
+        /// Report as info
+        info,
+        /// Report as warning
+        warning,
+        /// Report as error
+        @"error",
+
+        pub fn fromString(s: []const u8) ?RuleSeverity {
+            if (std.mem.eql(u8, s, "ignore") or std.mem.eql(u8, s, "off")) return .ignore;
+            if (std.mem.eql(u8, s, "info")) return .info;
+            if (std.mem.eql(u8, s, "warning") or std.mem.eql(u8, s, "warn")) return .warning;
+            if (std.mem.eql(u8, s, "error")) return .@"error";
+            return null;
+        }
+    };
+
+    /// Per-rule configuration entry
+    pub const RuleConfig = struct {
+        code: []const u8,
+        severity: RuleSeverity,
+    };
 
     /// Lint options for --lint mode
     pub const LintOptions = struct {
@@ -89,6 +117,18 @@ pub const Config = struct {
         require_brief_period: bool = false,
         /// Patterns to exclude from linting
         exclude_patterns: []const []const u8 = &[_][]const u8{},
+        /// Per-rule severity overrides
+        rules: []const RuleConfig = &[_]RuleConfig{},
+
+        /// Get the severity override for a rule, or null if not configured
+        pub fn getRuleSeverity(self: LintOptions, code: []const u8) ?RuleSeverity {
+            for (self.rules) |rule| {
+                if (std.mem.eql(u8, rule.code, code)) {
+                    return rule.severity;
+                }
+            }
+            return null;
+        }
     };
 
     /// Coverage analysis options for --coverage mode (documentation coverage)
@@ -113,6 +153,28 @@ pub const Config = struct {
         test_patterns: []const []const u8 = &[_][]const u8{},
         /// Patterns to exclude from test coverage analysis
         exclude_patterns: []const []const u8 = &[_][]const u8{},
+    };
+
+    /// Watch mode options
+    pub const WatchOptions = struct {
+        /// Debounce time in milliseconds
+        debounce_ms: u32 = 100,
+        /// Patterns to ignore (glob patterns)
+        /// Default ignores common build artifacts and VCS directories
+        ignore_patterns: []const []const u8 = &[_][]const u8{
+            ".git/**",
+            ".git",
+            "node_modules/**",
+            "build/**",
+            "zig-out/**",
+            "zig-cache/**",
+            ".zig-cache/**",
+            "*.o",
+            "*.obj",
+            "*.a",
+            "*.so",
+            "*.dylib",
+        },
     };
 
     /// Output formatting options
@@ -224,6 +286,12 @@ const TomlConfig = struct {
     // [book] section (mdbook compatibility)
     book: ?BookSection = null,
 
+    // [lint] section for lint configuration
+    lint: ?LintSection = null,
+
+    // [watch] section for watch mode configuration
+    watch: ?WatchSection = null,
+
     // Note: [output] section conflicts with 'output' field name
     // We'll handle output_dir and format from root level only
 
@@ -251,6 +319,26 @@ const TomlConfig = struct {
         authors: ?[]const []const u8 = null,
         language: ?[]const u8 = null,
     };
+
+    const LintSection = struct {
+        enabled: ?bool = null,
+        treat_warnings_as_errors: ?bool = null,
+        max_brief_length: ?i64 = null,
+        require_brief: ?bool = null,
+        require_param_docs: ?bool = null,
+        require_return_docs: ?bool = null,
+        require_tparam_docs: ?bool = null,
+        check_cross_references: ?bool = null,
+        require_brief_period: ?bool = null,
+        exclude_patterns: ?[]const []const u8 = null,
+        /// [lint.rules] section - maps rule codes to severity strings
+        rules: ?toml.HashMap([]const u8) = null,
+    };
+
+    const WatchSection = struct {
+        debounce_ms: ?i64 = null,
+        ignore_patterns: ?[]const []const u8 = null,
+    };
 };
 
 /// Configuration loader using zig-toml
@@ -259,6 +347,8 @@ pub const ConfigLoader = struct {
     parsed: ?toml.Parsed(TomlConfig) = null,
     /// Owned slice for converted module configs
     module_configs: ?[]ModuleConfig = null,
+    /// Owned slice for converted rule configs
+    rule_configs: ?[]Config.RuleConfig = null,
 
     const Self = @This();
 
@@ -271,6 +361,9 @@ pub const ConfigLoader = struct {
     pub fn deinit(self: *Self) void {
         if (self.module_configs) |mods| {
             self.allocator.free(mods);
+        }
+        if (self.rule_configs) |rules| {
+            self.allocator.free(rules);
         }
         if (self.parsed) |parsed| {
             parsed.deinit();
@@ -476,6 +569,56 @@ pub const ConfigLoader = struct {
             }
         }
 
+        // Lint section
+        if (tc.lint) |lint_section| {
+            if (lint_section.enabled) |e| config.lint.enabled = e;
+            if (lint_section.treat_warnings_as_errors) |t| config.lint.treat_warnings_as_errors = t;
+            if (lint_section.max_brief_length) |m| config.lint.max_brief_length = @intCast(m);
+            if (lint_section.require_brief) |r| config.lint.require_brief = r;
+            if (lint_section.require_param_docs) |r| config.lint.require_param_docs = r;
+            if (lint_section.require_return_docs) |r| config.lint.require_return_docs = r;
+            if (lint_section.require_tparam_docs) |r| config.lint.require_tparam_docs = r;
+            if (lint_section.check_cross_references) |c| config.lint.check_cross_references = c;
+            if (lint_section.require_brief_period) |r| config.lint.require_brief_period = r;
+            if (lint_section.exclude_patterns) |e| config.lint.exclude_patterns = e;
+
+            // Parse [lint.rules] section
+            if (lint_section.rules) |rules_map| {
+                const count = rules_map.map.count();
+                if (count > 0) {
+                    const rules = self.allocator.alloc(Config.RuleConfig, count) catch {
+                        return config;
+                    };
+                    var idx: usize = 0;
+                    var it = rules_map.map.iterator();
+                    while (it.next()) |entry| {
+                        if (Config.RuleSeverity.fromString(entry.value_ptr.*)) |severity| {
+                            rules[idx] = Config.RuleConfig{
+                                .code = entry.key_ptr.*,
+                                .severity = severity,
+                            };
+                            idx += 1;
+                        }
+                    }
+                    // Shrink to actual size if some entries were invalid
+                    if (idx < count) {
+                        const shrunk = self.allocator.realloc(rules, idx) catch rules;
+                        self.rule_configs = shrunk;
+                        config.lint.rules = shrunk;
+                    } else {
+                        self.rule_configs = rules;
+                        config.lint.rules = rules;
+                    }
+                }
+            }
+        }
+
+        // Watch section
+        if (tc.watch) |watch_section| {
+            if (watch_section.debounce_ms) |d| config.watch.debounce_ms = @intCast(d);
+            if (watch_section.ignore_patterns) |p| config.watch.ignore_patterns = p;
+        }
+
         return config;
     }
 };
@@ -604,4 +747,85 @@ test "empty config returns defaults" {
     const config = try loader.loadString("");
     try std.testing.expectEqualStrings("API Reference", config.title);
     try std.testing.expectEqualStrings("docs", config.output_dir);
+}
+
+test "parse lint section with rules" {
+    const content =
+        \\[lint]
+        \\enabled = true
+        \\require_brief = false
+        \\max_brief_length = 100
+        \\
+        \\[lint.rules]
+        \\W001 = "ignore"
+        \\W003 = "error"
+        \\E001 = "warning"
+    ;
+
+    var loader = ConfigLoader.init(std.testing.allocator);
+    defer loader.deinit();
+
+    const config = try loader.loadString(content);
+    try std.testing.expectEqual(true, config.lint.enabled);
+    try std.testing.expectEqual(false, config.lint.require_brief);
+    try std.testing.expectEqual(@as(u32, 100), config.lint.max_brief_length);
+
+    // Check rules were parsed
+    try std.testing.expectEqual(@as(usize, 3), config.lint.rules.len);
+
+    // Check individual rules (order may vary due to HashMap)
+    var found_w001 = false;
+    var found_w003 = false;
+    var found_e001 = false;
+    for (config.lint.rules) |rule| {
+        if (std.mem.eql(u8, rule.code, "W001")) {
+            try std.testing.expectEqual(Config.RuleSeverity.ignore, rule.severity);
+            found_w001 = true;
+        } else if (std.mem.eql(u8, rule.code, "W003")) {
+            try std.testing.expectEqual(Config.RuleSeverity.@"error", rule.severity);
+            found_w003 = true;
+        } else if (std.mem.eql(u8, rule.code, "E001")) {
+            try std.testing.expectEqual(Config.RuleSeverity.warning, rule.severity);
+            found_e001 = true;
+        }
+    }
+    try std.testing.expect(found_w001);
+    try std.testing.expect(found_w003);
+    try std.testing.expect(found_e001);
+}
+
+test "RuleSeverity.fromString" {
+    try std.testing.expectEqual(Config.RuleSeverity.ignore, Config.RuleSeverity.fromString("ignore"));
+    try std.testing.expectEqual(Config.RuleSeverity.ignore, Config.RuleSeverity.fromString("off"));
+    try std.testing.expectEqual(Config.RuleSeverity.info, Config.RuleSeverity.fromString("info"));
+    try std.testing.expectEqual(Config.RuleSeverity.warning, Config.RuleSeverity.fromString("warning"));
+    try std.testing.expectEqual(Config.RuleSeverity.warning, Config.RuleSeverity.fromString("warn"));
+    try std.testing.expectEqual(Config.RuleSeverity.@"error", Config.RuleSeverity.fromString("error"));
+    try std.testing.expectEqual(@as(?Config.RuleSeverity, null), Config.RuleSeverity.fromString("invalid"));
+}
+
+test "parse watch section" {
+    const content =
+        \\[watch]
+        \\debounce_ms = 200
+        \\ignore_patterns = [".git/**", "build/**", "*.tmp"]
+    ;
+
+    var loader = ConfigLoader.init(std.testing.allocator);
+    defer loader.deinit();
+
+    const config = try loader.loadString(content);
+    try std.testing.expectEqual(@as(u32, 200), config.watch.debounce_ms);
+    try std.testing.expectEqual(@as(usize, 3), config.watch.ignore_patterns.len);
+    try std.testing.expectEqualStrings(".git/**", config.watch.ignore_patterns[0]);
+    try std.testing.expectEqualStrings("build/**", config.watch.ignore_patterns[1]);
+    try std.testing.expectEqualStrings("*.tmp", config.watch.ignore_patterns[2]);
+}
+
+test "default watch ignore patterns" {
+    const config = Config{};
+    // Check that defaults include common patterns
+    try std.testing.expect(config.watch.ignore_patterns.len > 0);
+    // Default debounce is 100ms
+    try std.testing.expectEqual(@as(u32, 100), config.watch.debounce_ms);
 }

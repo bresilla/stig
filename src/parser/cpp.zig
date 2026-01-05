@@ -59,6 +59,7 @@ pub const CppParser = struct {
 
         var functions: std.ArrayList(types.Function) = .empty;
         var structs: std.ArrayList(types.Struct) = .empty;
+        var unions: std.ArrayList(types.Union) = .empty;
         var enums: std.ArrayList(types.Enum) = .empty;
         var typedefs: std.ArrayList(types.Typedef) = .empty;
         var macros: std.ArrayList(types.Macro) = .empty;
@@ -67,18 +68,23 @@ pub const CppParser = struct {
         var concepts: std.ArrayList(types.Concept) = .empty;
         var type_aliases: std.ArrayList(types.TypeAlias) = .empty;
         var pages: std.ArrayList(types.Page) = .empty;
+        var groups: std.ArrayList(types.Group) = .empty;
         var includes: std.ArrayList(types.IncludeInfo) = .empty;
 
         const root = tree.?.rootNode();
-        try self.walkNode(root, &functions, &structs, &enums, &typedefs, &macros, &classes, &namespaces, &concepts, &type_aliases, &includes, filename, null);
+        try self.walkNode(root, &functions, &structs, &unions, &enums, &typedefs, &macros, &classes, &namespaces, &concepts, &type_aliases, &includes, filename, null);
 
         // Extract custom pages (@page, @mainpage) from standalone doc comments
         try self.extractPages(root, &pages);
+
+        // Extract group definitions (@defgroup, @addtogroup) from standalone doc comments
+        try self.extractGroups(root, &groups);
 
         return types.Module{
             .name = filename,
             .functions = try functions.toOwnedSlice(self.allocator),
             .structs = try structs.toOwnedSlice(self.allocator),
+            .unions = try unions.toOwnedSlice(self.allocator),
             .enums = try enums.toOwnedSlice(self.allocator),
             .typedefs = try typedefs.toOwnedSlice(self.allocator),
             .macros = try macros.toOwnedSlice(self.allocator),
@@ -87,6 +93,7 @@ pub const CppParser = struct {
             .concepts = try concepts.toOwnedSlice(self.allocator),
             .type_aliases = try type_aliases.toOwnedSlice(self.allocator),
             .pages = try pages.toOwnedSlice(self.allocator),
+            .groups = try groups.toOwnedSlice(self.allocator),
             .includes = try includes.toOwnedSlice(self.allocator),
         };
     }
@@ -96,12 +103,27 @@ pub const CppParser = struct {
         return common.getNodeText(self.source, node);
     }
 
+    /// Checks if a node has a child of the specified kind
+    fn hasChildOfKind(self: *Self, node: ts.Node, kind: []const u8) bool {
+        _ = self;
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                if (std.mem.eql(u8, child.kind(), kind)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     /// Walks the AST and extracts declarations
     fn walkNode(
         self: *Self,
         node: ts.Node,
         functions: *std.ArrayList(types.Function),
         structs: *std.ArrayList(types.Struct),
+        unions: *std.ArrayList(types.Union),
         enums: *std.ArrayList(types.Enum),
         typedefs: *std.ArrayList(types.Typedef),
         macros: *std.ArrayList(types.Macro),
@@ -135,6 +157,10 @@ pub const CppParser = struct {
             if (try self.extractStruct(node, filename, current_namespace)) |s| {
                 try structs.append(self.allocator, s);
             }
+        } else if (std.mem.eql(u8, node_kind, "union_specifier")) {
+            if (try self.extractUnion(node, filename, current_namespace)) |u| {
+                try unions.append(self.allocator, u);
+            }
         } else if (std.mem.eql(u8, node_kind, "enum_specifier")) {
             if (try self.extractEnum(node, filename, current_namespace)) |e| {
                 try enums.append(self.allocator, e);
@@ -154,7 +180,7 @@ pub const CppParser = struct {
                         var j: u32 = 0;
                         while (j < child.childCount()) : (j += 1) {
                             if (child.child(j)) |body_child| {
-                                try self.walkNode(body_child, functions, structs, enums, typedefs, macros, classes, namespaces, concepts, type_aliases, includes, filename, ns_info.full_name);
+                                try self.walkNode(body_child, functions, structs, unions, enums, typedefs, macros, classes, namespaces, concepts, type_aliases, includes, filename, ns_info.full_name);
                             }
                         }
                     }
@@ -181,7 +207,7 @@ pub const CppParser = struct {
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {
-                try self.walkNode(child, functions, structs, enums, typedefs, macros, classes, namespaces, concepts, type_aliases, includes, filename, current_namespace);
+                try self.walkNode(child, functions, structs, unions, enums, typedefs, macros, classes, namespaces, concepts, type_aliases, includes, filename, current_namespace);
             }
         }
     }
@@ -236,8 +262,9 @@ pub const CppParser = struct {
         namespace: ?[]const u8,
         template_doc: ?types.DocString,
     ) !void {
-        // First, extract template parameters from this template_declaration
+        // First, extract template parameters and requires clause from this template_declaration
         const template_params = try self.extractTemplateParams(node);
+        const requires_clause = self.extractRequiresClause(node);
 
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
@@ -247,17 +274,19 @@ pub const CppParser = struct {
                 if (std.mem.eql(u8, child_kind, "function_definition") or
                     std.mem.eql(u8, child_kind, "declaration"))
                 {
-                    // Extract function and add template params
+                    // Extract function and add template params and requires clause
                     if (try self.extractFunctionPrototypeWithDoc(child, filename, namespace, template_doc)) |func| {
                         var template_func = func;
                         template_func.template_params = template_params;
+                        template_func.requires_clause = requires_clause;
                         try functions.append(self.allocator, template_func);
                     }
                 } else if (std.mem.eql(u8, child_kind, "class_specifier")) {
-                    // Extract class and add template params
+                    // Extract class and add template params and requires clause
                     if (try self.extractClassWithDoc(child, filename, namespace, template_doc)) |class| {
                         var template_class = class;
                         template_class.template_params = template_params;
+                        template_class.requires_clause = requires_clause;
                         try classes.append(self.allocator, template_class);
                     }
                 } else if (std.mem.eql(u8, child_kind, "struct_specifier")) {
@@ -345,6 +374,39 @@ pub const CppParser = struct {
         }
 
         return try params.toOwnedSlice(self.allocator);
+    }
+
+    /// Extracts the requires clause from a template_declaration node
+    /// Returns the constraint expression text (e.g., "std::integral<T>")
+    fn extractRequiresClause(self: *Self, node: ts.Node) ?[]const u8 {
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "requires_clause")) {
+                    // The requires_clause contains the constraint expression
+                    // Skip the "requires" keyword and get the constraint
+                    var j: u32 = 0;
+                    while (j < child.childCount()) : (j += 1) {
+                        if (child.child(j)) |constraint_child| {
+                            const constraint_kind = constraint_child.kind();
+                            // Skip the "requires" keyword itself
+                            if (!std.mem.eql(u8, constraint_kind, "requires")) {
+                                return self.getNodeText(constraint_child);
+                            }
+                        }
+                    }
+                    // Fallback: get the full text minus "requires "
+                    const full_text = self.getNodeText(child);
+                    if (std.mem.startsWith(u8, full_text, "requires ")) {
+                        return full_text[9..];
+                    }
+                    return full_text;
+                }
+            }
+        }
+        return null;
     }
 
     /// Extracts a type template parameter (typename T or class T)
@@ -757,8 +819,18 @@ pub const CppParser = struct {
                         try methods.append(self.allocator, method);
                     }
                 } else if (std.mem.eql(u8, child_kind, "field_declaration")) {
-                    if (self.extractClassField(child, current_access.*)) |field| {
-                        try fields.append(self.allocator, field);
+                    // Check if this is a method declaration (has function_declarator)
+                    // or a field declaration
+                    if (self.hasChildOfKind(child, "function_declarator")) {
+                        // This is a method declaration
+                        if (try self.extractMethod(child, current_access.*, class_name)) |method| {
+                            try methods.append(self.allocator, method);
+                        }
+                    } else {
+                        // This is a field declaration
+                        if (self.extractClassField(child, current_access.*)) |field| {
+                            try fields.append(self.allocator, field);
+                        }
                     }
                 } else if (std.mem.eql(u8, child_kind, "class_specifier")) {
                     // Nested class definition
@@ -888,6 +960,9 @@ pub const CppParser = struct {
         var is_virtual = false;
         var is_static = false;
         var is_const = false;
+        var is_override = false;
+        var is_final = false;
+        var is_pure_virtual = false;
         var is_defaulted = false;
         var is_deleted = false;
         var is_constexpr = false;
@@ -897,6 +972,17 @@ pub const CppParser = struct {
         var is_conversion_operator = false;
         var is_operator_overload = false;
         var operator_symbol: ?[]const u8 = null;
+
+        // Debug: print all child nodes
+        if (false) { // Set to true for debugging
+            std.debug.print("\nextractMethod node kind: {s}\n", .{node.kind()});
+            var dbg_i: u32 = 0;
+            while (dbg_i < node.childCount()) : (dbg_i += 1) {
+                if (node.child(dbg_i)) |dbg_child| {
+                    std.debug.print("  child[{d}]: {s} = '{s}'\n", .{ dbg_i, dbg_child.kind(), self.getNodeText(dbg_child) });
+                }
+            }
+        }
 
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
@@ -970,6 +1056,41 @@ pub const CppParser = struct {
                             } else if (std.mem.eql(u8, fd_kind, "noexcept")) {
                                 // noexcept specifier (handles both noexcept and noexcept(expr))
                                 is_noexcept = true;
+                            } else if (std.mem.eql(u8, fd_kind, "virtual_specifier")) {
+                                // override or final specifier
+                                const spec_text = self.getNodeText(fd_child);
+                                if (std.mem.eql(u8, spec_text, "override")) {
+                                    is_override = true;
+                                } else if (std.mem.eql(u8, spec_text, "final")) {
+                                    is_final = true;
+                                }
+                            } else if (std.mem.eql(u8, fd_kind, "pure_virtual_clause")) {
+                                // = 0 for pure virtual methods
+                                is_pure_virtual = true;
+                            }
+                        }
+                    }
+                } else if (std.mem.eql(u8, child_kind, "virtual_specifier")) {
+                    // override or final specifier at top level
+                    const spec_text = self.getNodeText(child);
+                    if (std.mem.eql(u8, spec_text, "override")) {
+                        is_override = true;
+                    } else if (std.mem.eql(u8, spec_text, "final")) {
+                        is_final = true;
+                    }
+                } else if (std.mem.eql(u8, child_kind, "pure_virtual_clause")) {
+                    // = 0 for pure virtual methods at top level
+                    is_pure_virtual = true;
+                } else if (std.mem.eql(u8, child_kind, "=")) {
+                    // Check for = 0 pattern (pure virtual)
+                    // Look at the next sibling for number_literal with value 0
+                    if (i + 1 < node.childCount()) {
+                        if (node.child(i + 1)) |next_child| {
+                            if (std.mem.eql(u8, next_child.kind(), "number_literal")) {
+                                const num_text = self.getNodeText(next_child);
+                                if (std.mem.eql(u8, num_text, "0")) {
+                                    is_pure_virtual = true;
+                                }
                             }
                         }
                     }
@@ -1001,6 +1122,9 @@ pub const CppParser = struct {
             .is_virtual = is_virtual,
             .is_static = is_static,
             .is_const = is_const,
+            .is_override = is_override,
+            .is_final = is_final,
+            .is_pure_virtual = is_pure_virtual,
             .is_defaulted = is_defaulted,
             .is_deleted = is_deleted,
             .is_constexpr = is_constexpr,
@@ -1428,6 +1552,55 @@ pub const CppParser = struct {
         return null;
     }
 
+    /// Extracts union
+    fn extractUnion(self: *Self, node: ts.Node, filename: []const u8, namespace: ?[]const u8) !?types.Union {
+        // Skip forward declarations (no body)
+        if (!self.hasFieldDeclarationList(node)) return null;
+
+        var name: ?[]const u8 = null;
+        var fields: std.ArrayList(types.StructField) = .empty;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                if (std.mem.eql(u8, child_kind, "type_identifier")) {
+                    name = self.getNodeText(child);
+                } else if (std.mem.eql(u8, child_kind, "field_declaration_list")) {
+                    var j: u32 = 0;
+                    while (j < child.childCount()) : (j += 1) {
+                        if (child.child(j)) |body_child| {
+                            if (std.mem.eql(u8, body_child.kind(), "field_declaration")) {
+                                if (self.extractStructField(body_child)) |field| {
+                                    try fields.append(self.allocator, field);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (name == null) return null;
+
+        const start = node.startPoint();
+        const full_name = if (namespace) |ns|
+            try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ ns, name.? })
+        else
+            name.?;
+
+        return types.Union{
+            .name = full_name,
+            .fields = try fields.toOwnedSlice(self.allocator),
+            .doc = self.findPrecedingDocstring(node),
+            .location = types.SourceLocation{
+                .file = filename,
+                .line = start.row + 1,
+                .column = start.column + 1,
+            },
+        };
+    }
+
     /// Extracts a struct field
     fn extractStructField(self: *Self, node: ts.Node) ?types.StructField {
         var name: ?[]const u8 = null;
@@ -1819,9 +1992,708 @@ pub const CppParser = struct {
     fn extractPages(self: *Self, root: ts.Node, pages: *std.ArrayList(types.Page)) !void {
         try common.extractPages(self.allocator, self.source, root, pages, &self.docstring_extractor);
     }
+
+    /// Extracts group definitions from standalone doc comments containing @defgroup or @addtogroup
+    fn extractGroups(self: *Self, root: ts.Node, groups: *std.ArrayList(types.Group)) !void {
+        try common.extractGroups(self.allocator, self.source, root, groups, &self.docstring_extractor);
+    }
 };
 
 test "cpp parser init" {
     var parser = try CppParser.init(std.testing.allocator);
     defer parser.deinit();
+}
+
+// =============================================================================
+// Class Parsing Tests
+// =============================================================================
+
+test "parse simple class" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Point {
+        \\public:
+        \\    int x;
+        \\    int y;
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    try std.testing.expectEqualStrings("Point", module.classes[0].name);
+}
+
+test "parse class with methods" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Calculator {
+        \\public:
+        \\    int add(int a, int b);
+        \\    int subtract(int a, int b);
+        \\private:
+        \\    int result;
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+    try std.testing.expectEqualStrings("Calculator", class.name);
+    try std.testing.expect(class.methods.len >= 2);
+}
+
+test "parse class with access specifiers" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class MyClass {
+        \\public:
+        \\    void public_method();
+        \\protected:
+        \\    void protected_method();
+        \\private:
+        \\    void private_method();
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+
+    // Check that methods have correct access specifiers
+    var found_public = false;
+    var found_protected = false;
+    var found_private = false;
+
+    for (class.methods) |method| {
+        if (std.mem.eql(u8, method.name, "public_method")) {
+            try std.testing.expectEqual(types.AccessSpecifier.public, method.access);
+            found_public = true;
+        } else if (std.mem.eql(u8, method.name, "protected_method")) {
+            try std.testing.expectEqual(types.AccessSpecifier.protected, method.access);
+            found_protected = true;
+        } else if (std.mem.eql(u8, method.name, "private_method")) {
+            try std.testing.expectEqual(types.AccessSpecifier.private, method.access);
+            found_private = true;
+        }
+    }
+
+    try std.testing.expect(found_public);
+    try std.testing.expect(found_protected);
+    try std.testing.expect(found_private);
+}
+
+// =============================================================================
+// Constructor/Destructor Tests
+// =============================================================================
+
+test "parse constructor and destructor" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Resource {
+        \\public:
+        \\    Resource();
+        \\    ~Resource();
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+
+    var found_ctor = false;
+    var found_dtor = false;
+
+    for (class.methods) |method| {
+        if (method.kind == .constructor) {
+            found_ctor = true;
+        } else if (method.kind == .destructor) {
+            found_dtor = true;
+        }
+    }
+
+    try std.testing.expect(found_ctor);
+    try std.testing.expect(found_dtor);
+}
+
+test "parse copy and move constructors" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Buffer {
+        \\public:
+        \\    Buffer(const Buffer& other);
+        \\    Buffer(Buffer&& other);
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+
+    var found_copy = false;
+    var found_move = false;
+
+    for (class.methods) |method| {
+        if (method.kind == .copy_constructor) {
+            found_copy = true;
+        } else if (method.kind == .move_constructor) {
+            found_move = true;
+        }
+    }
+
+    try std.testing.expect(found_copy);
+    try std.testing.expect(found_move);
+}
+
+// =============================================================================
+// Inheritance Tests
+// =============================================================================
+
+test "parse single inheritance" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Base {
+        \\public:
+        \\    virtual void method();
+        \\};
+        \\
+        \\class Derived : public Base {
+        \\public:
+        \\    void method() override;
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 2), module.classes.len);
+
+    // Find Derived class
+    var derived: ?types.Class = null;
+    for (module.classes) |class| {
+        if (std.mem.eql(u8, class.name, "Derived")) {
+            derived = class;
+            break;
+        }
+    }
+
+    try std.testing.expect(derived != null);
+    try std.testing.expectEqual(@as(usize, 1), derived.?.base_classes.len);
+    try std.testing.expectEqualStrings("Base", derived.?.base_classes[0].name);
+    try std.testing.expectEqual(types.AccessSpecifier.public, derived.?.base_classes[0].access);
+}
+
+test "parse multiple inheritance" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class A { };
+        \\class B { };
+        \\class C : public A, protected B { };
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 3), module.classes.len);
+
+    // Find C class
+    var c_class: ?types.Class = null;
+    for (module.classes) |class| {
+        if (std.mem.eql(u8, class.name, "C")) {
+            c_class = class;
+            break;
+        }
+    }
+
+    try std.testing.expect(c_class != null);
+    try std.testing.expectEqual(@as(usize, 2), c_class.?.base_classes.len);
+}
+
+// =============================================================================
+// Namespace Tests
+// =============================================================================
+
+test "parse simple namespace" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\namespace math {
+        \\    int add(int a, int b);
+        \\}
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.namespaces);
+    defer std.testing.allocator.free(module.functions);
+
+    try std.testing.expectEqual(@as(usize, 1), module.namespaces.len);
+    try std.testing.expectEqualStrings("math", module.namespaces[0].name);
+
+    // Function should have namespace prefix
+    try std.testing.expectEqual(@as(usize, 1), module.functions.len);
+    try std.testing.expectEqualStrings("math::add", module.functions[0].name);
+}
+
+test "parse nested namespace" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\namespace outer {
+        \\    namespace inner {
+        \\        void func();
+        \\    }
+        \\}
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.namespaces);
+    defer std.testing.allocator.free(module.functions);
+
+    // Should have both namespaces
+    try std.testing.expect(module.namespaces.len >= 1);
+
+    // Function should have full namespace path
+    try std.testing.expectEqual(@as(usize, 1), module.functions.len);
+    try std.testing.expectEqualStrings("outer::inner::func", module.functions[0].name);
+}
+
+// =============================================================================
+// Template Tests
+// =============================================================================
+
+test "parse template class" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\template<typename T>
+        \\class Container {
+        \\public:
+        \\    void add(T item);
+        \\    T get(int index);
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+    try std.testing.expectEqualStrings("Container", class.name);
+    try std.testing.expect(class.template_params.len > 0);
+}
+
+test "parse template function" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\template<typename T>
+        \\T max(T a, T b) {
+        \\    return a > b ? a : b;
+        \\}
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.functions);
+
+    try std.testing.expectEqual(@as(usize, 1), module.functions.len);
+    try std.testing.expectEqualStrings("max", module.functions[0].name);
+    try std.testing.expect(module.functions[0].template_params.len > 0);
+}
+
+test "parse template with multiple parameters" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\template<typename K, typename V>
+        \\class Map {
+        \\public:
+        \\    void insert(K key, V value);
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    try std.testing.expect(module.classes[0].template_params.len >= 2);
+}
+
+// =============================================================================
+// Operator Overload Tests
+// =============================================================================
+
+test "parse operator overloads" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Vector {
+        \\public:
+        \\    Vector operator+(const Vector& other);
+        \\    bool operator==(const Vector& other);
+        \\    int& operator[](int index);
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+
+    var operator_count: usize = 0;
+    for (class.methods) |method| {
+        if (method.kind == .operator_overload) {
+            operator_count += 1;
+        }
+    }
+
+    try std.testing.expect(operator_count >= 3);
+}
+
+// =============================================================================
+// Type Alias Tests
+// =============================================================================
+
+test "parse using type alias" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\using StringList = std::vector<std::string>;
+        \\using IntPtr = int*;
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.type_aliases);
+
+    try std.testing.expectEqual(@as(usize, 2), module.type_aliases.len);
+}
+
+// =============================================================================
+// Struct Tests (C++ style)
+// =============================================================================
+
+test "parse cpp struct with methods" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\struct Point {
+        \\    int x;
+        \\    int y;
+        \\    int distance();
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.structs);
+
+    try std.testing.expectEqual(@as(usize, 1), module.structs.len);
+    try std.testing.expectEqualStrings("Point", module.structs[0].name);
+}
+
+// =============================================================================
+// Edge Cases
+// =============================================================================
+
+test "parse empty class" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source = "class Empty { };";
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    try std.testing.expectEqualStrings("Empty", module.classes[0].name);
+}
+
+test "parse forward declaration" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source = "class ForwardDeclared;";
+    const module = try parser.parse(source, "test.hpp");
+
+    // Forward declarations should not create class entries
+    try std.testing.expectEqual(@as(usize, 0), module.classes.len);
+}
+
+test "parse virtual methods" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Interface {
+        \\public:
+        \\    virtual void method() = 0;
+        \\    virtual ~Interface() = default;
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+
+    var found_pure_virtual = false;
+    for (class.methods) |method| {
+        if (method.is_pure_virtual) {
+            found_pure_virtual = true;
+            break;
+        }
+    }
+
+    try std.testing.expect(found_pure_virtual);
+}
+
+test "parse const methods" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Getter {
+        \\public:
+        \\    int getValue() const;
+        \\    void setValue(int v);
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+
+    var found_const = false;
+    var found_non_const = false;
+
+    for (class.methods) |method| {
+        if (std.mem.eql(u8, method.name, "getValue")) {
+            try std.testing.expect(method.is_const);
+            found_const = true;
+        } else if (std.mem.eql(u8, method.name, "setValue")) {
+            try std.testing.expect(!method.is_const);
+            found_non_const = true;
+        }
+    }
+
+    try std.testing.expect(found_const);
+    try std.testing.expect(found_non_const);
+}
+
+test "parse static methods" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Factory {
+        \\public:
+        \\    static Factory* create();
+        \\    void destroy();
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+
+    var found_static = false;
+    for (class.methods) |method| {
+        if (std.mem.eql(u8, method.name, "create")) {
+            try std.testing.expect(method.is_static);
+            found_static = true;
+            break;
+        }
+    }
+
+    try std.testing.expect(found_static);
+}
+
+test "parse enum class" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\enum class Color {
+        \\    Red,
+        \\    Green,
+        \\    Blue
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.enums);
+
+    try std.testing.expectEqual(@as(usize, 1), module.enums.len);
+    try std.testing.expectEqualStrings("Color", module.enums[0].name);
+    try std.testing.expectEqual(@as(usize, 3), module.enums[0].values.len);
+}
+
+test "parse class with docstring" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\/// A simple point class
+        \\class Point {
+        \\public:
+        \\    int x;
+        \\    int y;
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    try std.testing.expect(module.classes[0].doc != null);
+    try std.testing.expectEqualStrings("A simple point class", module.classes[0].doc.?.brief.?);
+}
+
+// =============================================================================
+// Requires Clause Tests
+// =============================================================================
+
+test "parse template function with requires clause" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\template<typename T>
+        \\requires std::integral<T>
+        \\void process(T value);
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.functions);
+
+    try std.testing.expectEqual(@as(usize, 1), module.functions.len);
+    try std.testing.expectEqualStrings("process", module.functions[0].name);
+    try std.testing.expect(module.functions[0].template_params.len > 0);
+    // Check requires clause is extracted
+    try std.testing.expect(module.functions[0].requires_clause != null);
+    try std.testing.expectEqualStrings("std::integral<T>", module.functions[0].requires_clause.?);
+}
+
+test "parse template class with requires clause" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\template<typename T>
+        \\requires std::copyable<T>
+        \\class Container {
+        \\public:
+        \\    void add(T item);
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    try std.testing.expectEqualStrings("Container", module.classes[0].name);
+    try std.testing.expect(module.classes[0].template_params.len > 0);
+    // Check requires clause is extracted
+    try std.testing.expect(module.classes[0].requires_clause != null);
+    try std.testing.expectEqualStrings("std::copyable<T>", module.classes[0].requires_clause.?);
+}
+
+// =============================================================================
+// Override/Final/Pure Virtual Tests
+// =============================================================================
+
+test "parse method with override specifier" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Derived {
+        \\public:
+        \\    void foo() override;
+        \\    int bar() const override;
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+    try std.testing.expect(class.methods.len >= 2);
+
+    // Check override is detected
+    var override_count: usize = 0;
+    for (class.methods) |method| {
+        if (method.is_override) {
+            override_count += 1;
+        }
+    }
+    try std.testing.expect(override_count >= 2);
+}
+
+test "parse method with final specifier" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Derived {
+        \\public:
+        \\    void foo() final;
+        \\    int bar() const final;
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+    try std.testing.expect(class.methods.len >= 2);
+
+    // Check final is detected
+    var final_count: usize = 0;
+    for (class.methods) |method| {
+        if (method.is_final) {
+            final_count += 1;
+        }
+    }
+    try std.testing.expect(final_count >= 2);
+}
+
+test "parse pure virtual method" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Interface {
+        \\public:
+        \\    virtual void foo() = 0;
+        \\    virtual int bar() const = 0;
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+    try std.testing.expect(class.methods.len >= 2);
+
+    // Check pure virtual is detected
+    var pure_virtual_count: usize = 0;
+    for (class.methods) |method| {
+        if (method.is_pure_virtual) {
+            pure_virtual_count += 1;
+        }
+    }
+    try std.testing.expect(pure_virtual_count >= 2);
 }

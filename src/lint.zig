@@ -90,6 +90,10 @@ pub const LintReport = struct {
             std.mem.startsWith(u8, s, "@brief exceeds") or
             std.mem.startsWith(u8, s, "missing @param") or
             std.mem.startsWith(u8, s, "missing @tparam") or
+            std.mem.startsWith(u8, s, "duplicate @param") or
+            std.mem.startsWith(u8, s, "duplicate @tparam") or
+            std.mem.startsWith(u8, s, "empty @param") or
+            std.mem.startsWith(u8, s, "empty @tparam") or
             std.mem.startsWith(u8, s, "Did you mean");
     }
 
@@ -111,7 +115,9 @@ pub const LintReport = struct {
     }
 };
 
-/// Configuration for lint checks
+const config_mod = @import("config.zig");
+
+/// Configuration for lint checks (re-export from config module)
 pub const LintConfig = struct {
     /// Enable linting
     enabled: bool = true,
@@ -133,6 +139,18 @@ pub const LintConfig = struct {
     require_brief_period: bool = false,
     /// Patterns to exclude from linting
     exclude_patterns: []const []const u8 = &[_][]const u8{},
+    /// Per-rule severity overrides
+    rules: []const config_mod.Config.RuleConfig = &[_]config_mod.Config.RuleConfig{},
+
+    /// Get the severity override for a rule, or null if not configured
+    pub fn getRuleSeverity(self: LintConfig, code: []const u8) ?config_mod.Config.RuleSeverity {
+        for (self.rules) |rule| {
+            if (std.mem.eql(u8, rule.code, code)) {
+                return rule.severity;
+            }
+        }
+        return null;
+    }
 };
 
 /// Documentation linter
@@ -153,6 +171,36 @@ pub const Linter = struct {
     /// Sets the symbol table for cross-reference validation
     pub fn setSymbolTable(self: *Self, table: *xref.SymbolTable) void {
         self.symbol_table = table;
+    }
+
+    /// Adds an issue to the report, respecting per-rule severity configuration
+    /// Returns true if the issue was added, false if the rule is ignored
+    fn addIssueWithRuleCheck(self: *Self, report: *LintReport, issue: LintIssue) !bool {
+        // Check if there's a severity override for this rule
+        if (self.config.getRuleSeverity(issue.code)) |override| {
+            switch (override) {
+                .ignore => return false, // Skip this issue entirely
+                .info => {
+                    var modified_issue = issue;
+                    modified_issue.severity = .info;
+                    try report.addIssue(modified_issue);
+                },
+                .warning => {
+                    var modified_issue = issue;
+                    modified_issue.severity = .warning;
+                    try report.addIssue(modified_issue);
+                },
+                .@"error" => {
+                    var modified_issue = issue;
+                    modified_issue.severity = .@"error";
+                    try report.addIssue(modified_issue);
+                },
+            }
+        } else {
+            // No override, use default severity
+            try report.addIssue(issue);
+        }
+        return true;
     }
 
     /// Runs lint checks on the given modules
@@ -245,7 +293,7 @@ pub const Linter = struct {
             }
         } else {
             // No documentation at all
-            try report.addIssue(.{
+            _ = try self.addIssueWithRuleCheck(report, .{
                 .file = file,
                 .line = func.location.line,
                 .entity_name = func.name,
@@ -272,7 +320,7 @@ pub const Linter = struct {
                 try self.checkCrossReferences(doc, class.name, "class", file, class.location.line, report);
             }
         } else {
-            try report.addIssue(.{
+            _ = try self.addIssueWithRuleCheck(report, .{
                 .file = file,
                 .line = class.location.line,
                 .entity_name = class.name,
@@ -332,7 +380,7 @@ pub const Linter = struct {
         } else {
             // No documentation - create a copy of the name for the report
             const name_copy = try self.allocator.dupe(u8, method_name);
-            try report.addIssue(.{
+            _ = try self.addIssueWithRuleCheck(report, .{
                 .file = file,
                 .line = method.location.line,
                 .entity_name = name_copy,
@@ -351,7 +399,7 @@ pub const Linter = struct {
                 try self.checkCrossReferences(doc, strct.name, "struct", file, strct.location.line, report);
             }
         } else {
-            try report.addIssue(.{
+            _ = try self.addIssueWithRuleCheck(report, .{
                 .file = file,
                 .line = strct.location.line,
                 .entity_name = strct.name,
@@ -370,7 +418,7 @@ pub const Linter = struct {
                 try self.checkCrossReferences(doc, enm.name, "enum", file, enm.location.line, report);
             }
         } else {
-            try report.addIssue(.{
+            _ = try self.addIssueWithRuleCheck(report, .{
                 .file = file,
                 .line = enm.location.line,
                 .entity_name = enm.name,
@@ -395,7 +443,7 @@ pub const Linter = struct {
                 try self.checkCrossReferences(doc, macro.name, "macro", file, macro.location.line, report);
             }
         } else {
-            try report.addIssue(.{
+            _ = try self.addIssueWithRuleCheck(report, .{
                 .file = file,
                 .line = macro.location.line,
                 .entity_name = macro.name,
@@ -414,7 +462,7 @@ pub const Linter = struct {
                 try self.checkCrossReferences(doc, td.name, "typedef", file, td.location.line, report);
             }
         } else {
-            try report.addIssue(.{
+            _ = try self.addIssueWithRuleCheck(report, .{
                 .file = file,
                 .line = td.location.line,
                 .entity_name = td.name,
@@ -438,7 +486,7 @@ pub const Linter = struct {
                 try self.checkCrossReferences(doc, alias.name, "type_alias", file, 0, report);
             }
         } else {
-            try report.addIssue(.{
+            _ = try self.addIssueWithRuleCheck(report, .{
                 .file = file,
                 .line = 0,
                 .entity_name = alias.name,
@@ -462,7 +510,7 @@ pub const Linter = struct {
                 try self.checkCrossReferences(doc, concept.name, "concept", file, 0, report);
             }
         } else {
-            try report.addIssue(.{
+            _ = try self.addIssueWithRuleCheck(report, .{
                 .file = file,
                 .line = 0,
                 .entity_name = concept.name,
@@ -481,7 +529,7 @@ pub const Linter = struct {
     fn checkBrief(self: *Self, doc: types.DocString, entity_name: []const u8, entity_type: []const u8, file: []const u8, line: u32, report: *LintReport) !void {
         if (self.config.require_brief) {
             if (doc.brief == null or doc.brief.?.len == 0) {
-                try report.addIssue(.{
+                _ = try self.addIssueWithRuleCheck(report, .{
                     .file = file,
                     .line = line,
                     .entity_name = entity_name,
@@ -498,7 +546,7 @@ pub const Linter = struct {
             // Check brief length
             if (brief.len > self.config.max_brief_length) {
                 const msg = try std.fmt.allocPrint(self.allocator, "@brief exceeds {d} characters ({d} chars)", .{ self.config.max_brief_length, brief.len });
-                try report.addIssue(.{
+                _ = try self.addIssueWithRuleCheck(report, .{
                     .file = file,
                     .line = line,
                     .entity_name = entity_name,
@@ -513,7 +561,7 @@ pub const Linter = struct {
             if (self.config.require_brief_period and brief.len > 0) {
                 const last_char = brief[brief.len - 1];
                 if (last_char != '.' and last_char != '!' and last_char != '?') {
-                    try report.addIssue(.{
+                    _ = try self.addIssueWithRuleCheck(report, .{
                         .file = file,
                         .line = line,
                         .entity_name = entity_name,
@@ -528,6 +576,42 @@ pub const Linter = struct {
     }
 
     fn checkParams(self: *Self, doc: types.DocString, params: []const types.Parameter, entity_name: []const u8, entity_type: []const u8, file: []const u8, line: u32, report: *LintReport) !void {
+        // Check for duplicate @param documentation and empty descriptions
+        var seen_params = std.StringHashMap(void).init(self.allocator);
+        defer seen_params.deinit();
+
+        for (doc.params) |doc_param| {
+            if (seen_params.contains(doc_param.name)) {
+                const msg = try std.fmt.allocPrint(self.allocator, "duplicate @param for '{s}'", .{doc_param.name});
+                _ = try self.addIssueWithRuleCheck(report, .{
+                    .file = file,
+                    .line = line,
+                    .entity_name = entity_name,
+                    .entity_type = entity_type,
+                    .severity = .warning,
+                    .code = "W008",
+                    .message = msg,
+                });
+            } else {
+                try seen_params.put(doc_param.name, {});
+            }
+
+            // Check for empty description
+            const trimmed_desc = std.mem.trim(u8, doc_param.description, " \t\n\r");
+            if (trimmed_desc.len == 0) {
+                const msg = try std.fmt.allocPrint(self.allocator, "empty @param description for '{s}'", .{doc_param.name});
+                _ = try self.addIssueWithRuleCheck(report, .{
+                    .file = file,
+                    .line = line,
+                    .entity_name = entity_name,
+                    .entity_type = entity_type,
+                    .severity = .info,
+                    .code = "W010",
+                    .message = msg,
+                });
+            }
+        }
+
         // Check for missing @param documentation
         for (params) |param| {
             var found = false;
@@ -539,7 +623,7 @@ pub const Linter = struct {
             }
             if (!found) {
                 const msg = try std.fmt.allocPrint(self.allocator, "missing @param for '{s}'", .{param.name});
-                try report.addIssue(.{
+                _ = try self.addIssueWithRuleCheck(report, .{
                     .file = file,
                     .line = line,
                     .entity_name = entity_name,
@@ -563,7 +647,7 @@ pub const Linter = struct {
             if (!found) {
                 const msg = try std.fmt.allocPrint(self.allocator, "@param '{s}' does not match any parameter", .{doc_param.name});
                 const suggestion = try self.findSimilarParam(doc_param.name, params);
-                try report.addIssue(.{
+                _ = try self.addIssueWithRuleCheck(report, .{
                     .file = file,
                     .line = line,
                     .entity_name = entity_name,
@@ -589,7 +673,7 @@ pub const Linter = struct {
             }
             if (!found) {
                 const msg = try std.fmt.allocPrint(self.allocator, "missing @param for '{s}'", .{param});
-                try report.addIssue(.{
+                _ = try self.addIssueWithRuleCheck(report, .{
                     .file = file,
                     .line = line,
                     .entity_name = entity_name,
@@ -603,6 +687,42 @@ pub const Linter = struct {
     }
 
     fn checkTparams(self: *Self, doc: types.DocString, tparams: []const types.TemplateParam, entity_name: []const u8, entity_type: []const u8, file: []const u8, line: u32, report: *LintReport) !void {
+        // Check for duplicate @tparam documentation
+        var seen_tparams = std.StringHashMap(void).init(self.allocator);
+        defer seen_tparams.deinit();
+
+        for (doc.tparams) |doc_tparam| {
+            if (seen_tparams.contains(doc_tparam.name)) {
+                const msg = try std.fmt.allocPrint(self.allocator, "duplicate @tparam for '{s}'", .{doc_tparam.name});
+                _ = try self.addIssueWithRuleCheck(report, .{
+                    .file = file,
+                    .line = line,
+                    .entity_name = entity_name,
+                    .entity_type = entity_type,
+                    .severity = .warning,
+                    .code = "W009",
+                    .message = msg,
+                });
+            } else {
+                try seen_tparams.put(doc_tparam.name, {});
+            }
+
+            // Check for empty description
+            const trimmed_desc = std.mem.trim(u8, doc_tparam.description, " \t\n\r");
+            if (trimmed_desc.len == 0) {
+                const msg = try std.fmt.allocPrint(self.allocator, "empty @tparam description for '{s}'", .{doc_tparam.name});
+                _ = try self.addIssueWithRuleCheck(report, .{
+                    .file = file,
+                    .line = line,
+                    .entity_name = entity_name,
+                    .entity_type = entity_type,
+                    .severity = .info,
+                    .code = "W011",
+                    .message = msg,
+                });
+            }
+        }
+
         // Check for missing @tparam documentation
         for (tparams) |tparam| {
             var found = false;
@@ -614,7 +734,7 @@ pub const Linter = struct {
             }
             if (!found) {
                 const msg = try std.fmt.allocPrint(self.allocator, "missing @tparam for '{s}'", .{tparam.name});
-                try report.addIssue(.{
+                _ = try self.addIssueWithRuleCheck(report, .{
                     .file = file,
                     .line = line,
                     .entity_name = entity_name,
@@ -637,7 +757,7 @@ pub const Linter = struct {
             }
             if (!found) {
                 const msg = try std.fmt.allocPrint(self.allocator, "@tparam '{s}' does not match any template parameter", .{doc_tparam.name});
-                try report.addIssue(.{
+                _ = try self.addIssueWithRuleCheck(report, .{
                     .file = file,
                     .line = line,
                     .entity_name = entity_name,
@@ -650,13 +770,13 @@ pub const Linter = struct {
         }
     }
 
-    fn checkReturn(_: *Self, doc: types.DocString, return_type: []const u8, entity_name: []const u8, entity_type: []const u8, file: []const u8, line: u32, report: *LintReport) !void {
+    fn checkReturn(self: *Self, doc: types.DocString, return_type: []const u8, entity_name: []const u8, entity_type: []const u8, file: []const u8, line: u32, report: *LintReport) !void {
         const is_void = isVoidReturn(return_type);
 
         if (is_void) {
             // Void function should not have @return
             if (doc.returns != null or doc.retvals.len > 0) {
-                try report.addIssue(.{
+                _ = try self.addIssueWithRuleCheck(report, .{
                     .file = file,
                     .line = line,
                     .entity_name = entity_name,
@@ -669,7 +789,7 @@ pub const Linter = struct {
         } else {
             // Non-void function should have @return
             if (doc.returns == null and doc.retvals.len == 0) {
-                try report.addIssue(.{
+                _ = try self.addIssueWithRuleCheck(report, .{
                     .file = file,
                     .line = line,
                     .entity_name = entity_name,
@@ -678,6 +798,20 @@ pub const Linter = struct {
                     .code = "W005",
                     .message = "missing @return for non-void function",
                 });
+            } else if (doc.returns) |returns| {
+                // Check for empty @return description
+                const trimmed_desc = std.mem.trim(u8, returns, " \t\n\r");
+                if (trimmed_desc.len == 0) {
+                    _ = try self.addIssueWithRuleCheck(report, .{
+                        .file = file,
+                        .line = line,
+                        .entity_name = entity_name,
+                        .entity_type = entity_type,
+                        .severity = .info,
+                        .code = "W012",
+                        .message = "empty @return description",
+                    });
+                }
             }
         }
     }
@@ -688,7 +822,7 @@ pub const Linter = struct {
             if (!self.symbolExists(ref)) {
                 const msg = try std.fmt.allocPrint(self.allocator, "@see '{s}' - symbol not found", .{ref});
                 const suggestion = try self.findSimilarSymbol(ref);
-                try report.addIssue(.{
+                _ = try self.addIssueWithRuleCheck(report, .{
                     .file = file,
                     .line = line,
                     .entity_name = entity_name,
@@ -706,7 +840,7 @@ pub const Linter = struct {
             if (!self.symbolExists(target)) {
                 const msg = try std.fmt.allocPrint(self.allocator, "@copydoc '{s}' - target not found", .{target});
                 const suggestion = try self.findSimilarSymbol(target);
-                try report.addIssue(.{
+                _ = try self.addIssueWithRuleCheck(report, .{
                     .file = file,
                     .line = line,
                     .entity_name = entity_name,
@@ -954,4 +1088,73 @@ test "lint undocumented function" {
 
     try std.testing.expectEqual(@as(usize, 1), report.issues.items.len);
     try std.testing.expectEqualStrings("W001", report.issues.items[0].code);
+}
+
+test "lint with per-rule configuration - ignore rule" {
+    // Configure W001 to be ignored
+    const rules = [_]config_mod.Config.RuleConfig{
+        .{ .code = "W001", .severity = .ignore },
+    };
+    var linter = Linter.init(std.testing.allocator, .{
+        .rules = &rules,
+    });
+    const modules = [_]types.Module{
+        types.Module{
+            .name = "test.h",
+            .functions = &[_]types.Function{
+                .{
+                    .name = "undocumented_func",
+                    .return_type = "void",
+                    .params = &[_]types.Parameter{},
+                    .doc = null,
+                    .location = .{ .file = "test.h", .line = 10, .column = 1 },
+                },
+            },
+            .structs = &[_]types.Struct{},
+            .enums = &[_]types.Enum{},
+            .typedefs = &[_]types.Typedef{},
+        },
+    };
+
+    var report = try linter.lint(&modules);
+    defer report.deinit();
+
+    // W001 should be ignored, so no issues
+    try std.testing.expectEqual(@as(usize, 0), report.issues.items.len);
+}
+
+test "lint with per-rule configuration - change severity" {
+    // Configure W001 to be an error instead of warning
+    const rules = [_]config_mod.Config.RuleConfig{
+        .{ .code = "W001", .severity = .@"error" },
+    };
+    var linter = Linter.init(std.testing.allocator, .{
+        .rules = &rules,
+    });
+    const modules = [_]types.Module{
+        types.Module{
+            .name = "test.h",
+            .functions = &[_]types.Function{
+                .{
+                    .name = "undocumented_func",
+                    .return_type = "void",
+                    .params = &[_]types.Parameter{},
+                    .doc = null,
+                    .location = .{ .file = "test.h", .line = 10, .column = 1 },
+                },
+            },
+            .structs = &[_]types.Struct{},
+            .enums = &[_]types.Enum{},
+            .typedefs = &[_]types.Typedef{},
+        },
+    };
+
+    var report = try linter.lint(&modules);
+    defer report.deinit();
+
+    // W001 should now be an error
+    try std.testing.expectEqual(@as(usize, 1), report.issues.items.len);
+    try std.testing.expectEqual(Severity.@"error", report.issues.items[0].severity);
+    try std.testing.expectEqual(@as(usize, 1), report.error_count);
+    try std.testing.expectEqual(@as(usize, 0), report.warning_count);
 }

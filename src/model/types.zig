@@ -212,6 +212,15 @@ pub const Struct = struct {
     location: SourceLocation,
 };
 
+/// Union definition
+/// Unions are similar to structs but all fields share the same memory location
+pub const Union = struct {
+    name: []const u8,
+    fields: []const StructField,
+    doc: ?DocString = null,
+    location: SourceLocation,
+};
+
 /// Enum value
 pub const EnumValue = struct {
     name: []const u8,
@@ -287,6 +296,7 @@ pub const Method = struct {
     is_static: bool = false,
     is_const: bool = false,
     is_override: bool = false,
+    is_final: bool = false,
     is_pure_virtual: bool = false,
     is_defaulted: bool = false,
     is_deleted: bool = false,
@@ -491,6 +501,7 @@ pub const Module = struct {
     name: []const u8,
     functions: []const Function,
     structs: []const Struct,
+    unions: []const Union = &[_]Union{},
     enums: []const Enum,
     typedefs: []const Typedef,
     macros: []const Macro = &[_]Macro{},

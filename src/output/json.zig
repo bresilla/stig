@@ -134,6 +134,13 @@ pub const JsonGenerator = struct {
         try self.writeChar(',');
         try self.writeNewline();
 
+        // Unions
+        try self.writeIndent();
+        try self.writeKey("unions");
+        try self.serializeUnions(module.unions);
+        try self.writeChar(',');
+        try self.writeNewline();
+
         // Enums
         try self.writeIndent();
         try self.writeKey("enums");
@@ -977,6 +984,71 @@ pub const JsonGenerator = struct {
             try self.writeIndent();
         }
         try self.writeChar(']');
+    }
+
+    // =========================================================================
+    // Union serialization
+    // =========================================================================
+
+    fn serializeUnions(self: *Self, unions: []const types.Union) !void {
+        try self.writeChar('[');
+        if (unions.len > 0) {
+            try self.writeNewline();
+            self.indent_level += 1;
+
+            for (unions, 0..) |u, i| {
+                try self.writeIndent();
+                try self.serializeUnion(u);
+                if (i < unions.len - 1) {
+                    try self.writeChar(',');
+                }
+                try self.writeNewline();
+            }
+
+            self.indent_level -= 1;
+            try self.writeIndent();
+        }
+        try self.writeChar(']');
+    }
+
+    fn serializeUnion(self: *Self, u: types.Union) !void {
+        try self.writeChar('{');
+        try self.writeNewline();
+        self.indent_level += 1;
+
+        // Name
+        try self.writeIndent();
+        try self.writeKeyValue("name", u.name);
+        try self.writeChar(',');
+        try self.writeNewline();
+
+        // Documentation
+        try self.writeIndent();
+        try self.writeKey("doc");
+        if (u.doc) |doc| {
+            try self.serializeDocString(doc);
+        } else {
+            try self.writeString("null");
+        }
+        try self.writeChar(',');
+        try self.writeNewline();
+
+        // Location
+        try self.writeIndent();
+        try self.writeKey("location");
+        try self.serializeLocation(u.location);
+        try self.writeChar(',');
+        try self.writeNewline();
+
+        // Fields (reuse struct field serialization)
+        try self.writeIndent();
+        try self.writeKey("fields");
+        try self.serializeStructFields(u.fields);
+        try self.writeNewline();
+
+        self.indent_level -= 1;
+        try self.writeIndent();
+        try self.writeChar('}');
     }
 
     // =========================================================================
