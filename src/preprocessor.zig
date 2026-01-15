@@ -41,7 +41,10 @@ pub const Preprocessor = struct {
         // Read until EOF
         var buf: [4096]u8 = undefined;
         while (true) {
-            const bytes_read = stdin.read(&buf) catch break;
+            const bytes_read = stdin.read(&buf) catch |err| {
+                std.debug.print("Warning: Error reading stdin: {}\n", .{err});
+                break;
+            };
             if (bytes_read == 0) break;
             try input_buffer.appendSlice(self.allocator, buf[0..bytes_read]);
         }
@@ -71,7 +74,9 @@ pub const Preprocessor = struct {
         };
 
         // Parse context to get book root
-        self.parseContext(input[context_start..context_end]) catch {};
+        self.parseContext(input[context_start..context_end]) catch |err| {
+            std.debug.print("Warning: Failed to parse mdbook context: {}\n", .{err});
+        };
 
         // Skip comma and whitespace to find book object
         pos = context_end;

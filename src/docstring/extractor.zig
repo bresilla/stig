@@ -1426,7 +1426,7 @@ test "strip triple-slash delimiters" {
 test "parse deprecated tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Old function.
+        \\* @brief Old function.
         \\* @deprecated Use new_function() instead.
     );
 
@@ -1457,8 +1457,10 @@ test "extract brief with @brief tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
         \\* @brief This is the brief description.
-        \\* More details follow.
+        \\* @param x Some parameter
     );
+    defer std.testing.allocator.free(doc.params);
+    defer std.testing.allocator.free(doc.raw);
 
     try std.testing.expectEqualStrings("This is the brief description.", doc.brief.?);
 }
@@ -1477,7 +1479,7 @@ test "skip doxygen tags in brief extraction" {
 test "parse note tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Does something.
+        \\* @brief Does something.
         \\* @note This is important.
         \\* @note Another note.
     );
@@ -1492,7 +1494,7 @@ test "parse note tag" {
 test "parse warning tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Dangerous function.
+        \\* @brief Dangerous function.
         \\* @warning May cause data loss.
     );
     defer std.testing.allocator.free(doc.warnings);
@@ -1505,7 +1507,7 @@ test "parse warning tag" {
 test "parse see also tags" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Gets a value.
+        \\* @brief Gets a value.
         \\* @see set_value
         \\* @sa other_function
     );
@@ -1519,7 +1521,7 @@ test "parse see also tags" {
 test "parse since tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* New feature.
+        \\* @brief New feature.
         \\* @since 2.0.0
     );
 
@@ -1530,7 +1532,7 @@ test "parse since tag" {
 test "parse author tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Core function.
+        \\* @brief Core function.
         \\* @author John Doe
     );
 
@@ -1541,7 +1543,7 @@ test "parse author tag" {
 test "parse version tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Library info.
+        \\* @brief Library info.
         \\* @version 1.2.3
     );
 
@@ -1622,7 +1624,7 @@ test "extract details with code block" {
 test "parse throw tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Validates input.
+        \\* @brief Validates input.
         \\* @throw std::invalid_argument if input is negative
     );
     defer std.testing.allocator.free(doc.exceptions);
@@ -1636,7 +1638,7 @@ test "parse throw tag" {
 test "parse exception tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Accesses element.
+        \\* @brief Accesses element.
         \\* @exception std::out_of_range if index exceeds bounds
     );
     defer std.testing.allocator.free(doc.exceptions);
@@ -1650,7 +1652,7 @@ test "parse exception tag" {
 test "parse multiple exception tags" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Processes data.
+        \\* @brief Processes data.
         \\* @throw std::invalid_argument if input is negative
         \\* @exception std::out_of_range if index exceeds bounds
     );
@@ -1665,7 +1667,7 @@ test "parse multiple exception tags" {
 test "parse tparam tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* A container class.
+        \\* @brief A container class.
         \\* @tparam T The element type
         \\* @tparam Allocator The memory allocator
     );
@@ -1682,7 +1684,7 @@ test "parse tparam tag" {
 test "parse retval tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Opens a file.
+        \\* @brief Opens a file.
         \\* @retval 0 Success
         \\* @retval -1 File not found
         \\* @retval -2 Permission denied
@@ -1724,7 +1726,7 @@ test "parse backslash command prefix" {
 test "parse todo tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Sorts the array.
+        \\* @brief Sorts the array.
         \\* @todo Implement parallel sorting for large arrays
         \\* @todo Add support for custom comparators
     );
@@ -1739,7 +1741,7 @@ test "parse todo tag" {
 test "parse bug tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Processes the data.
+        \\* @brief Processes the data.
         \\* @bug Does not handle empty arrays correctly (issue #123)
         \\* @bug Memory leak when exceptions occur
     );
@@ -1754,7 +1756,7 @@ test "parse bug tag" {
 test "parse todo and bug with backslash prefix" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Function description.
+        \\* \brief Function description.
         \\* \todo First todo item
         \\* \bug First bug item
     );
@@ -1772,7 +1774,7 @@ test "parse todo and bug with backslash prefix" {
 test "parse snippet tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Example function.
+        \\* @brief Example function.
         \\* @snippet examples/test.cpp basic_example
         \\* @snippet examples/test.cpp advanced_example cpp
     );
@@ -1791,7 +1793,7 @@ test "parse snippet tag" {
 test "parse snippet with backslash prefix" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Example function.
+        \\* \brief Example function.
         \\* \snippet examples/test.cpp my_example
     );
     defer std.testing.allocator.free(doc.snippets);
@@ -1804,7 +1806,7 @@ test "parse snippet with backslash prefix" {
 test "parse attention tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Initializes the system.
+        \\* @brief Initializes the system.
         \\* @attention This function is NOT thread-safe!
         \\* @attention Memory must be manually freed after use
     );
@@ -1819,7 +1821,7 @@ test "parse attention tag" {
 test "parse important tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Initializes the system.
+        \\* @brief Initializes the system.
         \\* @important Must be called before any other API function
         \\* @important Do not call from interrupt context
     );
@@ -1834,7 +1836,7 @@ test "parse important tag" {
 test "parse attention and important with backslash prefix" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Function description.
+        \\* \brief Function description.
         \\* \attention First attention item
         \\* \important First important item
     );
@@ -1852,7 +1854,7 @@ test "parse attention and important with backslash prefix" {
 test "parse date tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* A function with date.
+        \\* @brief A function with date.
         \\* @date 2024-01-15
     );
     defer std.testing.allocator.free(doc.dates);
@@ -1866,7 +1868,7 @@ test "parse date tag" {
 test "parse date tag with description" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* A function with dates.
+        \\* @brief A function with dates.
         \\* @date 2023-06-20 created
         \\* @date 2024-01-10 updated for 3D support
     );
@@ -1882,7 +1884,7 @@ test "parse date tag with description" {
 test "parse copyright tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* A function with copyright.
+        \\* @brief A function with copyright.
         \\* @copyright 2024 MyCompany, MIT License
     );
 
@@ -1893,7 +1895,7 @@ test "parse copyright tag" {
 test "parse date and copyright with backslash prefix" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* File description.
+        \\* \brief File description.
         \\* \date 2024-01-15
         \\* \copyright 2024 Company Inc.
     );
@@ -1907,7 +1909,7 @@ test "parse date and copyright with backslash prefix" {
 test "parse mermaid block" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Connection class.
+        \\* @brief Connection class.
         \\* @mermaid
         \\* stateDiagram-v2
         \\*     [*] --> Disconnected
@@ -1926,7 +1928,7 @@ test "parse mermaid block" {
 test "parse mermaid block with caption" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Connection class.
+        \\* @brief Connection class.
         \\* @mermaid State Diagram
         \\* stateDiagram-v2
         \\*     [*] --> Idle
@@ -1942,7 +1944,7 @@ test "parse mermaid block with caption" {
 test "parse multiple mermaid blocks" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Data processor.
+        \\* @brief Data processor.
         \\* @mermaid Flow
         \\* flowchart LR
         \\*     A --> B
@@ -1962,7 +1964,7 @@ test "parse multiple mermaid blocks" {
 test "parse mermaid with backslash prefix" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Flow chart.
+        \\* \brief Flow chart.
         \\* \mermaid
         \\* flowchart TD
         \\*     Start --> End
@@ -2022,7 +2024,7 @@ test "parsePage with @mainpage" {
 test "parse test tag" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Calculates factorial.
+        \\* @brief Calculates factorial.
         \\* @test test_factorial_basic
         \\* @test test_factorial_zero
     );
@@ -2039,7 +2041,7 @@ test "parse test tag" {
 test "parse test tag with file" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Calculates factorial.
+        \\* @brief Calculates factorial.
         \\* @test test_factorial_negative test/test_math.cpp
     );
     defer std.testing.allocator.free(doc.tests);
@@ -2052,7 +2054,7 @@ test "parse test tag with file" {
 test "parse test with backslash prefix" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Function description.
+        \\* \brief Function description.
         \\* \test test_my_function
         \\* \test test_edge_case test/edge.cpp
     );
@@ -2116,7 +2118,7 @@ test "continuation ends at new tag" {
 test "code block not joined" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Brief description.
+        \\* @brief Brief description.
         \\* @code
         \\* int x = 5;
         \\* int y = 10;
@@ -2137,7 +2139,7 @@ test "code block not joined" {
 test "escaped @@ produces literal @" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Contact: user@@domain.com
+        \\* @brief Contact: user@@domain.com
     );
     defer std.testing.allocator.free(doc.raw);
 
@@ -2151,7 +2153,7 @@ test "escaped @@ produces literal @" {
 test "escaped \\\\ produces literal \\" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Path: C:\\Users\\name
+        \\* \brief Path: C:\\Users\\name
     );
     defer std.testing.allocator.free(doc.raw);
 
@@ -2195,7 +2197,7 @@ test "mixed escaped and real tags" {
 test "extract @ref from warning" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Brief description.
+        \\* @brief Brief description.
         \\* @warning Using @ref DangerousAPI may crash!
     );
     defer std.testing.allocator.free(doc.warnings);
@@ -2225,7 +2227,7 @@ test "extract @ref from param description" {
 test "extract @ref from note" {
     var extractor = DocstringExtractor.init(std.testing.allocator);
     const doc = try extractor.parse(
-        \\* Brief description.
+        \\* @brief Brief description.
         \\* @note See @ref OtherClass for more info
     );
     defer std.testing.allocator.free(doc.notes);

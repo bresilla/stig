@@ -67,7 +67,9 @@ pub const Watcher = struct {
     pub fn deinit(self: *Self) void {
         self.stopMdbook();
         self.file_watcher.deinit();
-        self.cache.save() catch {}; // Save cache on exit
+        self.cache.save() catch |err| {
+            std.debug.print("Warning: Failed to save cache on exit: {}\n", .{err});
+        };
         self.cache.deinit();
         self.cached_modules.deinit();
     }
@@ -107,7 +109,10 @@ pub const Watcher = struct {
         var last_change: i64 = 0;
         while (true) {
             // Wait for file changes (with 1 second timeout to allow Ctrl+C)
-            const events = self.file_watcher.waitForChanges(1000) catch null;
+            const events = self.file_watcher.waitForChanges(1000) catch |err| blk: {
+                std.debug.print("Warning: Error while watching for changes: {}\n", .{err});
+                break :blk null;
+            };
 
             if (events) |evts| {
                 var events_list = evts;
@@ -268,7 +273,15 @@ pub const Watcher = struct {
         child.stdout_behavior = .Ignore;
         child.stderr_behavior = .Ignore;
 
-        try child.spawn();
+        child.spawn() catch |err| {
+            if (err == error.FileNotFound) {
+                std.debug.print("   ⚠️  mdbook not found. Install with: cargo install mdbook\n", .{});
+                std.debug.print("   Continuing without live preview...\n\n", .{});
+            } else {
+                std.debug.print("   ⚠️  Failed to start mdbook serve: {}\n", .{err});
+            }
+            return;
+        };
         self.mdbook_process = child;
 
         std.debug.print("   mdbook serve running at http://localhost:3000\n\n", .{});
@@ -277,8 +290,12 @@ pub const Watcher = struct {
     /// Stops mdbook serve subprocess
     fn stopMdbook(self: *Self) void {
         if (self.mdbook_process) |*proc| {
-            _ = proc.kill() catch {};
-            _ = proc.wait() catch {};
+            _ = proc.kill() catch |err| {
+                std.debug.print("   ⚠️  Failed to stop mdbook process: {}\n", .{err});
+            };
+            _ = proc.wait() catch |err| {
+                std.debug.print("   ⚠️  Failed to wait for mdbook process: {}\n", .{err});
+            };
             self.mdbook_process = null;
         }
     }

@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("model/types.zig");
 const xref = @import("xref.zig");
+const cli = @import("cli.zig");
 
 /// Severity level for lint issues
 pub const Severity = enum {
@@ -894,11 +895,45 @@ pub const Linter = struct {
     }
 
     fn findSimilarSymbol(self: *Self, name: []const u8) !?[]const u8 {
-        if (self.symbol_table == null) return null;
+        const table = self.symbol_table orelse return null;
 
-        // For now, just return null - implementing full fuzzy search would be complex
-        // Could be enhanced later to search the symbol table for similar names
-        _ = name;
+        var best_match: ?[]const u8 = null;
+        var best_distance: usize = 4; // Max edit distance to consider (slightly higher for symbols)
+
+        // Iterate through all symbols looking for similar names
+        var iter = table.symbols.iterator();
+        while (iter.next()) |entry| {
+            const symbol_name = entry.key_ptr.*;
+
+            // Skip if names are too different in length
+            if (symbol_name.len > name.len + 3 or name.len > symbol_name.len + 3) {
+                continue;
+            }
+
+            // Calculate edit distance
+            const dist = levenshteinDistance(name, symbol_name);
+            if (dist < best_distance) {
+                best_distance = dist;
+                best_match = symbol_name;
+            }
+
+            // Also check if the target is a suffix of a qualified name (e.g., "method" vs "Class::method")
+            if (std.mem.indexOf(u8, symbol_name, "::")) |_| {
+                const base_name = if (std.mem.lastIndexOf(u8, symbol_name, "::")) |idx|
+                    symbol_name[idx + 2 ..]
+                else
+                    symbol_name;
+                const base_dist = levenshteinDistance(name, base_name);
+                if (base_dist < best_distance) {
+                    best_distance = base_dist;
+                    best_match = symbol_name;
+                }
+            }
+        }
+
+        if (best_match) |match| {
+            return try std.fmt.allocPrint(self.allocator, "Did you mean '{s}'?", .{match});
+        }
         return null;
     }
 };
@@ -1016,6 +1051,166 @@ pub fn printReport(report: LintReport) void {
     }
 
     std.debug.print("\n", .{});
+}
+
+/// Prints the lint report in SARIF (Static Analysis Results Interchange Format) for GitHub code scanning
+/// https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
+pub fn printSarifReport(allocator: std.mem.Allocator, report: LintReport) !void {
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(allocator);
+
+    // SARIF header
+    try output.appendSlice(allocator, "{\n");
+    try output.appendSlice(allocator, "  \"$schema\": \"https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json\",\n");
+    try output.appendSlice(allocator, "  \"version\": \"2.1.0\",\n");
+    try output.appendSlice(allocator, "  \"runs\": [{\n");
+
+    // Tool information
+    try output.appendSlice(allocator, "    \"tool\": {\n");
+    try output.appendSlice(allocator, "      \"driver\": {\n");
+    try output.appendSlice(allocator, "        \"name\": \"stig\",\n");
+    try output.appendSlice(allocator, "        \"informationUri\": \"https://github.com/bresilla/stig\",\n");
+    try output.appendSlice(allocator, "        \"version\": \"");
+    try output.appendSlice(allocator, cli.VERSION);
+    try output.appendSlice(allocator, "\",\n");
+    try output.appendSlice(allocator, "        \"rules\": [\n");
+
+    // Collect unique rules
+    var rules_seen = std.StringHashMap(bool).init(allocator);
+    defer rules_seen.deinit();
+
+    var first_rule = true;
+    for (report.issues.items) |issue| {
+        if (rules_seen.get(issue.code) != null) continue;
+        try rules_seen.put(issue.code, true);
+
+        if (!first_rule) {
+            try output.appendSlice(allocator, ",\n");
+        }
+        first_rule = false;
+
+        try output.appendSlice(allocator, "          {\n");
+        try output.appendSlice(allocator, "            \"id\": \"");
+        try output.appendSlice(allocator, issue.code);
+        try output.appendSlice(allocator, "\",\n");
+
+        // Rule severity
+        try output.appendSlice(allocator, "            \"defaultConfiguration\": {\n");
+        try output.appendSlice(allocator, "              \"level\": \"");
+        try output.appendSlice(allocator, switch (issue.severity) {
+            .@"error" => "error",
+            .warning => "warning",
+            .info => "note",
+        });
+        try output.appendSlice(allocator, "\"\n");
+        try output.appendSlice(allocator, "            },\n");
+
+        try output.appendSlice(allocator, "            \"shortDescription\": {\n");
+        try output.appendSlice(allocator, "              \"text\": \"");
+        try output.appendSlice(allocator, issue.code);
+        try output.appendSlice(allocator, "\"\n");
+        try output.appendSlice(allocator, "            }\n");
+        try output.appendSlice(allocator, "          }");
+    }
+
+    try output.appendSlice(allocator, "\n        ]\n");
+    try output.appendSlice(allocator, "      }\n");
+    try output.appendSlice(allocator, "    },\n");
+
+    // Results
+    try output.appendSlice(allocator, "    \"results\": [\n");
+
+    for (report.issues.items, 0..) |issue, i| {
+        if (i > 0) {
+            try output.appendSlice(allocator, ",\n");
+        }
+
+        try output.appendSlice(allocator, "      {\n");
+        try output.appendSlice(allocator, "        \"ruleId\": \"");
+        try output.appendSlice(allocator, issue.code);
+        try output.appendSlice(allocator, "\",\n");
+
+        // Level
+        try output.appendSlice(allocator, "        \"level\": \"");
+        try output.appendSlice(allocator, switch (issue.severity) {
+            .@"error" => "error",
+            .warning => "warning",
+            .info => "note",
+        });
+        try output.appendSlice(allocator, "\",\n");
+
+        // Message
+        try output.appendSlice(allocator, "        \"message\": {\n");
+        try output.appendSlice(allocator, "          \"text\": \"");
+        // Escape JSON special characters in message
+        for (issue.message) |c| {
+            switch (c) {
+                '"' => try output.appendSlice(allocator, "\\\""),
+                '\\' => try output.appendSlice(allocator, "\\\\"),
+                '\n' => try output.appendSlice(allocator, "\\n"),
+                '\r' => try output.appendSlice(allocator, "\\r"),
+                '\t' => try output.appendSlice(allocator, "\\t"),
+                else => try output.append(allocator, c),
+            }
+        }
+        try output.appendSlice(allocator, " (in ");
+        try output.appendSlice(allocator, issue.entity_type);
+        try output.appendSlice(allocator, " '");
+        // Escape entity name
+        for (issue.entity_name) |c| {
+            switch (c) {
+                '"' => try output.appendSlice(allocator, "\\\""),
+                '\\' => try output.appendSlice(allocator, "\\\\"),
+                else => try output.append(allocator, c),
+            }
+        }
+        try output.appendSlice(allocator, "')\"\n");
+        try output.appendSlice(allocator, "        },\n");
+
+        // Location
+        try output.appendSlice(allocator, "        \"locations\": [{\n");
+        try output.appendSlice(allocator, "          \"physicalLocation\": {\n");
+        try output.appendSlice(allocator, "            \"artifactLocation\": {\n");
+        try output.appendSlice(allocator, "              \"uri\": \"");
+        // Escape file path
+        for (issue.file) |c| {
+            switch (c) {
+                '"' => try output.appendSlice(allocator, "\\\""),
+                '\\' => try output.appendSlice(allocator, "/"),
+                else => try output.append(allocator, c),
+            }
+        }
+        try output.appendSlice(allocator, "\"\n");
+        try output.appendSlice(allocator, "            }");
+
+        // Add region if line number is known
+        if (issue.line > 0) {
+            try output.appendSlice(allocator, ",\n");
+            try output.appendSlice(allocator, "            \"region\": {\n");
+            try output.appendSlice(allocator, "              \"startLine\": ");
+            var line_buf: [16]u8 = undefined;
+            const line_str = std.fmt.bufPrint(&line_buf, "{d}", .{issue.line}) catch "1";
+            try output.appendSlice(allocator, line_str);
+            try output.appendSlice(allocator, "\n");
+            try output.appendSlice(allocator, "            }\n");
+        } else {
+            try output.appendSlice(allocator, "\n");
+        }
+
+        try output.appendSlice(allocator, "          }\n");
+        try output.appendSlice(allocator, "        }]\n");
+        try output.appendSlice(allocator, "      }");
+    }
+
+    try output.appendSlice(allocator, "\n    ]\n");
+    try output.appendSlice(allocator, "  }]\n");
+    try output.appendSlice(allocator, "}\n");
+
+    // Write to stdout
+    const stdout_file = std.fs.File.stdout();
+    stdout_file.writeAll(output.items) catch |err| {
+        std.debug.print("Error: Failed to write SARIF output: {}\n", .{err});
+    };
 }
 
 // =========================================================================

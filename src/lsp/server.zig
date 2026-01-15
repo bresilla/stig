@@ -107,13 +107,13 @@ pub const Server = struct {
         if (config_mod.loadFromFile(self.allocator, "stig.toml")) |result| {
             self.config = result.config;
             // Note: We're not storing the loader, so config strings are borrowed
-        } else |_| {
-            // Use defaults
+        } else |err| {
+            std.debug.print("LSP: Could not load stig.toml: {}, using defaults\n", .{err});
         }
 
         // Build test coverage cache if test patterns are configured
-        self.buildTestCoverageCache() catch {
-            // Ignore errors - test coverage is optional
+        self.buildTestCoverageCache() catch |err| {
+            std.debug.print("LSP: Could not build test coverage cache: {}\n", .{err});
         };
 
         // Main message loop
@@ -268,11 +268,11 @@ pub const Server = struct {
             return;
         };
 
-        const line: usize = if (line_val == .integer) @intCast(line_val.integer) else {
+        const line: usize = if (line_val == .integer and line_val.integer >= 0) @intCast(line_val.integer) else {
             try self.transport.sendResponse(id, "null");
             return;
         };
-        const character: usize = if (char_val == .integer) @intCast(char_val.integer) else {
+        const character: usize = if (char_val == .integer and char_val.integer >= 0) @intCast(char_val.integer) else {
             try self.transport.sendResponse(id, "null");
             return;
         };
@@ -346,22 +346,22 @@ pub const Server = struct {
         // by looking backwards for /** or /*!
         var in_block = false;
         var i: usize = line_start;
-        while (i > 0) {
+        while (i > 1) { // Need at least 2 chars to check i-1
             i -= 1;
-            if (i > 0 and content[i] == '/' and content[i - 1] == '*') {
+            if (content[i] == '/' and content[i - 1] == '*') {
                 // Found end of block comment before our line
                 break;
             }
-            if (i > 0 and content[i] == '*' and (content[i - 1] == '/' or (i > 1 and content[i - 1] == '*' and content[i - 2] == '/'))) {
-                // Check if it's a doc comment
-                if (i > 1 and content[i - 1] == '*' and content[i - 2] == '/') {
+            if (content[i] == '*' and content[i - 1] == '/') {
+                // Found /* - check next char for doc comment indicator
+                if (i + 1 < content.len and (content[i + 1] == '!' or content[i + 1] == '*')) {
                     in_block = true;
-                } else if (i > 0 and content[i - 1] == '/') {
-                    // Check next char for ! or *
-                    if (i + 1 < content.len and (content[i + 1] == '!' or content[i + 1] == '*')) {
-                        in_block = true;
-                    }
                 }
+                break;
+            }
+            if (i > 1 and content[i] == '*' and content[i - 1] == '*' and content[i - 2] == '/') {
+                // Found /** doc comment start
+                in_block = true;
                 break;
             }
         }
@@ -422,7 +422,7 @@ pub const Server = struct {
             try self.transport.sendResponse(id, "[]");
             return;
         };
-        const request_line: u32 = if (line_val == .integer) @intCast(line_val.integer) else {
+        const request_line: u32 = if (line_val == .integer and line_val.integer >= 0 and line_val.integer <= std.math.maxInt(u32)) @intCast(line_val.integer) else {
             try self.transport.sendResponse(id, "[]");
             return;
         };
@@ -691,19 +691,73 @@ pub const Server = struct {
     /// Generate a code action to fix a wrong parameter name
     fn generateFixParamNameAction(self: *Self, uri: []const u8, content: []const u8, metadata: DiagnosticMetadata) ![]const u8 {
         const correct_name = metadata.suggestion orelse return error.MissingSuggestion;
-        _ = content;
 
-        // For now, just suggest the fix - finding the exact position would require more parsing
-        const title = try std.fmt.allocPrint(self.allocator, "Change to @param {s}", .{correct_name});
+        // Extract wrong name from missing_name (set during metadata building) or search in doc
+        const wrong_name = metadata.missing_name orelse return error.MissingWrongName;
+
+        const title = try std.fmt.allocPrint(self.allocator, "Change @param {s} to {s}", .{ wrong_name, correct_name });
         defer self.allocator.free(title);
 
-        // Create a simple action without edit (user will need to manually fix)
+        // Find the wrong parameter name in the doc comment near the diagnostic line
+        const search_pattern = try std.fmt.allocPrint(self.allocator, "@param {s}", .{wrong_name});
+        defer self.allocator.free(search_pattern);
+
+        // Search for the pattern in lines near the diagnostic
+        const diag_line = metadata.line;
+        var line_num: u32 = 0;
+        var line_start: usize = 0;
+        var found_line: ?u32 = null;
+        var found_col: u32 = 0;
+
+        for (content, 0..) |c, i| {
+            if (c == '\n') {
+                // Check if this line is within range of the diagnostic
+                if (line_num >= (if (diag_line > 10) diag_line - 10 else 0) and line_num <= diag_line) {
+                    const line_content = content[line_start..i];
+                    if (std.mem.indexOf(u8, line_content, search_pattern)) |col| {
+                        found_line = line_num;
+                        // Position at the start of the param name (after "@param ")
+                        found_col = @intCast(col + 7);
+                    }
+                }
+                line_num += 1;
+                line_start = i + 1;
+            }
+        }
+
+        if (found_line == null) {
+            // Couldn't find exact position - create action without edit
+            const action = lsp_types.CodeAction{
+                .title = title,
+                .kind = .quickfix,
+            };
+            return try action.jsonStringify(self.allocator);
+        }
+
+        // Create text edit to replace the wrong name with correct name
+        const edit = lsp_types.TextEdit{
+            .range = .{
+                .start = .{ .line = found_line.?, .character = found_col },
+                .end = .{ .line = found_line.?, .character = found_col + @as(u32, @intCast(wrong_name.len)) },
+            },
+            .new_text = correct_name,
+        };
+
+        const doc_change = lsp_types.WorkspaceEdit.DocumentChange{
+            .uri = uri,
+            .edits = &[_]lsp_types.TextEdit{edit},
+        };
+
+        const workspace_edit = lsp_types.WorkspaceEdit{
+            .changes = &[_]lsp_types.WorkspaceEdit.DocumentChange{doc_change},
+        };
+
         const action = lsp_types.CodeAction{
             .title = title,
             .kind = .quickfix,
+            .edit = workspace_edit,
         };
 
-        _ = uri;
         return try action.jsonStringify(self.allocator);
     }
 
@@ -814,10 +868,10 @@ pub const Server = struct {
                 const end = range_val.object.get("end") orelse continue;
                 if (start != .object or end != .object) continue;
 
-                const start_line = if (start.object.get("line")) |l| (if (l == .integer) @as(usize, @intCast(l.integer)) else continue) else continue;
-                const start_char = if (start.object.get("character")) |c| (if (c == .integer) @as(usize, @intCast(c.integer)) else continue) else continue;
-                const end_line = if (end.object.get("line")) |l| (if (l == .integer) @as(usize, @intCast(l.integer)) else continue) else continue;
-                const end_char = if (end.object.get("character")) |c| (if (c == .integer) @as(usize, @intCast(c.integer)) else continue) else continue;
+                const start_line = if (start.object.get("line")) |l| (if (l == .integer and l.integer >= 0) @as(usize, @intCast(l.integer)) else continue) else continue;
+                const start_char = if (start.object.get("character")) |c| (if (c == .integer and c.integer >= 0) @as(usize, @intCast(c.integer)) else continue) else continue;
+                const end_line = if (end.object.get("line")) |l| (if (l == .integer and l.integer >= 0) @as(usize, @intCast(l.integer)) else continue) else continue;
+                const end_char = if (end.object.get("character")) |c| (if (c == .integer and c.integer >= 0) @as(usize, @intCast(c.integer)) else continue) else continue;
 
                 // Convert line/character positions to byte offsets
                 const start_offset = self.positionToOffset(doc.content, start_line, start_char);
@@ -949,13 +1003,25 @@ pub const Server = struct {
         const is_cpp = isCppFile(file_path);
 
         // Parse the file
-        var c_parser = self.c_parser orelse return;
-        var cpp_parser = self.cpp_parser orelse return;
+        var c_parser = self.c_parser orelse {
+            std.debug.print("LSP: Parser not initialized, cannot analyze {s}\n", .{file_path});
+            return;
+        };
+        var cpp_parser = self.cpp_parser orelse {
+            std.debug.print("LSP: Parser not initialized, cannot analyze {s}\n", .{file_path});
+            return;
+        };
 
         const module = if (is_cpp)
-            cpp_parser.parse(content, file_path) catch return
+            cpp_parser.parse(content, file_path) catch |err| {
+                std.debug.print("LSP: Failed to parse C++ file '{s}': {}\n", .{ file_path, err });
+                return;
+            }
         else
-            c_parser.parse(content, file_path) catch return;
+            c_parser.parse(content, file_path) catch |err| {
+                std.debug.print("LSP: Failed to parse C file '{s}': {}\n", .{ file_path, err });
+                return;
+            };
 
         const modules = [_]types.Module{module};
 
@@ -1089,9 +1155,15 @@ pub const Server = struct {
                     }
                 }
             } else if (std.mem.eql(u8, issue.code, "E001")) {
-                // Wrong param name - extract suggestion
+                // Wrong param name - extract wrong name from message and suggestion
+                // Message format: "@param 'wrong_name' does not match any parameter"
+                if (std.mem.indexOf(u8, issue.message, "'")) |start| {
+                    if (std.mem.indexOfPos(u8, issue.message, start + 1, "'")) |end| {
+                        metadata.missing_name = issue.message[start + 1 .. end];
+                    }
+                }
+                // Suggestion format: "Did you mean 'correct_name'?"
                 if (issue.suggestion) |sug| {
-                    // Suggestion format: "Did you mean 'name'?"
                     if (std.mem.indexOf(u8, sug, "'")) |start| {
                         if (std.mem.indexOfPos(u8, sug, start + 1, "'")) |end| {
                             metadata.suggestion = sug[start + 1 .. end];
@@ -1171,8 +1243,14 @@ pub const Server = struct {
         if (expanded_tests.items.len == 0) return;
 
         // Parse source files
-        var c_parser = self.c_parser orelse return;
-        var cpp_parser = self.cpp_parser orelse return;
+        var c_parser = self.c_parser orelse {
+            std.debug.print("LSP: Parser not initialized, cannot run test coverage analysis\n", .{});
+            return;
+        };
+        var cpp_parser = self.cpp_parser orelse {
+            std.debug.print("LSP: Parser not initialized, cannot run test coverage analysis\n", .{});
+            return;
+        };
 
         var modules: std.ArrayList(types.Module) = .empty;
         defer modules.deinit(self.allocator);
@@ -1180,17 +1258,29 @@ pub const Server = struct {
         for (expanded_sources.items) |input_file| {
             if (!isHeaderFile(input_file)) continue;
 
-            const file = std.fs.cwd().openFile(input_file, .{}) catch continue;
+            const file = std.fs.cwd().openFile(input_file, .{}) catch |err| {
+                std.debug.print("LSP: Cannot open '{s}': {}\n", .{ input_file, err });
+                continue;
+            };
             defer file.close();
 
-            const source = file.readToEndAlloc(self.allocator, 10 * 1024 * 1024) catch continue;
+            const source = file.readToEndAlloc(self.allocator, 10 * 1024 * 1024) catch |err| {
+                std.debug.print("LSP: Cannot read '{s}': {}\n", .{ input_file, err });
+                continue;
+            };
             defer self.allocator.free(source);
 
             const is_cpp = isCppFile(input_file);
             const module = if (is_cpp)
-                cpp_parser.parse(source, input_file) catch continue
+                cpp_parser.parse(source, input_file) catch |err| {
+                    std.debug.print("LSP: Cannot parse '{s}': {}\n", .{ input_file, err });
+                    continue;
+                }
             else
-                c_parser.parse(source, input_file) catch continue;
+                c_parser.parse(source, input_file) catch |err| {
+                    std.debug.print("LSP: Cannot parse '{s}': {}\n", .{ input_file, err });
+                    continue;
+                };
 
             try modules.append(self.allocator, module);
         }

@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("model/types.zig");
 const xref = @import("xref.zig");
 const CppParser = @import("parser/cpp.zig").CppParser;
+const cli = @import("cli.zig");
 
 /// Test coverage analysis - tracks which documented API entities are tested
 /// by parsing test files and cross-referencing with the symbol table.
@@ -231,7 +232,10 @@ pub const TestCoverageAnalyzer = struct {
 
                         // Build qualified name
                         var buf: [512]u8 = undefined;
-                        const qualified = std.fmt.bufPrint(&buf, "{s}::{s}", .{ identifier, member }) catch identifier;
+                        const qualified = std.fmt.bufPrint(&buf, "{s}::{s}", .{ identifier, member }) catch |err| blk: {
+                            std.debug.print("Warning: Qualified name too long '{s}::{s}': {}\n", .{ identifier, member, err });
+                            break :blk identifier;
+                        };
                         full_name = qualified;
                     }
                 }
@@ -528,6 +532,87 @@ pub fn printJsonReport(allocator: std.mem.Allocator, report: TestCoverageReport)
     try output.appendSlice(allocator, "}\n");
 
     std.debug.print("{s}", .{output.items});
+}
+
+/// Prints the test coverage report in SARIF format for CI/CD integration
+pub fn printSarifReport(allocator: std.mem.Allocator, report: TestCoverageReport) !void {
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(allocator);
+
+    // SARIF header
+    try output.appendSlice(allocator, "{\n");
+    try output.appendSlice(allocator, "  \"$schema\": \"https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json\",\n");
+    try output.appendSlice(allocator, "  \"version\": \"2.1.0\",\n");
+    try output.appendSlice(allocator, "  \"runs\": [{\n");
+    try output.appendSlice(allocator, "    \"tool\": {\n");
+    try output.appendSlice(allocator, "      \"driver\": {\n");
+    try output.appendSlice(allocator, "        \"name\": \"stig\",\n");
+    try output.appendSlice(allocator, "        \"version\": \"");
+    try output.appendSlice(allocator, cli.VERSION);
+    try output.appendSlice(allocator, "\",\n");
+    try output.appendSlice(allocator, "        \"informationUri\": \"https://github.com/stig-docs/stig\",\n");
+    try output.appendSlice(allocator, "        \"rules\": [{\n");
+    try output.appendSlice(allocator, "          \"id\": \"TCOV001\",\n");
+    try output.appendSlice(allocator, "          \"name\": \"MissingTestCoverage\",\n");
+    try output.appendSlice(allocator, "          \"shortDescription\": {\n");
+    try output.appendSlice(allocator, "            \"text\": \"API entity has no test coverage\"\n");
+    try output.appendSlice(allocator, "          },\n");
+    try output.appendSlice(allocator, "          \"fullDescription\": {\n");
+    try output.appendSlice(allocator, "            \"text\": \"A documented API entity (function, class, etc.) is not covered by any test file.\"\n");
+    try output.appendSlice(allocator, "          },\n");
+    try output.appendSlice(allocator, "          \"defaultConfiguration\": {\n");
+    try output.appendSlice(allocator, "            \"level\": \"warning\"\n");
+    try output.appendSlice(allocator, "          }\n");
+    try output.appendSlice(allocator, "        }]\n");
+    try output.appendSlice(allocator, "      }\n");
+    try output.appendSlice(allocator, "    },\n");
+
+    // Results array
+    try output.appendSlice(allocator, "    \"results\": [\n");
+
+    for (report.untested.items, 0..) |entity, i| {
+        try output.appendSlice(allocator, "      {\n");
+        try output.appendSlice(allocator, "        \"ruleId\": \"TCOV001\",\n");
+        try output.appendSlice(allocator, "        \"level\": \"warning\",\n");
+        try output.appendSlice(allocator, "        \"message\": {\n");
+
+        const kind_str = switch (entity.kind) {
+            .function => "function",
+            .class_type => "class",
+            .struct_type => "struct",
+            .enum_type => "enum",
+            .typedef => "typedef",
+            .macro => "macro",
+        };
+
+        try std.fmt.format(output.writer(allocator), "          \"text\": \"{s} '{s}' has no test coverage\"\n", .{ kind_str, entity.name });
+        try output.appendSlice(allocator, "        },\n");
+        try output.appendSlice(allocator, "        \"locations\": [{\n");
+        try output.appendSlice(allocator, "          \"physicalLocation\": {\n");
+        try output.appendSlice(allocator, "            \"artifactLocation\": {\n");
+        try std.fmt.format(output.writer(allocator), "              \"uri\": \"{s}\"\n", .{entity.source_file});
+        try output.appendSlice(allocator, "            },\n");
+        try output.appendSlice(allocator, "            \"region\": {\n");
+        try std.fmt.format(output.writer(allocator), "              \"startLine\": {d}\n", .{entity.line});
+        try output.appendSlice(allocator, "            }\n");
+        try output.appendSlice(allocator, "          }\n");
+        try output.appendSlice(allocator, "        }]\n");
+
+        if (i < report.untested.items.len - 1) {
+            try output.appendSlice(allocator, "      },\n");
+        } else {
+            try output.appendSlice(allocator, "      }\n");
+        }
+    }
+
+    try output.appendSlice(allocator, "    ]\n");
+    try output.appendSlice(allocator, "  }]\n");
+    try output.appendSlice(allocator, "}\n");
+
+    const stdout_file = std.fs.File.stdout();
+    stdout_file.writeAll(output.items) catch |err| {
+        std.debug.print("Error: Failed to write SARIF output: {}\n", .{err});
+    };
 }
 
 // Tests

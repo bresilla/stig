@@ -522,7 +522,8 @@ pub const MarkdownGenerator = struct {
                     try self.writeString("`");
                     try self.writeString(target);
                     try self.writeString("`");
-                    // TODO: Add warning to stderr or log
+                    // Warn about unresolved reference
+                    std.debug.print("Warning: Unresolved @ref '{s}' in {s}\n", .{ target, self.current_file });
                 }
             } else {
                 // No symbol table - render as code
@@ -542,8 +543,13 @@ pub const MarkdownGenerator = struct {
                 // For symbols, link to the anchor in the target file
                 if (self.output_format == .mdbook) {
                     // mdbook format: relative path to file + anchor
-                    // TODO: Calculate proper relative path
-                    return try std.fmt.allocPrint(self.allocator, "{s}.md#{s}", .{ resolved.target_file, resolved.anchor });
+                    const relative_path = self.calculateRelativePath(self.current_file, resolved.target_file);
+                    if (relative_path.len == 0 or std.mem.eql(u8, relative_path, ".")) {
+                        // Same file - just use anchor
+                        return try std.fmt.allocPrint(self.allocator, "#{s}", .{resolved.anchor});
+                    } else {
+                        return try std.fmt.allocPrint(self.allocator, "{s}.md#{s}", .{ relative_path, resolved.anchor });
+                    }
                 } else {
                     // Single markdown file: just anchor
                     return try std.fmt.allocPrint(self.allocator, "#{s}", .{resolved.anchor});
@@ -552,16 +558,42 @@ pub const MarkdownGenerator = struct {
             .page => {
                 // For pages, link to the page file
                 if (self.output_format == .mdbook) {
-                    return try std.fmt.allocPrint(self.allocator, "{s}.md", .{resolved.target_file});
+                    const relative_path = self.calculateRelativePath(self.current_file, resolved.target_file);
+                    return try std.fmt.allocPrint(self.allocator, "{s}.md", .{relative_path});
                 } else {
                     return try std.fmt.allocPrint(self.allocator, "#{s}", .{resolved.anchor});
                 }
             },
             .section, .anchor => {
-                // For sections/anchors, link to the anchor
+                // For sections/anchors, link to the anchor (assume same file)
                 return try std.fmt.allocPrint(self.allocator, "#{s}", .{resolved.anchor});
             },
         }
+    }
+
+    /// Calculates relative path from source file to target file
+    /// For mdbook output, files are organized in src/ directory
+    fn calculateRelativePath(self: *Self, from_file: []const u8, to_file: []const u8) []const u8 {
+        _ = self;
+        // In mdbook, files are typically flat in src/ or organized in subdirs
+        // For now, we assume flat structure - just return the target filename
+        // Strip any path components to get just the filename
+        const from_name = std.fs.path.basename(from_file);
+        const to_name = std.fs.path.basename(to_file);
+
+        // If same file, return empty
+        if (std.mem.eql(u8, from_name, to_name)) {
+            return "";
+        }
+
+        // Strip extension from target for mdbook link format
+        if (std.mem.endsWith(u8, to_name, ".h")) {
+            return to_name[0 .. to_name.len - 2];
+        } else if (std.mem.endsWith(u8, to_name, ".hpp") or std.mem.endsWith(u8, to_name, ".hxx")) {
+            return to_name[0 .. to_name.len - 4];
+        }
+
+        return to_name;
     }
 
     /// Writes a code block with optional Godbolt link
@@ -1751,7 +1783,7 @@ pub const MarkdownGenerator = struct {
             try self.writeString(val.name);
             if (val.value) |v| {
                 var buf: [32]u8 = undefined;
-                const num_str = std.fmt.bufPrint(&buf, " = {d}", .{v}) catch "";
+                const num_str = std.fmt.bufPrint(&buf, " = {d}", .{v}) catch " = ?";
                 try self.writeString(num_str);
             }
             try self.writeString(",\n");

@@ -89,7 +89,10 @@ pub const FileWatcher = struct {
         // Add inotify watch if using inotify backend
         switch (self.backend) {
             .inotify => |*ino| {
-                watched.wd = ino.addWatch(path) catch null;
+                watched.wd = ino.addWatch(path) catch |err| blk: {
+                    std.debug.print("Warning: Failed to add inotify watch for '{s}': {}\n", .{ path, err });
+                    break :blk null;
+                };
             },
             .polling => {},
         }
@@ -195,10 +198,20 @@ pub const FileWatcher = struct {
 };
 
 /// Get file modification time
+/// Returns 0 if file doesn't exist or cannot be accessed
 fn getModTime(path: []const u8) i128 {
-    const file = std.fs.cwd().openFile(path, .{}) catch return 0;
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        // Only log errors that aren't expected (FileNotFound is normal for new files)
+        if (err != error.FileNotFound) {
+            std.debug.print("Warning: Cannot access file '{s}' for modification time: {}\n", .{ path, err });
+        }
+        return 0;
+    };
     defer file.close();
-    const stat = file.stat() catch return 0;
+    const stat = file.stat() catch |err| {
+        std.debug.print("Warning: Cannot get file stats for '{s}': {}\n", .{ path, err });
+        return 0;
+    };
     return stat.mtime;
 }
 
@@ -220,7 +233,10 @@ const InotifyBackend = struct {
     pub fn init() Self {
         const linux = std.os.linux;
         const flags: u32 = linux.IN.CLOEXEC | linux.IN.NONBLOCK;
-        const fd = std.posix.inotify_init1(flags) catch -1;
+        const fd = std.posix.inotify_init1(flags) catch |err| blk: {
+            std.debug.print("Warning: Failed to initialize inotify: {}, falling back to polling\n", .{err});
+            break :blk -1;
+        };
         return Self{
             .fd = fd,
             .buffer = undefined,
@@ -271,7 +287,10 @@ const InotifyBackend = struct {
         };
 
         const timeout_i32: i32 = if (timeout_ms == 0) -1 else @intCast(timeout_ms);
-        const poll_result = std.posix.poll(&fds, timeout_i32) catch return &[_]InotifyEvent{};
+        const poll_result = std.posix.poll(&fds, timeout_i32) catch |err| {
+            std.debug.print("Warning: File watcher poll failed: {}\n", .{err});
+            return &[_]InotifyEvent{};
+        };
 
         if (poll_result == 0) {
             // Timeout
@@ -279,7 +298,10 @@ const InotifyBackend = struct {
         }
 
         // Read events
-        const bytes_read = std.posix.read(self.fd, &self.buffer) catch return &[_]InotifyEvent{};
+        const bytes_read = std.posix.read(self.fd, &self.buffer) catch |err| {
+            std.debug.print("Warning: File watcher read failed: {}\n", .{err});
+            return &[_]InotifyEvent{};
+        };
         if (bytes_read == 0) return &[_]InotifyEvent{};
 
         // Parse events (simplified - just return first event)
@@ -328,6 +350,11 @@ test "file watcher add watch" {
     var watcher = FileWatcher.init(std.testing.allocator);
     defer watcher.deinit();
 
-    // Try to watch a file that may or may not exist
-    watcher.addWatch("build.zig") catch {};
+    // Try to watch a file that may or may not exist - error is expected if file doesn't exist
+    watcher.addWatch("build.zig") catch |err| {
+        // FileNotFound is expected in test environment, other errors should not occur
+        if (err != error.FileNotFound) {
+            std.debug.print("Unexpected error: {}\n", .{err});
+        }
+    };
 }

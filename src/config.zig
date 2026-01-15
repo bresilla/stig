@@ -68,6 +68,8 @@ pub const Config = struct {
     modules: []const ModuleConfig = &[_]ModuleConfig{},
     /// Watch mode options
     watch: WatchOptions = .{},
+    /// File size and resource limits
+    limits: LimitsOptions = .{},
 
     /// Rule severity override for per-rule configuration
     pub const RuleSeverity = enum {
@@ -175,6 +177,18 @@ pub const Config = struct {
             "*.so",
             "*.dylib",
         },
+    };
+
+    /// File size and resource limits
+    pub const LimitsOptions = struct {
+        /// Maximum file size to process in bytes (default 10MB)
+        max_file_size: u32 = 10 * 1024 * 1024,
+        /// Maximum include file size in bytes (default 1MB)
+        max_include_size: u32 = 1024 * 1024,
+        /// Maximum JSON file size to read in bytes (default 100MB)
+        max_json_size: u32 = 100 * 1024 * 1024,
+        /// Maximum config file size in bytes (default 1MB)
+        max_config_size: u32 = 1024 * 1024,
     };
 
     /// Output formatting options
@@ -292,6 +306,9 @@ const TomlConfig = struct {
     // [watch] section for watch mode configuration
     watch: ?WatchSection = null,
 
+    // [limits] section for file size limits
+    limits: ?LimitsSection = null,
+
     // Note: [output] section conflicts with 'output' field name
     // We'll handle output_dir and format from root level only
 
@@ -338,6 +355,13 @@ const TomlConfig = struct {
     const WatchSection = struct {
         debounce_ms: ?i64 = null,
         ignore_patterns: ?[]const []const u8 = null,
+    };
+
+    const LimitsSection = struct {
+        max_file_size: ?i64 = null,
+        max_include_size: ?i64 = null,
+        max_json_size: ?i64 = null,
+        max_config_size: ?i64 = null,
     };
 };
 
@@ -392,8 +416,9 @@ pub const ConfigLoader = struct {
         var parser = toml.Parser(TomlConfig).init(self.allocator);
         defer parser.deinit();
 
-        self.parsed = parser.parseString(content) catch {
-            // On parse error, return default config
+        self.parsed = parser.parseString(content) catch |err| {
+            // Log parse error and return default config
+            std.debug.print("Warning: Failed to parse config file: {}, using defaults\n", .{err});
             return Config{};
         };
 
@@ -441,6 +466,8 @@ pub const ConfigLoader = struct {
                 config.format = .mdbook;
             } else if (std.mem.eql(u8, fmt, "json")) {
                 config.format = .json;
+            } else {
+                std.debug.print("Warning: Unknown format '{s}' in config, using default. Valid values: markdown, md, mdbook, json\n", .{fmt});
             }
         }
 
@@ -496,6 +523,8 @@ pub const ConfigLoader = struct {
                 config.grouping = .flat;
             } else if (std.mem.eql(u8, grp, "by_module") or std.mem.eql(u8, grp, "module")) {
                 config.grouping = .by_module;
+            } else {
+                std.debug.print("Warning: Unknown grouping '{s}' in config, using default. Valid values: by_header, header, by_prefix, prefix, flat, by_module, module\n", .{grp});
             }
         }
 
@@ -549,6 +578,7 @@ pub const ConfigLoader = struct {
 
                 if (valid_count > 0) {
                     const mods = self.allocator.alloc(ModuleConfig, valid_count) catch {
+                        std.debug.print("Warning: Failed to allocate memory for module configs, skipping\n", .{});
                         return config;
                     };
                     var idx: usize = 0;
@@ -587,6 +617,7 @@ pub const ConfigLoader = struct {
                 const count = rules_map.map.count();
                 if (count > 0) {
                     const rules = self.allocator.alloc(Config.RuleConfig, count) catch {
+                        std.debug.print("Warning: Failed to allocate memory for lint rules, skipping\n", .{});
                         return config;
                     };
                     var idx: usize = 0;
@@ -615,8 +646,26 @@ pub const ConfigLoader = struct {
 
         // Watch section
         if (tc.watch) |watch_section| {
-            if (watch_section.debounce_ms) |d| config.watch.debounce_ms = @intCast(d);
+            if (watch_section.debounce_ms) |d| {
+                if (d >= 0 and d <= std.math.maxInt(u32)) config.watch.debounce_ms = @intCast(d);
+            }
             if (watch_section.ignore_patterns) |p| config.watch.ignore_patterns = p;
+        }
+
+        // Limits section
+        if (tc.limits) |limits_section| {
+            if (limits_section.max_file_size) |s| {
+                if (s > 0 and s <= std.math.maxInt(u32)) config.limits.max_file_size = @intCast(s);
+            }
+            if (limits_section.max_include_size) |s| {
+                if (s > 0 and s <= std.math.maxInt(u32)) config.limits.max_include_size = @intCast(s);
+            }
+            if (limits_section.max_json_size) |s| {
+                if (s > 0 and s <= std.math.maxInt(u32)) config.limits.max_json_size = @intCast(s);
+            }
+            if (limits_section.max_config_size) |s| {
+                if (s > 0 and s <= std.math.maxInt(u32)) config.limits.max_config_size = @intCast(s);
+            }
         }
 
         return config;

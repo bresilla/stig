@@ -150,7 +150,7 @@ pub const Cache = struct {
 
                 // Parse size
                 if (entry_obj.object.get("size")) |s| {
-                    if (s == .integer) {
+                    if (s == .integer and s.integer >= 0) {
                         entry.size = @intCast(s.integer);
                     } else continue;
                 } else continue;
@@ -237,18 +237,30 @@ pub const Cache = struct {
             }
             first = false;
 
-            // Format entry
-            var line_buf: [512]u8 = undefined;
-            const line1 = std.fmt.bufPrint(&line_buf, "    \"{s}\": {{\n", .{entry.key_ptr.*}) catch continue;
+            // Format entry - buffer sized for max path + JSON overhead
+            var line_buf: [std.fs.max_path_bytes + 128]u8 = undefined;
+            const line1 = std.fmt.bufPrint(&line_buf, "    \"{s}\": {{\n", .{entry.key_ptr.*}) catch |err| {
+                std.debug.print("Warning: Cache entry path too long, skipping: {}\n", .{err});
+                continue;
+            };
             try content.appendSlice(self.allocator, line1);
 
-            const line2 = std.fmt.bufPrint(&line_buf, "      \"hash\": \"{s}\",\n", .{entry.value_ptr.hash}) catch continue;
+            const line2 = std.fmt.bufPrint(&line_buf, "      \"hash\": \"{s}\",\n", .{entry.value_ptr.hash}) catch |err| {
+                std.debug.print("Warning: Cache hash format error: {}\n", .{err});
+                continue;
+            };
             try content.appendSlice(self.allocator, line2);
 
-            const line3 = std.fmt.bufPrint(&line_buf, "      \"mtime\": {d},\n", .{entry.value_ptr.mtime}) catch continue;
+            const line3 = std.fmt.bufPrint(&line_buf, "      \"mtime\": {d},\n", .{entry.value_ptr.mtime}) catch |err| {
+                std.debug.print("Warning: Cache mtime format error: {}\n", .{err});
+                continue;
+            };
             try content.appendSlice(self.allocator, line3);
 
-            const line4 = std.fmt.bufPrint(&line_buf, "      \"size\": {d}\n", .{entry.value_ptr.size}) catch continue;
+            const line4 = std.fmt.bufPrint(&line_buf, "      \"size\": {d}\n", .{entry.value_ptr.size}) catch |err| {
+                std.debug.print("Warning: Cache size format error: {}\n", .{err});
+                continue;
+            };
             try content.appendSlice(self.allocator, line4);
 
             try content.appendSlice(self.allocator, "    }");
@@ -265,8 +277,11 @@ pub const Cache = struct {
             }
             first = false;
 
-            var line_buf: [1024]u8 = undefined;
-            const line1 = std.fmt.bufPrint(&line_buf, "    \"{s}\": [", .{entry.key_ptr.*}) catch continue;
+            var line_buf: [std.fs.max_path_bytes + 64]u8 = undefined;
+            const line1 = std.fmt.bufPrint(&line_buf, "    \"{s}\": [", .{entry.key_ptr.*}) catch |err| {
+                std.debug.print("Warning: Dependency key path too long, skipping: {}\n", .{err});
+                continue;
+            };
             try content.appendSlice(self.allocator, line1);
 
             var first_dep = true;
@@ -275,7 +290,10 @@ pub const Cache = struct {
                     try content.appendSlice(self.allocator, ", ");
                 }
                 first_dep = false;
-                const dep_str = std.fmt.bufPrint(&line_buf, "\"{s}\"", .{dep}) catch continue;
+                const dep_str = std.fmt.bufPrint(&line_buf, "\"{s}\"", .{dep}) catch |err| {
+                    std.debug.print("Warning: Dependency path too long, skipping: {}\n", .{err});
+                    continue;
+                };
                 try content.appendSlice(self.allocator, dep_str);
             }
             try content.appendSlice(self.allocator, "]");
@@ -587,9 +605,20 @@ pub const IncrementalCache = struct {
             // Compare content hash
             const current_hash = Cache.computeContentHash(content);
             if (std.mem.eql(u8, &entry.hash, &current_hash)) {
-                // Hash matches - check if output files exist
-                // For now, we assume output exists if hash matches
-                // In the future, we could track output files explicitly
+                // Hash matches - verify output directory still exists
+                // This catches the case where output was deleted externally
+                const src_dir = std.fs.path.join(self.allocator, &.{ self.output_dir, "src" }) catch |err| {
+                    std.debug.print("Warning: Failed to construct output path: {}\n", .{err});
+                    return true; // Assume rebuild needed on allocation failure
+                };
+                defer self.allocator.free(src_dir);
+
+                // Check if src directory exists (basic sanity check)
+                std.fs.cwd().access(src_dir, .{}) catch {
+                    // Output directory missing - needs rebuild
+                    return true;
+                };
+
                 return false;
             }
             return true;
@@ -653,7 +682,10 @@ pub const IncrementalCache = struct {
             if (inc.is_system) continue;
 
             // Resolve relative path to absolute
-            const resolved = std.fs.path.join(self.allocator, &.{ file_dir, inc.path }) catch continue;
+            const resolved = std.fs.path.join(self.allocator, &.{ file_dir, inc.path }) catch |err| {
+                std.debug.print("Warning: Failed to resolve include path '{s}': {}\n", .{ inc.path, err });
+                continue;
+            };
             defer self.allocator.free(resolved);
 
             // Normalize the path
@@ -734,9 +766,15 @@ pub const IncrementalCache = struct {
             for (current_files.items) |changed_file| {
                 // Get absolute path for dependency lookup
                 var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-                const abs_path = std.fs.cwd().realpath(changed_file, &path_buf) catch continue;
+                const abs_path = std.fs.cwd().realpath(changed_file, &path_buf) catch |err| {
+                    std.debug.print("Warning: Cannot resolve path '{s}': {}\n", .{ changed_file, err });
+                    continue;
+                };
 
-                var dependents = self.cache.getDependents(abs_path) catch continue;
+                var dependents = self.cache.getDependents(abs_path) catch |err| {
+                    std.debug.print("Warning: Cannot get dependents for '{s}': {}\n", .{ abs_path, err });
+                    continue;
+                };
                 defer dependents.deinit(self.allocator);
 
                 for (dependents.items) |dependent| {

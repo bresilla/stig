@@ -67,13 +67,13 @@ pub const InitCommand = struct {
 
         const config_content =
             \\# Stig configuration file
-            \\# See: https://github.com/your-repo/stig
+            \\# See: https://github.com/bresilla/stig
             \\
             \\# Documentation settings
             \\title = "API Reference"
-            \\output = "docs"
+            \\output_dir = "docs"
             \\format = "mdbook"
-            \\inputs = ["include/**/*.hpp", "include/**/*.h"]
+            \\input_patterns = ["include/**/*.hpp", "include/**/*.h"]
             \\
         ;
 

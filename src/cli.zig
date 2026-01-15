@@ -2,7 +2,7 @@ const std = @import("std");
 const argonaut = @import("argonaut");
 const config_mod = @import("config.zig");
 
-pub const VERSION = "0.2.0";
+pub const VERSION = "0.0.2";
 pub const Config = config_mod.Config;
 
 /// Output format for documentation
@@ -31,12 +31,16 @@ pub const CheckOutputFormat = enum {
     compiler,
     /// JSON output for tooling integration
     json,
+    /// SARIF (Static Analysis Results Interchange Format) for GitHub code scanning
+    sarif,
 };
 
 /// Subcommand type
 pub const Subcommand = enum {
     /// Generate documentation (default)
     generate,
+    /// Render documentation from JSON file
+    render,
     /// Check documentation coverage and quality (linter-style output)
     check,
     /// Run as LSP server for editor integration
@@ -53,6 +57,8 @@ pub const Subcommand = enum {
     help,
     /// Show help for generate subcommand
     help_generate,
+    /// Show help for render subcommand
+    help_render,
     /// Show help for check subcommand
     help_check,
     /// Show help for lsp subcommand
@@ -225,12 +231,16 @@ pub const ArgParser = struct {
             } else if (std.mem.eql(u8, first_arg, "lsp")) {
                 subcommand = .lsp;
                 args_start = 2;
+            } else if (std.mem.eql(u8, first_arg, "render")) {
+                subcommand = .render;
+                args_start = 2;
             }
         }
 
         // Parse based on subcommand
         return switch (subcommand) {
             .generate => try self.parseGenerateArgs(process_args, args_start),
+            .render => try self.parseRenderArgs(process_args, args_start),
             .check => try self.parseCheckArgs(process_args, args_start),
             .init => try self.parseInitArgs(process_args, args_start),
             .@"test" => try self.parseTestArgs(process_args, args_start),
@@ -294,7 +304,7 @@ pub const ArgParser = struct {
                     .allocator = self.allocator,
                 };
             },
-            .help, .help_generate, .help_check, .help_lsp, .help_init, .help_test, .help_coverage, .version => unreachable, // handled above
+            .help, .help_generate, .help_render, .help_check, .help_lsp, .help_init, .help_test, .help_coverage, .version => unreachable, // handled above
         };
     }
 
@@ -431,6 +441,107 @@ pub const ArgParser = struct {
         };
     }
 
+    fn parseRenderArgs(self: *Self, process_args: []const [:0]u8, args_start: usize) !Args {
+        // Create argonaut parser for render subcommand
+        self.parser = try argonaut.newParser(
+            self.allocator,
+            "stig render",
+            "Render documentation from a JSON file",
+        );
+        const parser = self.parser.?;
+        parser.command.disableHelp();
+
+        // Define arguments
+        var output_opts = argonaut.Options{};
+        output_opts.help = "Output file or directory";
+        self.output_ptr = try parser.string("o", "output", &output_opts);
+
+        var title_opts = argonaut.Options{};
+        title_opts.help = "Override book title";
+        self.title_ptr = try parser.string("", "title", &title_opts);
+
+        var help_opts = argonaut.Options{};
+        help_opts.help = "Show help for render command";
+        self.help_ptr = try parser.flag("h", "help", &help_opts);
+
+        // Build args slice starting from args_start
+        var args_list: std.ArrayList([]const u8) = .empty;
+        defer args_list.deinit(self.allocator);
+
+        try args_list.append(self.allocator, "stig");
+        for (process_args[args_start..]) |arg| {
+            try args_list.append(self.allocator, arg);
+        }
+
+        // Parse
+        self.remainder = parser.parseWithRemainder(args_list.items) catch |err| {
+            return err;
+        };
+
+        // Check for help
+        if (self.help_ptr.?.*) {
+            return Args{
+                .subcommand = .help_render,
+                .input_files = &[_][]const u8{},
+                .output_file = null,
+                .output_format = .markdown,
+                .format_explicitly_set = false,
+                .book_title = null,
+                .config_file = null,
+                .watch_mode = false,
+                .serve_mode = false,
+                .force_rebuild = false,
+                .check_output_format = .human,
+                .min_coverage = null,
+                .strict = false,
+                .test_patterns = &[_][]const u8{},
+                .allocator = self.allocator,
+            };
+        }
+
+        // Get output
+        const output_str = self.output_ptr.?.*;
+        const output_file: ?[]const u8 = if (output_str.len > 0) output_str else null;
+
+        // Detect output format from extension
+        var output_format: OutputFormat = .markdown;
+        if (output_file) |of| {
+            if (std.mem.endsWith(u8, of, ".json")) {
+                output_format = .json;
+            } else if (std.mem.endsWith(u8, of, "/") or std.mem.indexOfScalar(u8, of, '.') == null) {
+                output_format = .mdbook;
+            }
+        }
+
+        // Get book title
+        const title_str = self.title_ptr.?.*;
+        const book_title: ?[]const u8 = if (title_str.len > 0) title_str else null;
+
+        // Get input files from remainder (should be the JSON file)
+        const input_files = if (self.remainder) |rem|
+            try self.allocator.dupe([]const u8, rem)
+        else
+            &[_][]const u8{};
+
+        return Args{
+            .subcommand = .render,
+            .input_files = input_files,
+            .output_file = output_file,
+            .output_format = output_format,
+            .format_explicitly_set = false,
+            .book_title = book_title,
+            .config_file = null,
+            .watch_mode = false,
+            .serve_mode = false,
+            .force_rebuild = false,
+            .check_output_format = .human,
+            .min_coverage = null,
+            .strict = false,
+            .test_patterns = &[_][]const u8{},
+            .allocator = self.allocator,
+        };
+    }
+
     fn parseCheckArgs(self: *Self, process_args: []const [:0]u8, args_start: usize) !Args {
         // Create argonaut parser for check subcommand
         self.parser = try argonaut.newParser(
@@ -505,6 +616,8 @@ pub const ArgParser = struct {
                 check_output_format = .compiler;
             } else if (std.mem.eql(u8, format_str, "json")) {
                 check_output_format = .json;
+            } else if (std.mem.eql(u8, format_str, "sarif")) {
+                check_output_format = .sarif;
             }
         }
 
@@ -512,9 +625,17 @@ pub const ArgParser = struct {
         const config_str = self.config_ptr.?.*;
         const config_file: ?[]const u8 = if (config_str.len > 0) config_str else null;
 
-        // Get min coverage
+        // Get min coverage (validate range 0-100)
         const min_coverage_val = self.min_coverage_ptr.?.*;
-        const min_coverage: ?u8 = if (min_coverage_val > 0) @intCast(@min(min_coverage_val, 100)) else null;
+        const min_coverage: ?u8 = if (min_coverage_val >= 0 and min_coverage_val <= 100)
+            @intCast(min_coverage_val)
+        else if (min_coverage_val > 100) blk: {
+            std.debug.print("Warning: min-coverage value {d} exceeds 100, capping at 100\n", .{min_coverage_val});
+            break :blk 100;
+        } else blk: {
+            std.debug.print("Warning: min-coverage value {d} is invalid (must be 0-100), ignoring\n", .{min_coverage_val});
+            break :blk null;
+        };
 
         // Get strict mode
         const strict = self.strict_ptr.?.*;
@@ -808,12 +929,22 @@ pub const ArgParser = struct {
                 check_output_format = .compiler;
             } else if (std.mem.eql(u8, format_str, "json")) {
                 check_output_format = .json;
+            } else if (std.mem.eql(u8, format_str, "sarif")) {
+                check_output_format = .sarif;
             }
         }
 
-        // Get min coverage
+        // Get min coverage (validate range 0-100)
         const min_coverage_val = self.min_coverage_ptr.?.*;
-        const min_coverage: ?u8 = if (min_coverage_val > 0) @intCast(@min(min_coverage_val, 100)) else null;
+        const min_coverage: ?u8 = if (min_coverage_val >= 0 and min_coverage_val <= 100)
+            @intCast(min_coverage_val)
+        else if (min_coverage_val > 100) blk: {
+            std.debug.print("Warning: min-coverage value {d} exceeds 100, capping at 100\n", .{min_coverage_val});
+            break :blk 100;
+        } else blk: {
+            std.debug.print("Warning: min-coverage value {d} is invalid (must be 0-100), ignoring\n", .{min_coverage_val});
+            break :blk null;
+        };
 
         // Get input files (header files) and test patterns from remainder
         // Format: stig coverage <headers...> --tests <test_files...>
@@ -904,6 +1035,7 @@ pub const ArgParser = struct {
             \\    -c, --config <FILE>    Config file path (default: stig.toml)
             \\    -w, --watch            Watch for file changes and regenerate
             \\    --serve                Watch mode + spawn mdbook serve for live preview
+            \\                           (requires -f mdbook and -o <dir>)
             \\    --force                Force full rebuild, ignore cache
             \\    -h, --help             Show this help message
             \\
@@ -912,6 +1044,40 @@ pub const ArgParser = struct {
             \\    stig input.h -o output.md                # Output to file
             \\    stig src/*.h -f mdbook -o docs/          # Generate mdbook
             \\    stig src/*.h -f mdbook --serve           # Watch + live preview
+            \\
+        ;
+        std.debug.print("{s}", .{help});
+    }
+
+    /// Prints help for render subcommand
+    pub fn printRenderHelp() void {
+        const help =
+            \\stig render - Render documentation from a JSON file
+            \\
+            \\USAGE:
+            \\    stig render [OPTIONS] <JSON_FILE>
+            \\
+            \\ARGS:
+            \\    <JSON_FILE>    JSON documentation file to render
+            \\
+            \\OPTIONS:
+            \\    -o, --output <PATH>    Output file or directory
+            \\    --title <TITLE>        Override book title
+            \\    -h, --help             Show this help message
+            \\
+            \\OUTPUT FORMAT AUTO-DETECTION:
+            \\    Based on output path:
+            \\    -o docs.md           Single markdown file
+            \\    -o docs/             mdbook directory structure
+            \\    -o docs.json         Copy/transform JSON (for filtering)
+            \\
+            \\EXAMPLES:
+            \\    stig render docs.json -o api.md          # Single markdown file
+            \\    stig render docs.json -o docs/           # mdbook structure
+            \\    stig render docs.json                    # Output to stdout
+            \\
+            \\SEE ALSO:
+            \\    stig generate    Generate JSON from C/C++ source files
             \\
         ;
         std.debug.print("{s}", .{help});
@@ -930,7 +1096,7 @@ pub const ArgParser = struct {
             \\
             \\OPTIONS:
             \\    -c, --config <FILE>       Config file path (default: stig.toml)
-            \\    -f, --format <FMT>        Output format: human, compiler, json
+            \\    -f, --format <FMT>        Output format: human, compiler, json, sarif
             \\    --min-coverage <N>        Minimum coverage percentage (0-100)
             \\    --strict                  Treat warnings as errors
             \\    -h, --help                Show this help message
@@ -940,6 +1106,7 @@ pub const ArgParser = struct {
             \\    compiler   Compiler-style output for CI/CD integration:
             \\               file:line:col: severity: message
             \\    json       JSON output for tooling integration
+            \\    sarif      SARIF format for GitHub code scanning integration
             \\
             \\EXIT CODES:
             \\    0    All checks passed
@@ -1090,10 +1257,11 @@ pub const ArgParser = struct {
             \\    3. Reports which documented entities have tests vs which don't
             \\
             \\CONFIG FILE (stig.toml):
-            \\    [coverage]
-            \\    sources = ["include/**/*.hpp"]    # Header files to analyze
-            \\    tests = ["test/**/*.cpp"]         # Test files to scan
-            \\    min_coverage = 80                 # Minimum coverage threshold
+            \\    input_patterns = ["include/**/*.hpp"]  # Header files to analyze
+            \\
+            \\    [test_coverage]
+            \\    test_patterns = ["test/**/*.cpp"]      # Test files to scan
+            \\    min_coverage = 80                      # Minimum coverage threshold
             \\
             \\OUTPUT FORMATS:
             \\    human      Human-readable report with summary (default)
@@ -1123,6 +1291,7 @@ pub const ArgParser = struct {
             \\
             \\COMMANDS:
             \\    generate      Generate documentation from source files (default)
+            \\    render        Render documentation from a JSON file
             \\    check         Check documentation coverage and quality
             \\    lsp           Run as LSP server for editor integration
             \\    coverage      Analyze test coverage (which API entities are tested)
@@ -1143,6 +1312,8 @@ pub const ArgParser = struct {
             \\EXAMPLES:
             \\    stig input.h                             # Generate markdown to stdout
             \\    stig generate -f mdbook -o docs/ src/*.h # Generate mdbook
+            \\    stig generate -f json -o docs.json *.h   # Generate JSON
+            \\    stig render docs.json -o api.md          # Render JSON to markdown
             \\    stig check src/*.h                       # Check documentation
             \\    stig lsp                                 # Start LSP server
             \\    stig coverage                            # Analyze test coverage

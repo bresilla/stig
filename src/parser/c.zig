@@ -46,6 +46,7 @@ pub const CParser = struct {
 
         const tree = self.parser.parseString(source, null);
         if (tree == null) {
+            std.debug.print("Warning: Failed to parse C file '{s}', skipping\n", .{filename});
             return types.Module{
                 .name = filename,
                 .functions = &[_]types.Function{},
@@ -202,7 +203,10 @@ pub const CParser = struct {
                 if (content.len > 0 and content[0] == ' ') {
                     content = content[1..];
                 }
-                comments.insert(self.allocator, 0, content) catch break;
+                comments.insert(self.allocator, 0, content) catch |err| {
+                    std.debug.print("Warning: Failed to collect doc comment: {}\n", .{err});
+                    break;
+                };
 
                 // Check previous sibling
                 if (current.prevSibling()) |prev| {
@@ -691,7 +695,10 @@ pub const CParser = struct {
                     name = self.getNodeText(child);
                 } else if (std.mem.eql(u8, child_kind, "number_literal")) {
                     const num_text = self.getNodeText(child);
-                    value = std.fmt.parseInt(i64, num_text, 0) catch null;
+                    value = std.fmt.parseInt(i64, num_text, 0) catch |err| blk: {
+                        std.debug.print("Warning: Could not parse enum value '{s}': {}\n", .{ num_text, err });
+                        break :blk null;
+                    };
                 } else if (std.mem.eql(u8, child_kind, "comment")) {
                     const comment_text = self.getNodeText(child);
                     doc = self.stripTrailingCommentDelimiters(comment_text);
@@ -877,6 +884,31 @@ pub const CParser = struct {
     }
 };
 
+// Test helper to free module resources
+fn freeTestModule(alloc: std.mem.Allocator, module: types.Module) void {
+    for (module.functions) |func| {
+        alloc.free(func.params);
+    }
+    alloc.free(module.functions);
+    for (module.structs) |s| {
+        alloc.free(s.fields);
+    }
+    alloc.free(module.structs);
+    for (module.enums) |e| {
+        alloc.free(e.values);
+    }
+    alloc.free(module.enums);
+    alloc.free(module.typedefs);
+    for (module.macros) |macro| {
+        if (macro.params) |params| {
+            alloc.free(params);
+        }
+    }
+    alloc.free(module.macros);
+    alloc.free(module.includes);
+    alloc.free(module.unions);
+}
+
 // Tests
 test "parse simple function" {
     var parser = try CParser.init(std.testing.allocator);
@@ -884,7 +916,7 @@ test "parse simple function" {
 
     const source = "int add(int a, int b) { return a + b; }";
     const module = try parser.parse(source, "test.c");
-    defer std.testing.allocator.free(module.functions);
+    defer freeTestModule(std.testing.allocator, module);
 
     try std.testing.expectEqual(@as(usize, 1), module.functions.len);
     try std.testing.expectEqualStrings("add", module.functions[0].name);
@@ -898,7 +930,7 @@ test "parse function prototype" {
 
     const source = "int subtract(int a, int b);";
     const module = try parser.parse(source, "test.h");
-    defer std.testing.allocator.free(module.functions);
+    defer freeTestModule(std.testing.allocator, module);
 
     try std.testing.expectEqual(@as(usize, 1), module.functions.len);
     try std.testing.expectEqualStrings("subtract", module.functions[0].name);
@@ -910,7 +942,7 @@ test "parse struct" {
 
     const source = "struct Point { int x; int y; };";
     const module = try parser.parse(source, "test.h");
-    defer std.testing.allocator.free(module.structs);
+    defer freeTestModule(std.testing.allocator, module);
 
     try std.testing.expectEqual(@as(usize, 1), module.structs.len);
     try std.testing.expectEqualStrings("Point", module.structs[0].name);
@@ -923,7 +955,7 @@ test "parse enum" {
 
     const source = "enum Color { RED = 0, GREEN = 1, BLUE = 2 };";
     const module = try parser.parse(source, "test.h");
-    defer std.testing.allocator.free(module.enums);
+    defer freeTestModule(std.testing.allocator, module);
 
     try std.testing.expectEqual(@as(usize, 1), module.enums.len);
     try std.testing.expectEqualStrings("Color", module.enums[0].name);
@@ -940,7 +972,7 @@ test "parse function with docstring" {
         \\int add(int a, int b);
     ;
     const module = try parser.parse(source, "test.h");
-    defer std.testing.allocator.free(module.functions);
+    defer freeTestModule(std.testing.allocator, module);
 
     try std.testing.expectEqual(@as(usize, 1), module.functions.len);
     try std.testing.expect(module.functions[0].doc != null);
@@ -960,7 +992,7 @@ test "parse function with doxygen params" {
         \\int multiply(int x, int y);
     ;
     const module = try parser.parse(source, "test.h");
-    defer std.testing.allocator.free(module.functions);
+    defer freeTestModule(std.testing.allocator, module);
 
     try std.testing.expectEqual(@as(usize, 1), module.functions.len);
     const func = module.functions[0];
@@ -984,7 +1016,7 @@ test "parse multiple functions" {
         \\int multiply(int x, int y);
     ;
     const module = try parser.parse(source, "test.h");
-    defer std.testing.allocator.free(module.functions);
+    defer freeTestModule(std.testing.allocator, module);
 
     try std.testing.expectEqual(@as(usize, 3), module.functions.len);
     try std.testing.expectEqualStrings("add", module.functions[0].name);
@@ -1004,7 +1036,7 @@ test "parse struct with field docs" {
         \\};
     ;
     const module = try parser.parse(source, "test.h");
-    defer std.testing.allocator.free(module.structs);
+    defer freeTestModule(std.testing.allocator, module);
 
     try std.testing.expectEqual(@as(usize, 1), module.structs.len);
     const s = module.structs[0];
@@ -1032,7 +1064,7 @@ test "parse enum with values and docs" {
         \\};
     ;
     const module = try parser.parse(source, "test.h");
-    defer std.testing.allocator.free(module.enums);
+    defer freeTestModule(std.testing.allocator, module);
 
     try std.testing.expectEqual(@as(usize, 1), module.enums.len);
     const e = module.enums[0];
@@ -1053,7 +1085,7 @@ test "parse typedef" {
         \\typedef unsigned int uint32;
     ;
     const module = try parser.parse(source, "test.h");
-    defer std.testing.allocator.free(module.typedefs);
+    defer freeTestModule(std.testing.allocator, module);
 
     try std.testing.expectEqual(@as(usize, 1), module.typedefs.len);
     const td = module.typedefs[0];
@@ -1067,7 +1099,7 @@ test "parse void function" {
 
     const source = "void do_nothing(void);";
     const module = try parser.parse(source, "test.h");
-    defer std.testing.allocator.free(module.functions);
+    defer freeTestModule(std.testing.allocator, module);
 
     try std.testing.expectEqual(@as(usize, 1), module.functions.len);
     try std.testing.expectEqualStrings("do_nothing", module.functions[0].name);
@@ -1080,6 +1112,7 @@ test "parse empty source" {
 
     const source = "";
     const module = try parser.parse(source, "empty.h");
+    defer freeTestModule(std.testing.allocator, module);
 
     try std.testing.expectEqual(@as(usize, 0), module.functions.len);
     try std.testing.expectEqual(@as(usize, 0), module.structs.len);
@@ -1097,6 +1130,7 @@ test "parse source with only comments" {
         \\/** Doc comment without declaration */
     ;
     const module = try parser.parse(source, "comments.h");
+    defer freeTestModule(std.testing.allocator, module);
 
     try std.testing.expectEqual(@as(usize, 0), module.functions.len);
 }
@@ -1110,7 +1144,7 @@ test "parse object-like macro" {
         \\#define VERSION 1
     ;
     const module = try parser.parse(source, "test.h");
-    defer std.testing.allocator.free(module.macros);
+    defer freeTestModule(std.testing.allocator, module);
 
     try std.testing.expectEqual(@as(usize, 1), module.macros.len);
     try std.testing.expectEqualStrings("VERSION", module.macros[0].name);
@@ -1132,14 +1166,7 @@ test "parse function-like macro" {
         \\#define MAX(a, b) ((a) > (b) ? (a) : (b))
     ;
     const module = try parser.parse(source, "test.h");
-    defer {
-        if (module.macros.len > 0) {
-            if (module.macros[0].params) |params| {
-                std.testing.allocator.free(params);
-            }
-        }
-        std.testing.allocator.free(module.macros);
-    }
+    defer freeTestModule(std.testing.allocator, module);
 
     try std.testing.expectEqual(@as(usize, 1), module.macros.len);
     const macro = module.macros[0];

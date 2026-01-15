@@ -228,7 +228,8 @@ pub const SnippetExtractor = struct {
         for (self.base_paths) |base| {
             var path_buf: [std.fs.max_path_bytes]u8 = undefined;
             const full_path = if (base.len > 0 and !std.mem.eql(u8, base, "."))
-                std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ base, filename }) catch {
+                std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ base, filename }) catch |err| {
+                    std.debug.print("Warning: Could not format path '{s}/{s}': {}\n", .{ base, filename, err });
                     continue;
                 }
             else
@@ -236,7 +237,10 @@ pub const SnippetExtractor = struct {
 
             if (std.fs.cwd().openFile(full_path, .{})) |file| {
                 defer file.close();
-                const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch {
+                const content = file.readToEndAlloc(self.allocator, 1024 * 1024) catch |err| {
+                    if (err == error.StreamTooLong) {
+                        std.debug.print("Warning: Snippet file '{s}' exceeds 1MB size limit, skipping\n", .{full_path});
+                    }
                     continue;
                 };
                 self.cache.put(filename, content) catch {

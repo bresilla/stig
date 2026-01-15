@@ -646,11 +646,151 @@ pub const MdbookGenerator = struct {
         }
     }
 
-    /// Generates content organized by prefix (placeholder for future implementation)
+    /// Generates content organized by prefix (e.g., vec_add, vec_sub grouped under "vec")
     fn generateByPrefix(self: *Self, output_dir: []const u8, modules: []const types.Module) !void {
-        // For now, fall back to by_header strategy
-        // TODO: Implement prefix-based grouping
-        try self.generateByHeader(output_dir, modules);
+        // Collect all symbols by prefix
+        var prefix_groups = std.StringHashMap(PrefixGroup).init(self.allocator);
+        defer {
+            var iter = prefix_groups.valueIterator();
+            while (iter.next()) |group| {
+                group.functions.deinit(self.allocator);
+                group.structs.deinit(self.allocator);
+                group.unions.deinit(self.allocator);
+                group.enums.deinit(self.allocator);
+                group.typedefs.deinit(self.allocator);
+                group.classes.deinit(self.allocator);
+                group.macros.deinit(self.allocator);
+            }
+            prefix_groups.deinit();
+        }
+
+        // Group all items by prefix
+        for (modules) |module| {
+            for (module.functions) |func| {
+                const prefix = extractPrefix(func.name);
+                try self.addToGroup(&prefix_groups, prefix, .{ .function = func });
+            }
+            for (module.structs) |s| {
+                const prefix = extractPrefix(s.name);
+                try self.addToGroup(&prefix_groups, prefix, .{ .@"struct" = s });
+            }
+            for (module.unions) |u| {
+                const prefix = extractPrefix(u.name);
+                try self.addToGroup(&prefix_groups, prefix, .{ .@"union" = u });
+            }
+            for (module.enums) |e| {
+                const prefix = extractPrefix(e.name);
+                try self.addToGroup(&prefix_groups, prefix, .{ .@"enum" = e });
+            }
+            for (module.typedefs) |t| {
+                const prefix = extractPrefix(t.name);
+                try self.addToGroup(&prefix_groups, prefix, .{ .typedef = t });
+            }
+            for (module.classes) |c| {
+                const prefix = extractPrefix(c.name);
+                try self.addToGroup(&prefix_groups, prefix, .{ .class = c });
+            }
+            for (module.macros) |m| {
+                const prefix = extractPrefix(m.name);
+                try self.addToGroup(&prefix_groups, prefix, .{ .macro = m });
+            }
+        }
+
+        // Create src directory
+        var src_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const src_path = try std.fmt.bufPrint(&src_buf, "{s}/src", .{output_dir});
+        std.fs.cwd().makeDir(src_path) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+
+        // Generate a file for each prefix
+        var group_iter = prefix_groups.iterator();
+        while (group_iter.next()) |entry| {
+            const prefix = entry.key_ptr.*;
+            const group = entry.value_ptr.*;
+
+            // Build a synthetic module for this prefix group
+            const prefix_module = types.Module{
+                .name = prefix,
+                .functions = group.functions.items,
+                .structs = group.structs.items,
+                .unions = group.unions.items,
+                .enums = group.enums.items,
+                .typedefs = group.typedefs.items,
+                .classes = group.classes.items,
+                .macros = group.macros.items,
+            };
+
+            self.markdown_gen.setCurrentFile(prefix);
+            const markdown = try self.markdown_gen.generate(prefix_module);
+
+            // Sanitize prefix for filename
+            const safe_name = self.sanitizeFilename(prefix);
+
+            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const path = try std.fmt.bufPrint(&path_buf, "{s}/src/{s}.md", .{ output_dir, safe_name });
+            const file = try std.fs.cwd().createFile(path, .{});
+            defer file.close();
+            try file.writeAll(markdown);
+        }
+    }
+
+    const PrefixGroup = struct {
+        functions: std.ArrayList(types.Function),
+        structs: std.ArrayList(types.Struct),
+        unions: std.ArrayList(types.Union),
+        enums: std.ArrayList(types.Enum),
+        typedefs: std.ArrayList(types.Typedef),
+        classes: std.ArrayList(types.Class),
+        macros: std.ArrayList(types.Macro),
+    };
+
+    const GroupItem = union(enum) {
+        function: types.Function,
+        @"struct": types.Struct,
+        @"union": types.Union,
+        @"enum": types.Enum,
+        typedef: types.Typedef,
+        class: types.Class,
+        macro: types.Macro,
+    };
+
+    fn addToGroup(self: *Self, groups: *std.StringHashMap(PrefixGroup), prefix: []const u8, item: GroupItem) !void {
+        const gop = try groups.getOrPut(prefix);
+        if (!gop.found_existing) {
+            gop.value_ptr.* = .{
+                .functions = .empty,
+                .structs = .empty,
+                .unions = .empty,
+                .enums = .empty,
+                .typedefs = .empty,
+                .classes = .empty,
+                .macros = .empty,
+            };
+        }
+
+        switch (item) {
+            .function => |f| try gop.value_ptr.functions.append(self.allocator, f),
+            .@"struct" => |s| try gop.value_ptr.structs.append(self.allocator, s),
+            .@"union" => |u| try gop.value_ptr.unions.append(self.allocator, u),
+            .@"enum" => |e| try gop.value_ptr.enums.append(self.allocator, e),
+            .typedef => |t| try gop.value_ptr.typedefs.append(self.allocator, t),
+            .class => |c| try gop.value_ptr.classes.append(self.allocator, c),
+            .macro => |m| try gop.value_ptr.macros.append(self.allocator, m),
+        }
+    }
+
+    /// Extracts prefix from a name (text before first underscore)
+    /// Returns "misc" if no underscore found or prefix is too short
+    fn extractPrefix(name: []const u8) []const u8 {
+        if (std.mem.indexOf(u8, name, "_")) |idx| {
+            if (idx >= 2) { // Minimum 2-char prefix
+                return name[0..idx];
+            }
+        }
+        // No underscore or too short prefix - use "misc" category
+        return "misc";
     }
 
     /// Generates all content in a single flat structure

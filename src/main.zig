@@ -6,7 +6,6 @@ const CppParser = @import("parser/cpp.zig").CppParser;
 const MarkdownGenerator = @import("output/markdown.zig").MarkdownGenerator;
 const MdbookGenerator = @import("output/mdbook.zig").MdbookGenerator;
 const MdbookConfig = @import("output/mdbook.zig").MdbookConfig;
-const JsonGenerator = @import("output/json.zig").JsonGenerator;
 const xref = @import("xref.zig");
 const cli = @import("cli.zig");
 const config_mod = @import("config.zig");
@@ -21,6 +20,10 @@ const lsp_server = @import("lsp/server.zig");
 const init_cmd = @import("init.zig");
 const testing_cmd = @import("testing.zig");
 const testcov = @import("testcov.zig");
+
+// JSON and rendering pipeline imports
+const json_mod = @import("output/json/mod.zig");
+const write_mod = @import("output/write/mod.zig");
 
 pub fn main() !void {
     // Get allocator - disable safety checks to avoid leak warnings
@@ -58,6 +61,10 @@ pub fn main() !void {
             cli.ArgParser.printGenerateHelp();
             return;
         },
+        .help_render => {
+            cli.ArgParser.printRenderHelp();
+            return;
+        },
         .help_check => {
             cli.ArgParser.printCheckHelp();
             return;
@@ -85,7 +92,8 @@ pub fn main() !void {
         .preprocessor => {
             // Run as mdbook preprocessor
             preprocessor.runPreprocessor(std.heap.page_allocator) catch |err| {
-                std.debug.print("Preprocessor error: {}\n", .{err});
+                std.debug.print("Preprocessor error: Failed to process mdbook input: {}\n", .{err});
+                std.debug.print("Hint: Ensure this is being called from mdbook as a preprocessor.\n", .{});
                 return;
             };
             return;
@@ -97,14 +105,16 @@ pub fn main() !void {
         .lsp => {
             // Run as LSP server for editor integration
             lsp_server.runServer(allocator) catch |err| {
-                std.debug.print("LSP server error: {}\n", .{err});
+                std.debug.print("LSP server error: Failed to run language server: {}\n", .{err});
+                std.debug.print("Hint: LSP communicates over stdin/stdout. Use from an editor.\n", .{});
                 return;
             };
             return;
         },
         .init => {
             init_cmd.runInit(allocator, args.config_file, args.force_rebuild) catch |err| {
-                std.debug.print("Init error: {}\n", .{err});
+                std.debug.print("Init error: Failed to initialize project: {}\n", .{err});
+                std.debug.print("Hint: Check file permissions and ensure directory is writable.\n", .{});
                 return;
             };
             return;
@@ -114,22 +124,32 @@ pub fn main() !void {
                 .human => .console,
                 .json => .json,
                 .compiler => .junit,
+                .sarif => blk: {
+                    std.debug.print("Warning: SARIF format not supported for test command, using console output\n", .{});
+                    break :blk .console;
+                },
             };
             const exit_code = testing_cmd.runTest(allocator, args.input_files, args.config_file, output_format) catch |err| {
-                std.debug.print("Test error: {}\n", .{err});
+                std.debug.print("Test error: Failed to run tests: {}\n", .{err});
+                std.debug.print("Hint: Provide test executables as arguments or configure in stig.toml.\n", .{});
                 std.process.exit(1);
             };
             std.process.exit(exit_code);
         },
         .coverage => {
             const exit_code = runCoverageCommand(allocator, &args) catch |err| {
-                std.debug.print("Coverage error: {}\n", .{err});
+                std.debug.print("Coverage error: Failed to analyze coverage: {}\n", .{err});
+                std.debug.print("Hint: Ensure source and test files are specified. Run 'stig coverage --help'.\n", .{});
                 std.process.exit(1);
             };
             std.process.exit(exit_code);
         },
         .generate => {
             try runGenerateCommand(allocator, &args, &arg_parser);
+            return;
+        },
+        .render => {
+            try runRenderCommand(allocator, &args);
             return;
         },
     }
@@ -230,8 +250,12 @@ fn runCheckCommand(allocator: std.mem.Allocator, args: *cli.Args) !void {
         };
         defer file.close();
 
-        const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
-            std.debug.print("Error: Cannot read file '{s}': {}\n", .{ input_file, err });
+        const source = file.readToEndAlloc(allocator, config.limits.max_file_size) catch |err| {
+            if (err == error.StreamTooLong) {
+                std.debug.print("Error: File '{s}' exceeds size limit ({d} MB). Increase [limits].max_file_size in config.\n", .{ input_file, config.limits.max_file_size / (1024 * 1024) });
+            } else {
+                std.debug.print("Error: Cannot read file '{s}': {}\n", .{ input_file, err });
+            }
             continue;
         };
 
@@ -340,6 +364,9 @@ fn runCheckCommand(allocator: std.mem.Allocator, args: *cli.Args) !void {
         },
         .json => {
             try coverage.printJsonReport(allocator, report);
+        },
+        .sarif => {
+            try lint.printSarifReport(allocator, lint_report);
         },
     }
 
@@ -495,8 +522,12 @@ fn runCoverageCommand(allocator: std.mem.Allocator, args: *cli.Args) !u8 {
         };
         defer file.close();
 
-        const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
-            std.debug.print("Warning: Cannot read file '{s}': {}\n", .{ input_file, err });
+        const source = file.readToEndAlloc(allocator, config.limits.max_file_size) catch |err| {
+            if (err == error.StreamTooLong) {
+                std.debug.print("Warning: File '{s}' exceeds size limit ({d} MB). Increase [limits].max_file_size in config.\n", .{ input_file, config.limits.max_file_size / (1024 * 1024) });
+            } else {
+                std.debug.print("Warning: Cannot read file '{s}': {}\n", .{ input_file, err });
+            }
             continue;
         };
 
@@ -537,6 +568,7 @@ fn runCoverageCommand(allocator: std.mem.Allocator, args: *cli.Args) !u8 {
         .human => testcov.printHumanReport(report),
         .compiler => testcov.printCompilerReport(report),
         .json => try testcov.printJsonReport(allocator, report),
+        .sarif => try testcov.printSarifReport(allocator, report),
     }
 
     // Check coverage threshold
@@ -552,6 +584,81 @@ fn runCoverageCommand(allocator: std.mem.Allocator, args: *cli.Args) !u8 {
     }
 
     return 0;
+}
+
+/// Runs the 'render' subcommand - renders documentation from a JSON file
+fn runRenderCommand(allocator: std.mem.Allocator, args: *cli.Args) !void {
+    // Get input JSON file
+    if (args.input_files.len == 0) {
+        std.debug.print("Error: No input JSON file specified\n", .{});
+        std.debug.print("Usage: stig render <JSON_FILE> -o <OUTPUT>\n", .{});
+        return;
+    }
+
+    const json_file = args.input_files[0];
+
+    // Parse the JSON file
+    var result = json_mod.parseFile(json_file, allocator) catch |err| {
+        std.debug.print("Error: Failed to parse JSON file '{s}': {}\n", .{ json_file, err });
+        return;
+    };
+    defer result.deinit();
+
+    const model = result.model;
+
+    // Determine output format based on output path
+    const output_path = args.output_file;
+
+    if (output_path) |path| {
+        // Check if output is a directory (mdbook) or file (single markdown)
+        if (std.mem.endsWith(u8, path, "/") or args.output_format == .mdbook) {
+            // Multi-file mdbook output
+            const options = write_mod.MultiFileOptions{
+                .title = args.book_title orelse model.project.title,
+                .generate_intro = true,
+                .generate_index = true,
+                .generate_appendix = true,
+            };
+
+            var writer = write_mod.MultiFileWriter.initWithOptions(allocator, options);
+            defer writer.deinit();
+
+            writer.write(model, path) catch |err| {
+                std.debug.print("Error: Failed to write mdbook output: {}\n", .{err});
+                return;
+            };
+
+            std.debug.print("Generated mdbook structure in: {s}\n", .{path});
+            std.debug.print("Run 'mdbook build {s}' to build the book\n", .{path});
+        } else {
+            // Single file markdown output
+            const options = write_mod.SingleFileOptions{
+                .title = args.book_title,
+                .include_toc = true,
+                .include_index = true,
+                .include_appendix = true,
+            };
+
+            var writer = write_mod.SingleFileWriter.initWithOptions(allocator, options);
+            defer writer.deinit();
+
+            writer.write(model, path) catch |err| {
+                std.debug.print("Error: Failed to write output file: {}\n", .{err});
+                return;
+            };
+
+            std.debug.print("Generated documentation: {s}\n", .{path});
+        }
+    } else {
+        // Output to stdout
+        var writer = write_mod.SingleFileWriter.init(allocator);
+        defer writer.deinit();
+
+        writer.writeToStdout(model) catch |err| {
+            std.debug.print("Error: Failed to write to stdout: {}\n", .{err});
+            return;
+        };
+    }
 }
 
 /// Runs the 'generate' subcommand - documentation generation
@@ -674,9 +781,14 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
 
     const cache_output_dir = args.output_file orelse config.output_dir;
     if (args.output_format == .mdbook and !args.force_rebuild and cache_output_dir.len > 0) {
-        incr_cache = cache_mod.IncrementalCache.init(allocator, cache_output_dir) catch null;
+        incr_cache = cache_mod.IncrementalCache.init(allocator, cache_output_dir) catch |err| blk: {
+            std.debug.print("Warning: Could not initialize incremental cache: {}\n", .{err});
+            break :blk null;
+        };
         if (incr_cache) |*c| {
-            c.load() catch {};
+            c.load() catch |err| {
+                std.debug.print("Warning: Could not load cache: {}\n", .{err});
+            };
         }
     }
 
@@ -716,8 +828,12 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
         };
         defer file.close();
 
-        const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch |err| {
-            std.debug.print("Error: Cannot read file '{s}': {}\n", .{ input_file, err });
+        const source = file.readToEndAlloc(allocator, config.limits.max_file_size) catch |err| {
+            if (err == error.StreamTooLong) {
+                std.debug.print("Error: File '{s}' exceeds size limit ({d} MB). Increase [limits].max_file_size in config.\n", .{ input_file, config.limits.max_file_size / (1024 * 1024) });
+            } else {
+                std.debug.print("Error: Cannot read file '{s}': {}\n", .{ input_file, err });
+            }
             continue;
         };
 
@@ -781,9 +897,13 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
 
         // Update cache entry and dependencies
         if (incr_cache) |*cache| {
-            cache.updateEntry(data.path, data.source) catch {};
+            cache.updateEntry(data.path, data.source) catch |err| {
+                std.debug.print("Warning: Failed to update cache for '{s}': {}\n", .{ data.path, err });
+            };
             // Record include dependencies for incremental rebuilds
-            cache.setDependencies(data.path, module.includes) catch {};
+            cache.setDependencies(data.path, module.includes) catch |err| {
+                std.debug.print("Warning: Failed to set dependencies for '{s}': {}\n", .{ data.path, err });
+            };
         }
     }
 
@@ -883,14 +1003,23 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
                 var buf: [8192]u8 = undefined;
                 var file_writer = std.fs.File.stdout().writer(&buf);
                 const stdout = &file_writer.interface;
-                defer stdout.flush() catch {};
+                defer stdout.flush() catch |err| {
+                    std.debug.print("Warning: Failed to flush stdout: {}\n", .{err});
+                };
 
                 try stdout.writeAll(output_buffer.items);
             }
         },
         .json => {
-            var json_gen = JsonGenerator.init(allocator);
+            // Use JSON v2 generator with full DocumentModel schema
+            var gen_config = config;
+            if (args.book_title) |title| {
+                gen_config.title = title;
+            }
+
+            var json_gen = json_mod.Generator.init(allocator);
             defer json_gen.deinit();
+            json_gen.setConfig(gen_config);
 
             const json_output = json_gen.generate(modules.items) catch |err| {
                 std.debug.print("Error generating JSON: {}\n", .{err});
@@ -909,12 +1038,14 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
                     return;
                 };
 
-                std.debug.print("Generated JSON documentation: {s}\n", .{output_path});
+                std.debug.print("Generated JSON v2 documentation: {s}\n", .{output_path});
             } else {
                 var buf: [8192]u8 = undefined;
                 var file_writer = std.fs.File.stdout().writer(&buf);
                 const stdout = &file_writer.interface;
-                defer stdout.flush() catch {};
+                defer stdout.flush() catch |err| {
+                    std.debug.print("Warning: Failed to flush stdout: {}\n", .{err});
+                };
 
                 try stdout.writeAll(json_output);
             }
@@ -976,7 +1107,10 @@ fn expandGlob(allocator: std.mem.Allocator, pattern: []const u8, results: *std.A
         // If suffix starts with ., it's like **.hpp -> we want *.hpp
         const file_pattern = if (suffix.len > 0 and suffix[0] == '.') blk: {
             var buf: [256]u8 = undefined;
-            const result = std.fmt.bufPrint(&buf, "*{s}", .{suffix}) catch suffix;
+            const result = std.fmt.bufPrint(&buf, "*{s}", .{suffix}) catch |err| {
+                std.debug.print("Warning: Pattern suffix too long '{s}': {}\n", .{ suffix, err });
+                break :blk suffix;
+            };
             break :blk result;
         } else suffix;
 

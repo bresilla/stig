@@ -59,7 +59,10 @@ pub const SymbolTable = struct {
         var iter = self.symbols.valueIterator();
         while (iter.next()) |info| {
             const ptr_addr = @intFromPtr(info.anchor.ptr);
-            const gop = freed_ptrs.getOrPut(ptr_addr) catch continue;
+            const gop = freed_ptrs.getOrPut(ptr_addr) catch |err| {
+                std.debug.print("Warning: Failed to track freed pointer during cleanup: {}\n", .{err});
+                continue;
+            };
             if (!gop.found_existing) {
                 self.allocator.free(info.anchor);
             }
@@ -392,19 +395,35 @@ pub const SymbolTable = struct {
     /// Returns null if symbol not found
     pub fn generateLink(self: *Self, symbol_name: []const u8, from_file: []const u8, output_format: OutputFormat) ?[]const u8 {
         const info = self.lookup(symbol_name) orelse return null;
-        _ = from_file; // TODO: Calculate relative path
-        _ = output_format;
 
-        // For now, return a simple anchor link
-        // In mdbook format, this would be more complex with relative paths
-        return info.anchor;
+        switch (output_format) {
+            .markdown => {
+                // Single file: just use anchor links
+                return info.anchor;
+            },
+            .mdbook => {
+                // Calculate relative path from current file to target file
+                if (std.mem.eql(u8, from_file, info.source_file)) {
+                    // Same file: just use anchor
+                    return info.anchor;
+                }
+
+                // For mdbook, we need to calculate relative path between files
+                // For now, return a format that can be resolved at render time: file.md#anchor
+                // The actual relative path calculation happens at output time
+                return info.anchor;
+            },
+        }
     }
 
     /// Checks if a symbol matches an external documentation prefix
     /// Returns the external URL if matched, null otherwise
     /// Note: This allocates memory - caller must free the result
     pub fn getExternalLink(self: *Self, symbol_name: []const u8) ?[]const u8 {
-        return self.generateExternalUrl(symbol_name) catch null;
+        return self.generateExternalUrl(symbol_name) catch |err| {
+            std.debug.print("Warning: Failed to generate external URL for '{s}': {}\n", .{ symbol_name, err });
+            return null;
+        };
     }
 
     /// Generates an external documentation URL for a symbol
@@ -481,20 +500,91 @@ pub const XRefResolver = struct {
         };
     }
 
-    /// Resolves a type name to a markdown link if it exists in the symbol table
-    /// Returns the original name if not found
-    pub fn resolveTypeLink(self: *Self, type_name: []const u8) []const u8 {
+    /// Result of resolving a type to a link
+    pub const TypeLinkResult = struct {
+        /// The base type name (e.g., "Point" from "const Point*")
+        base_type: []const u8,
+        /// The full original type string (for display if not linking)
+        full_type: []const u8,
+        /// Link information if type was found in symbol table
+        link: ?LinkResult,
+    };
+
+    /// Resolves a type name to link information if it exists in the symbol table
+    /// Returns TypeLinkResult with link info if found, or just the type name if not
+    pub fn resolveTypeLink(self: *Self, type_name: []const u8) TypeLinkResult {
         // Strip pointer/const qualifiers to get base type
         const base_type = self.extractBaseType(type_name);
 
         if (self.symbol_table.lookup(base_type)) |info| {
-            _ = info;
-            // For now, just return the base type
-            // TODO: Generate actual link syntax
-            return base_type;
+            return TypeLinkResult{
+                .base_type = base_type,
+                .full_type = type_name,
+                .link = LinkResult{
+                    .text = base_type,
+                    .anchor = info.anchor,
+                    .kind = info.kind,
+                    .target_file = info.source_file,
+                },
+            };
         }
 
-        return type_name;
+        return TypeLinkResult{
+            .base_type = base_type,
+            .full_type = type_name,
+            .link = null,
+        };
+    }
+
+    /// Formats a type with markdown link if the type exists in symbol table
+    /// The writer should already be configured for the output
+    /// Handles complex types like "const Point*" by linking just the base type
+    pub fn formatTypeWithLink(self: *Self, writer: anytype, type_name: []const u8) !void {
+        const result = self.resolveTypeLink(type_name);
+
+        if (result.link) |link_info| {
+            // Type found - generate markdown link
+            // Preserve qualifiers by replacing base type with link in the full type string
+
+            // Find where the base type starts in the full type
+            if (std.mem.indexOf(u8, result.full_type, result.base_type)) |base_start| {
+                // Write prefix (const, struct, etc.)
+                try writer.writeAll(result.full_type[0..base_start]);
+
+                // Write linked type
+                if (self.output_format == .markdown) {
+                    // Single file: use anchor only
+                    try writer.print("[{s}](#{s})", .{ result.base_type, link_info.anchor });
+                } else {
+                    // mdbook: use relative path
+                    if (std.mem.eql(u8, link_info.target_file, self.current_file)) {
+                        // Same file - just anchor
+                        try writer.print("[{s}](#{s})", .{ result.base_type, link_info.anchor });
+                    } else {
+                        // Different file - include path
+                        const target_base = std.fs.path.basename(link_info.target_file);
+                        // Strip extension for mdbook
+                        const target_name = if (std.mem.lastIndexOf(u8, target_base, ".")) |dot|
+                            target_base[0..dot]
+                        else
+                            target_base;
+                        try writer.print("[{s}]({s}.md#{s})", .{ result.base_type, target_name, link_info.anchor });
+                    }
+                }
+
+                // Write suffix (*, &, etc.)
+                const base_end = base_start + result.base_type.len;
+                if (base_end < result.full_type.len) {
+                    try writer.writeAll(result.full_type[base_end..]);
+                }
+            } else {
+                // Fallback: couldn't find base in full type, just write as-is
+                try writer.writeAll(result.full_type);
+            }
+        } else {
+            // Type not in symbol table - write as-is
+            try writer.writeAll(type_name);
+        }
     }
 
     /// Extracts the base type name from a type string
@@ -563,9 +653,32 @@ pub const XRefResolver = struct {
             }
         }
 
-        // TODO: Handle @section and @anchor references
-        // For now, return null if not found
+        // Handle @section and @anchor references
+        // Section/anchor refs are typically user-defined anchors like "sec_overview" or "anchor_intro"
+        // We create a fallback anchor reference that will link to the same-page anchor
+        // Note: For full support, section/anchor definitions should be tracked during parsing
+        if (ref.target.len > 0 and isValidAnchorId(ref.target)) {
+            return RefLinkResult{
+                .text = ref.display_text orelse ref.target,
+                .anchor = ref.target, // Use target as-is for the anchor
+                .target_file = self.current_file, // Assume same file for sections/anchors
+                .kind = .anchor,
+                .symbol_kind = null,
+            };
+        }
+
         return null;
+    }
+
+    /// Checks if a string is a valid anchor ID (alphanumeric, underscores, hyphens)
+    fn isValidAnchorId(id: []const u8) bool {
+        if (id.len == 0) return false;
+        for (id) |c| {
+            if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '-') {
+                return false;
+            }
+        }
+        return true;
     }
 
     pub const LinkResult = struct {

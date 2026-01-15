@@ -96,11 +96,21 @@ pub const Transport = struct {
             // Parse Content-Length header
             if (std.mem.startsWith(u8, line, "Content-Length: ")) {
                 const len_str = line["Content-Length: ".len..];
-                content_length = std.fmt.parseInt(usize, len_str, 10) catch continue;
+                content_length = std.fmt.parseInt(usize, len_str, 10) catch |err| {
+                    std.debug.print("LSP: Invalid Content-Length '{s}': {}\n", .{ len_str, err });
+                    continue;
+                };
             }
         }
 
         const len = content_length orelse return error.MissingContentLength;
+
+        // Validate message size to prevent DoS
+        const max_message_size: usize = 100 * 1024 * 1024; // 100MB limit
+        if (len > max_message_size) {
+            std.debug.print("LSP: Message too large ({d} bytes, max {d})\n", .{ len, max_message_size });
+            return error.MessageTooLarge;
+        }
 
         // Read content
         self.read_buffer.clearRetainingCapacity();
@@ -117,7 +127,8 @@ pub const Transport = struct {
 
     /// Parse a JSON-RPC message
     fn parseMessage(self: *Self, content: []const u8) !Message {
-        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, content, .{}) catch {
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, content, .{}) catch |err| {
+            std.debug.print("LSP: JSON parse error: {}\n", .{err});
             return error.InvalidJson;
         };
         defer parsed.deinit();

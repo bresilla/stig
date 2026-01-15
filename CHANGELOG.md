@@ -1,5 +1,42 @@
 # Changelog
 
+## [Unreleased]
+
+### Features
+
+- Add SARIF output format for GitHub code scanning integration (`stig check --format sarif`)
+- Add `stig render` subcommand for JSON-to-markdown conversion pipeline
+- Add JSON v2 document model schema for improved tool interoperability
+- Add multi-file and single-file output writers for flexible documentation structure
+- Improve Doxygen tag detection to include @deprecated, @note, @warning, @see, @throws, @since, @author, @version, @tparam, @code, @retval
+- Add configurable file size limits via `[limits]` config section
+
+### Bug Fixes
+
+- Fix version mismatch between cli.zig and VERSION file
+- Fix min-coverage validation to allow 0% and reject negative values
+- Fix CLI help text to match actual config field names
+- Fix placeholder URLs in init template and sample configs
+
+### Improvements
+
+- Add actionable error messages with hints for common issues
+- Add logging for silent error handling throughout codebase
+- Add file size limit context in error messages
+- Fix bounds checking in LSP server block comment detection
+- Document serve mode requirements in help text
+- Add error logging in file writers (single.zig, multi.zig)
+- Add error logging for path formatting failures in snippet.zig
+- Add JSON parse error logging in LSP jsonrpc.zig
+- Add LSP message size limit (100MB) to prevent DoS
+- Add Content-Length parse error logging in LSP
+- Increase cache manifest buffer sizes for long paths
+- Add integer bounds checking for LSP line numbers
+- Add error logging in xref.zig symbol table cleanup
+- Add error logging in cache.zig dependency resolution
+- Add error logging in LSP parser for C/C++ files
+- Add error logging in preprocessor stdin reading
+
 ## [0.0.2] - 2026-01-03
 
 ### <!-- 0 -->⛰️  Features

@@ -46,6 +46,7 @@ pub const CppParser = struct {
 
         const tree = self.parser.parseString(source, null);
         if (tree == null) {
+            std.debug.print("Warning: Failed to parse C++ file '{s}', skipping\n", .{filename});
             return types.Module{
                 .name = filename,
                 .functions = &[_]types.Function{},
@@ -105,12 +106,21 @@ pub const CppParser = struct {
 
     /// Checks if a node has a child of the specified kind
     fn hasChildOfKind(self: *Self, node: ts.Node, kind: []const u8) bool {
-        _ = self;
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {
-                if (std.mem.eql(u8, child.kind(), kind)) {
+                const child_kind = child.kind();
+                if (std.mem.eql(u8, child_kind, kind)) {
                     return true;
+                }
+                // For reference/pointer declarators, check inside them too
+                // (e.g., "int& operator[]()" has function_declarator inside reference_declarator)
+                if (std.mem.eql(u8, child_kind, "reference_declarator") or
+                    std.mem.eql(u8, child_kind, "pointer_declarator"))
+                {
+                    if (self.hasChildOfKind(child, kind)) {
+                        return true;
+                    }
                 }
             }
         }
@@ -793,6 +803,16 @@ pub const CppParser = struct {
         filename: []const u8,
         parent_namespace: ?[]const u8,
     ) std.mem.Allocator.Error!void {
+        // Debug: print class body children
+        if (false) {
+            std.debug.print("\nextractClassBody: class_name={s}\n", .{class_name orelse "null"});
+            var dbg_i: u32 = 0;
+            while (dbg_i < node.childCount()) : (dbg_i += 1) {
+                if (node.child(dbg_i)) |dbg_child| {
+                    std.debug.print("  class_child[{d}]: {s} = '{s}'\n", .{ dbg_i, dbg_child.kind(), self.getNodeText(dbg_child) });
+                }
+            }
+        }
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {
@@ -819,6 +839,16 @@ pub const CppParser = struct {
                         try methods.append(self.allocator, method);
                     }
                 } else if (std.mem.eql(u8, child_kind, "field_declaration")) {
+                    // Debug: print field_declaration children
+                    if (false) {
+                        std.debug.print("  field_declaration children:\n", .{});
+                        var dbg_j: u32 = 0;
+                        while (dbg_j < child.childCount()) : (dbg_j += 1) {
+                            if (child.child(dbg_j)) |dbg_grandchild| {
+                                std.debug.print("    field_child[{d}]: {s} = '{s}'\n", .{ dbg_j, dbg_grandchild.kind(), self.getNodeText(dbg_grandchild) });
+                            }
+                        }
+                    }
                     // Check if this is a method declaration (has function_declarator)
                     // or a field declaration
                     if (self.hasChildOfKind(child, "function_declarator")) {
@@ -837,7 +867,10 @@ pub const CppParser = struct {
                     // Build namespace for nested class: parent_namespace::class_name or just class_name
                     const nested_namespace = if (parent_namespace) |ns|
                         if (class_name) |cn|
-                            std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ ns, cn }) catch null
+                            std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ ns, cn }) catch |err| blk: {
+                                std.debug.print("Warning: Failed to format nested class namespace: {}\n", .{err});
+                                break :blk null;
+                            }
                         else
                             ns
                     else
@@ -851,7 +884,10 @@ pub const CppParser = struct {
                     // Build namespace for nested enum: parent_namespace::class_name or just class_name
                     const nested_namespace = if (parent_namespace) |ns|
                         if (class_name) |cn|
-                            std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ ns, cn }) catch null
+                            std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ ns, cn }) catch |err| blk: {
+                                std.debug.print("Warning: Failed to format nested enum namespace: {}\n", .{err});
+                                break :blk null;
+                            }
                         else
                             ns
                     else
@@ -974,12 +1010,19 @@ pub const CppParser = struct {
         var operator_symbol: ?[]const u8 = null;
 
         // Debug: print all child nodes
-        if (false) { // Set to true for debugging
+        if (true) { // Set to true for debugging
             std.debug.print("\nextractMethod node kind: {s}\n", .{node.kind()});
             var dbg_i: u32 = 0;
             while (dbg_i < node.childCount()) : (dbg_i += 1) {
                 if (node.child(dbg_i)) |dbg_child| {
                     std.debug.print("  child[{d}]: {s} = '{s}'\n", .{ dbg_i, dbg_child.kind(), self.getNodeText(dbg_child) });
+                    // Also print grandchildren
+                    var dbg_k: u32 = 0;
+                    while (dbg_k < dbg_child.childCount()) : (dbg_k += 1) {
+                        if (dbg_child.child(dbg_k)) |grandchild| {
+                            std.debug.print("    child[{d}][{d}]: {s} = '{s}'\n", .{ dbg_i, dbg_k, grandchild.kind(), self.getNodeText(grandchild) });
+                        }
+                    }
                 }
             }
         }
@@ -1029,6 +1072,9 @@ pub const CppParser = struct {
                                 std.mem.eql(u8, fd_kind, "field_identifier"))
                             {
                                 name = self.getNodeText(fd_child);
+                            } else if (std.mem.eql(u8, fd_kind, "destructor_name")) {
+                                // Destructor: ~ClassName
+                                name = self.getNodeText(fd_child);
                             } else if (std.mem.eql(u8, fd_kind, "operator_name")) {
                                 // Regular operator overload: operator+, operator==, operator<=>, etc.
                                 is_operator_overload = true;
@@ -1067,6 +1113,73 @@ pub const CppParser = struct {
                             } else if (std.mem.eql(u8, fd_kind, "pure_virtual_clause")) {
                                 // = 0 for pure virtual methods
                                 is_pure_virtual = true;
+                            }
+                        }
+                    }
+                } else if (std.mem.eql(u8, child_kind, "reference_declarator") or
+                    std.mem.eql(u8, child_kind, "pointer_declarator"))
+                {
+                    // For reference/pointer return types like "int& operator[]()"
+                    // the function_declarator is nested inside the reference/pointer declarator
+                    // Append & or * to return type
+                    if (return_type) |rt| {
+                        if (std.mem.eql(u8, child_kind, "reference_declarator")) {
+                            return_type = std.fmt.allocPrint(self.allocator, "{s}&", .{rt}) catch rt;
+                        } else {
+                            return_type = std.fmt.allocPrint(self.allocator, "{s}*", .{rt}) catch rt;
+                        }
+                    }
+                    // Now look for function_declarator inside
+                    var k: u32 = 0;
+                    while (k < child.childCount()) : (k += 1) {
+                        if (child.child(k)) |ref_child| {
+                            if (std.mem.eql(u8, ref_child.kind(), "function_declarator")) {
+                                // Process the function_declarator
+                                var j: u32 = 0;
+                                while (j < ref_child.childCount()) : (j += 1) {
+                                    if (ref_child.child(j)) |fd_child| {
+                                        const fd_kind = fd_child.kind();
+                                        if (std.mem.eql(u8, fd_kind, "identifier") or
+                                            std.mem.eql(u8, fd_kind, "field_identifier"))
+                                        {
+                                            name = self.getNodeText(fd_child);
+                                        } else if (std.mem.eql(u8, fd_kind, "destructor_name")) {
+                                            name = self.getNodeText(fd_child);
+                                        } else if (std.mem.eql(u8, fd_kind, "operator_name")) {
+                                            is_operator_overload = true;
+                                            const op_text = self.getNodeText(fd_child);
+                                            name = op_text;
+                                            if (std.mem.indexOf(u8, op_text, "operator")) |_| {
+                                                const after_op = std.mem.trimLeft(u8, op_text[8..], " ");
+                                                if (after_op.len > 0) {
+                                                    operator_symbol = after_op;
+                                                }
+                                            }
+                                        } else if (std.mem.eql(u8, fd_kind, "operator_cast")) {
+                                            is_conversion_operator = true;
+                                            const conv_result = self.extractConversionOperator(fd_child);
+                                            name = conv_result.name;
+                                            operator_symbol = conv_result.target_type;
+                                        } else if (std.mem.eql(u8, fd_kind, "parameter_list")) {
+                                            params = try self.extractParameters(fd_child);
+                                        } else if (std.mem.eql(u8, fd_kind, "type_qualifier")) {
+                                            if (std.mem.eql(u8, self.getNodeText(fd_child), "const")) {
+                                                is_const = true;
+                                            }
+                                        } else if (std.mem.eql(u8, fd_kind, "noexcept")) {
+                                            is_noexcept = true;
+                                        } else if (std.mem.eql(u8, fd_kind, "virtual_specifier")) {
+                                            const spec_text = self.getNodeText(fd_child);
+                                            if (std.mem.eql(u8, spec_text, "override")) {
+                                                is_override = true;
+                                            } else if (std.mem.eql(u8, spec_text, "final")) {
+                                                is_final = true;
+                                            }
+                                        } else if (std.mem.eql(u8, fd_kind, "pure_virtual_clause")) {
+                                            is_pure_virtual = true;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1463,7 +1576,8 @@ pub const CppParser = struct {
         if (name) |n| {
             // Find where the name starts in the full text and take everything before it
             if (std.mem.lastIndexOf(u8, full_text, n)) |name_start| {
-                param_type = std.mem.trimRight(u8, full_text[0..name_start], " \t&*");
+                // Only trim whitespace, preserve & and * as they're part of the type
+                param_type = std.mem.trimRight(u8, full_text[0..name_start], " \t");
             }
         }
 
@@ -1688,7 +1802,11 @@ pub const CppParser = struct {
                 if (std.mem.eql(u8, child_kind, "identifier")) {
                     name = self.getNodeText(child);
                 } else if (std.mem.eql(u8, child_kind, "number_literal")) {
-                    value = std.fmt.parseInt(i64, self.getNodeText(child), 0) catch null;
+                    const num_text = self.getNodeText(child);
+                    value = std.fmt.parseInt(i64, num_text, 0) catch |err| blk: {
+                        std.debug.print("Warning: Could not parse enum value '{s}': {}\n", .{ num_text, err });
+                        break :blk null;
+                    };
                 }
             }
         }
@@ -1921,7 +2039,10 @@ pub const CppParser = struct {
 
                 // Triple-slash comment - collect it
                 if (std.mem.startsWith(u8, text, "///")) {
-                    triple_slash_comments.append(self.allocator, text) catch break;
+                    triple_slash_comments.append(self.allocator, text) catch |err| {
+                        std.debug.print("Warning: Failed to collect /// comment: {}\n", .{err});
+                        break;
+                    };
                     prev = prev.?.prevSibling();
                     continue;
                 }
@@ -1953,14 +2074,23 @@ pub const CppParser = struct {
                 } else if (std.mem.startsWith(u8, content, "///")) {
                     content = content[3..];
                 }
-                merged.appendSlice(self.allocator, content) catch break;
+                merged.appendSlice(self.allocator, content) catch |err| {
+                    std.debug.print("Warning: Failed to merge /// comments: {}\n", .{err});
+                    break;
+                };
                 if (i > 0) {
-                    merged.append(self.allocator, '\n') catch break;
+                    merged.append(self.allocator, '\n') catch |err| {
+                        std.debug.print("Warning: Failed to merge /// comments: {}\n", .{err});
+                        break;
+                    };
                 }
             }
 
             if (merged.items.len > 0) {
-                return self.docstring_extractor.parse(merged.items) catch null;
+                return self.docstring_extractor.parse(merged.items) catch |err| {
+                    std.debug.print("Warning: Failed to parse /// docstring: {}\n", .{err});
+                    return null;
+                };
             }
         }
 
@@ -1985,7 +2115,10 @@ pub const CppParser = struct {
         if (std.mem.startsWith(u8, result, "/**<")) result = result[4..] else if (std.mem.startsWith(u8, result, "/**")) result = result[3..] else if (std.mem.startsWith(u8, result, "///<")) result = result[4..] else if (std.mem.startsWith(u8, result, "///")) result = result[3..];
         if (std.mem.endsWith(u8, result, "*/")) result = result[0 .. result.len - 2];
         result = std.mem.trim(u8, result, " \t\n\r");
-        return self.docstring_extractor.parse(result) catch null;
+        return self.docstring_extractor.parse(result) catch |err| {
+            std.debug.print("Warning: Failed to parse doc comment: {}\n", .{err});
+            return null;
+        };
     }
 
     /// Extracts custom pages from standalone doc comments containing @page or @mainpage
