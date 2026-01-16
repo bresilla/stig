@@ -67,8 +67,17 @@ pub const LintReport = struct {
                     self.allocator.free(sug);
                 }
             }
+            // Free allocated entity names (method names contain "::")
+            if (isAllocatedEntityName(issue.entity_name)) {
+                self.allocator.free(issue.entity_name);
+            }
         }
         self.issues.deinit(self.allocator);
+    }
+
+    fn isAllocatedEntityName(s: []const u8) bool {
+        // Method names are allocated and contain "::"
+        return std.mem.indexOf(u8, s, "::") != null;
     }
 
     fn isAllocatedString(s: []const u8) bool {
@@ -177,29 +186,38 @@ pub const Linter = struct {
     /// Adds an issue to the report, respecting per-rule severity configuration
     /// Returns true if the issue was added, false if the rule is ignored
     fn addIssueWithRuleCheck(self: *Self, report: *LintReport, issue: LintIssue) !bool {
+        // Duplicate entity_name if it's a method name (contains "::") to avoid dangling pointers
+        var final_issue = issue;
+        if (std.mem.indexOf(u8, issue.entity_name, "::") != null) {
+            final_issue.entity_name = try self.allocator.dupe(u8, issue.entity_name);
+        }
+
         // Check if there's a severity override for this rule
         if (self.config.getRuleSeverity(issue.code)) |override| {
             switch (override) {
-                .ignore => return false, // Skip this issue entirely
+                .ignore => {
+                    // Free the duped name if we're skipping
+                    if (final_issue.entity_name.ptr != issue.entity_name.ptr) {
+                        self.allocator.free(final_issue.entity_name);
+                    }
+                    return false; // Skip this issue entirely
+                },
                 .info => {
-                    var modified_issue = issue;
-                    modified_issue.severity = .info;
-                    try report.addIssue(modified_issue);
+                    final_issue.severity = .info;
+                    try report.addIssue(final_issue);
                 },
                 .warning => {
-                    var modified_issue = issue;
-                    modified_issue.severity = .warning;
-                    try report.addIssue(modified_issue);
+                    final_issue.severity = .warning;
+                    try report.addIssue(final_issue);
                 },
                 .@"error" => {
-                    var modified_issue = issue;
-                    modified_issue.severity = .@"error";
-                    try report.addIssue(modified_issue);
+                    final_issue.severity = .@"error";
+                    try report.addIssue(final_issue);
                 },
             }
         } else {
             // No override, use default severity
-            try report.addIssue(issue);
+            try report.addIssue(final_issue);
         }
         return true;
     }
@@ -351,7 +369,8 @@ pub const Linter = struct {
     }
 
     fn lintMethod(self: *Self, method: types.Method, class_name: []const u8, file: []const u8, report: *LintReport) !void {
-        // Build method name
+        // Build method name - allocated here, freed after checks
+        // addIssueWithRuleCheck will dupe it if needed
         const method_name = try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ class_name, method.name });
         defer self.allocator.free(method_name);
 
@@ -379,12 +398,11 @@ pub const Linter = struct {
                 try self.checkCrossReferences(doc, method_name, "method", file, method.location.line, report);
             }
         } else {
-            // No documentation - create a copy of the name for the report
-            const name_copy = try self.allocator.dupe(u8, method_name);
+            // No documentation - addIssueWithRuleCheck will dupe the name
             _ = try self.addIssueWithRuleCheck(report, .{
                 .file = file,
                 .line = method.location.line,
-                .entity_name = name_copy,
+                .entity_name = method_name,
                 .entity_type = "method",
                 .severity = .warning,
                 .code = "W001",
@@ -1053,9 +1071,10 @@ pub fn printReport(report: LintReport) void {
     std.debug.print("\n", .{});
 }
 
-/// Prints the lint report in SARIF (Static Analysis Results Interchange Format) for GitHub code scanning
+/// Generates the lint report in SARIF (Static Analysis Results Interchange Format) for GitHub code scanning
 /// https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
-pub fn printSarifReport(allocator: std.mem.Allocator, report: LintReport) !void {
+/// Returns an allocated string that the caller must free
+pub fn generateSarifReport(allocator: std.mem.Allocator, report: LintReport) ![]u8 {
     var output: std.ArrayList(u8) = .empty;
     defer output.deinit(allocator);
 
@@ -1206,9 +1225,16 @@ pub fn printSarifReport(allocator: std.mem.Allocator, report: LintReport) !void 
     try output.appendSlice(allocator, "  }]\n");
     try output.appendSlice(allocator, "}\n");
 
-    // Write to stdout
+    return try output.toOwnedSlice(allocator);
+}
+
+/// Prints the lint report in SARIF format to stdout
+pub fn printSarifReport(allocator: std.mem.Allocator, report: LintReport) !void {
+    const sarif_output = try generateSarifReport(allocator, report);
+    defer allocator.free(sarif_output);
+
     const stdout_file = std.fs.File.stdout();
-    stdout_file.writeAll(output.items) catch |err| {
+    stdout_file.writeAll(sarif_output) catch |err| {
         std.debug.print("Error: Failed to write SARIF output: {}\n", .{err});
     };
 }

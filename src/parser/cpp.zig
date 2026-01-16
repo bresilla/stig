@@ -1009,24 +1009,6 @@ pub const CppParser = struct {
         var is_operator_overload = false;
         var operator_symbol: ?[]const u8 = null;
 
-        // Debug: print all child nodes
-        if (true) { // Set to true for debugging
-            std.debug.print("\nextractMethod node kind: {s}\n", .{node.kind()});
-            var dbg_i: u32 = 0;
-            while (dbg_i < node.childCount()) : (dbg_i += 1) {
-                if (node.child(dbg_i)) |dbg_child| {
-                    std.debug.print("  child[{d}]: {s} = '{s}'\n", .{ dbg_i, dbg_child.kind(), self.getNodeText(dbg_child) });
-                    // Also print grandchildren
-                    var dbg_k: u32 = 0;
-                    while (dbg_k < dbg_child.childCount()) : (dbg_k += 1) {
-                        if (dbg_child.child(dbg_k)) |grandchild| {
-                            std.debug.print("    child[{d}][{d}]: {s} = '{s}'\n", .{ dbg_i, dbg_k, grandchild.kind(), self.getNodeText(grandchild) });
-                        }
-                    }
-                }
-            }
-        }
-
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {

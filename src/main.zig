@@ -102,16 +102,8 @@ pub fn main() !void {
             return;
         },
         .@"test" => {
-            const output_format: testing_cmd.TestOutputFormat = switch (args.check_output_format) {
-                .human => .console,
-                .json => .json,
-                .compiler => .junit,
-                .sarif => blk: {
-                    std.debug.print("Warning: SARIF format not supported for test command, using console output\n", .{});
-                    break :blk .console;
-                },
-            };
-            const exit_code = testing_cmd.runTest(allocator, args.input_files, args.config_file, output_format) catch |err| {
+            // Test command always outputs SARIF format
+            const exit_code = testing_cmd.runTest(allocator, args.input_files, args.config_file, .console) catch |err| {
                 std.debug.print("Test error: Failed to run tests: {}\n", .{err});
                 std.debug.print("Hint: Provide test executables as arguments or configure in stig.toml.\n", .{});
                 std.process.exit(1);
@@ -292,56 +284,54 @@ fn runCheckCommand(allocator: std.mem.Allocator, args: *cli.Args) !void {
     var lint_report = try linter.lint(modules.items);
     defer lint_report.deinit();
 
-    // Output based on format
-    switch (args.check_output_format) {
-        .human => {
-            // Print coverage report
-            coverage.printHumanReport(report);
+    // Output format depends on whether -o is specified
+    if (args.output_file) |output_path| {
+        // SARIF output to file
+        const sarif_output = try lint.generateSarifReport(allocator, lint_report);
+        defer allocator.free(sarif_output);
 
-            // Print lint issues if any
-            if (lint_report.issues.items.len > 0) {
-                lint.printReport(lint_report);
-            }
-        },
-        .compiler => {
-            // Print in compiler-style format for CI/CD
-            coverage.printCompilerReport(report);
+        const out_file = std.fs.cwd().createFile(output_path, .{}) catch |err| {
+            std.debug.print("Error: Cannot create output file '{s}': {}\n", .{ output_path, err });
+            return;
+        };
+        defer out_file.close();
+        out_file.writeAll(sarif_output) catch |err| {
+            std.debug.print("Error: Cannot write to output file: {}\n", .{err});
+            return;
+        };
+        std.debug.print("SARIF output written to: {s}\n", .{output_path});
+    } else {
+        // Compiler-style output to terminal
+        coverage.printCompilerReport(report);
 
-            // Also print lint issues in compiler format
-            for (lint_report.issues.items) |issue| {
-                const severity_str = switch (issue.severity) {
-                    .@"error" => "error",
-                    .warning => "warning",
-                    .info => "note",
-                };
-                if (issue.line > 0) {
-                    std.debug.print("{s}:{d}:1: {s}: [{s}] {s} in {s} '{s}'\n", .{
-                        issue.file,
-                        issue.line,
-                        severity_str,
-                        issue.code,
-                        issue.message,
-                        issue.entity_type,
-                        issue.entity_name,
-                    });
-                } else {
-                    std.debug.print("{s}:1:1: {s}: [{s}] {s} in {s} '{s}'\n", .{
-                        issue.file,
-                        severity_str,
-                        issue.code,
-                        issue.message,
-                        issue.entity_type,
-                        issue.entity_name,
-                    });
-                }
+        // Print lint issues in compiler format
+        for (lint_report.issues.items) |issue| {
+            const severity_str = switch (issue.severity) {
+                .@"error" => "error",
+                .warning => "warning",
+                .info => "note",
+            };
+            if (issue.line > 0) {
+                std.debug.print("{s}:{d}:1: {s}: [{s}] {s} in {s} '{s}'\n", .{
+                    issue.file,
+                    issue.line,
+                    severity_str,
+                    issue.code,
+                    issue.message,
+                    issue.entity_type,
+                    issue.entity_name,
+                });
+            } else {
+                std.debug.print("{s}:1:1: {s}: [{s}] {s} in {s} '{s}'\n", .{
+                    issue.file,
+                    severity_str,
+                    issue.code,
+                    issue.message,
+                    issue.entity_type,
+                    issue.entity_name,
+                });
             }
-        },
-        .json => {
-            try coverage.printJsonReport(allocator, report);
-        },
-        .sarif => {
-            try lint.printSarifReport(allocator, lint_report);
-        },
+        }
     }
 
     // Determine exit code
@@ -349,12 +339,6 @@ fn runCheckCommand(allocator: std.mem.Allocator, args: *cli.Args) !void {
 
     // Check coverage threshold
     if (report.overallPercentage() < @as(f64, @floatFromInt(min_coverage))) {
-        if (args.check_output_format == .human) {
-            std.debug.print("Coverage ({d:.0}%) is below minimum threshold ({d}%)\n", .{
-                report.overallPercentage(),
-                min_coverage,
-            });
-        }
         exit_code = 2;
     }
 

@@ -100,29 +100,27 @@ stig render docs.sarif -o book/ --title "My API Reference"
 
 ### `stig check`
 
-Check documentation coverage and quality (linter mode).
+Check documentation coverage and quality.
 
 ```
 Usage: stig check [OPTIONS] <INPUT_FILES>...
 
 Options:
+  -o, --output <FILE>       Output SARIF to file (default: compiler output)
   -c, --config <FILE>       Config file path (default: stig.toml)
-  -f, --format <FMT>        Output format: human, compiler, json, sarif
   --min-coverage <N>        Minimum coverage percentage (0-100)
   --strict                  Treat warnings as errors
   -h, --help                Show help
 ```
 
-**Output Formats:**
-- `human` - Human-readable report with summary (default)
-- `compiler` - CI/CD friendly: `file:line:col: severity: message`
-- `json` - JSON output for tooling integration
-- `sarif` - SARIF format for GitHub code scanning
+**Output:**
+- Without `-o`: Compiler-style output (`file:line:col: severity: message`)
+- With `-o`: SARIF format for GitHub code scanning and CI/CD
 
 **Examples:**
 ```bash
-stig check src/*.h                       # Human-readable report
-stig check -f compiler src/*.h           # CI/CD integration
+stig check src/*.h                       # Compiler output to terminal
+stig check -o check.sarif src/*.h        # SARIF to file
 stig check --min-coverage 80 src/*.h     # Fail if < 80% coverage
 stig check --strict src/*.h              # Treat warnings as errors
 ```
@@ -543,7 +541,7 @@ jobs:
           # Install stig (adjust for your setup)
 
       - name: Check documentation
-        run: stig check -f sarif --min-coverage 80 src/*.h > results.sarif
+        run: stig check -o results.sarif --min-coverage 80 src/*.h
 
       - name: Upload SARIF
         uses: github/codeql-action/upload-sarif@v2
@@ -556,7 +554,7 @@ jobs:
 ```yaml
 docs:check:
   script:
-    - stig check -f compiler --strict src/*.h
+    - stig check -o check.sarif --strict src/*.h
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 ```

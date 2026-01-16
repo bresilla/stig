@@ -19,17 +19,7 @@ pub const OutputFormat = enum {
     }
 };
 
-/// Output format for check command
-pub const CheckOutputFormat = enum {
-    /// Human-readable output (default)
-    human,
-    /// Compiler-style output (file:line:col: severity: message)
-    compiler,
-    /// JSON output for tooling integration
-    json,
-    /// SARIF (Static Analysis Results Interchange Format) for GitHub code scanning
-    sarif,
-};
+// Check command outputs SARIF only (unified with generate command)
 
 /// Subcommand type
 pub const Subcommand = enum {
@@ -76,7 +66,6 @@ pub const Args = struct {
     serve_mode: bool,
     force_rebuild: bool,
     /// Check command options
-    check_output_format: CheckOutputFormat,
     min_coverage: ?u8,
     strict: bool, // treat warnings as errors
     /// Coverage command options - test file patterns
@@ -105,7 +94,6 @@ pub const ArgParser = struct {
     force_ptr: ?*bool,
 
     // Argument pointers for check subcommand
-    check_format_ptr: ?*[]const u8,
     min_coverage_ptr: ?*i64,
     strict_ptr: ?*bool,
 
@@ -128,8 +116,7 @@ pub const ArgParser = struct {
             .watch_ptr = null,
             .serve_ptr = null,
             .force_ptr = null,
-            .check_format_ptr = null,
-            .min_coverage_ptr = null,
+                        .min_coverage_ptr = null,
             .strict_ptr = null,
             .help_ptr = null,
             .version_ptr = null,
@@ -167,8 +154,7 @@ pub const ArgParser = struct {
                     .watch_mode = false,
                     .serve_mode = false,
                     .force_rebuild = false,
-                    .check_output_format = .human,
-                    .min_coverage = null,
+                                        .min_coverage = null,
                     .strict = false,
                     .test_patterns = &[_][]const u8{},
                     .allocator = self.allocator,
@@ -187,8 +173,7 @@ pub const ArgParser = struct {
                     .watch_mode = false,
                     .serve_mode = false,
                     .force_rebuild = false,
-                    .check_output_format = .human,
-                    .min_coverage = null,
+                                        .min_coverage = null,
                     .strict = false,
                     .test_patterns = &[_][]const u8{},
                     .allocator = self.allocator,
@@ -240,8 +225,7 @@ pub const ArgParser = struct {
                             .watch_mode = false,
                             .serve_mode = false,
                             .force_rebuild = false,
-                            .check_output_format = .human,
-                            .min_coverage = null,
+                                                        .min_coverage = null,
                             .strict = false,
                             .test_patterns = &[_][]const u8{},
                             .allocator = self.allocator,
@@ -259,8 +243,7 @@ pub const ArgParser = struct {
                     .watch_mode = false,
                     .serve_mode = false,
                     .force_rebuild = false,
-                    .check_output_format = .human,
-                    .min_coverage = null,
+                                        .min_coverage = null,
                     .strict = false,
                     .test_patterns = &[_][]const u8{},
                     .allocator = self.allocator,
@@ -325,8 +308,7 @@ pub const ArgParser = struct {
                 .watch_mode = false,
                 .serve_mode = false,
                 .force_rebuild = false,
-                .check_output_format = .human,
-                .min_coverage = null,
+                                .min_coverage = null,
                 .strict = false,
                 .test_patterns = &[_][]const u8{},
                 .allocator = self.allocator,
@@ -359,8 +341,7 @@ pub const ArgParser = struct {
             .watch_mode = false,
             .serve_mode = false,
             .force_rebuild = force_rebuild,
-            .check_output_format = .human,
-            .min_coverage = null,
+                        .min_coverage = null,
             .strict = false,
             .test_patterns = &[_][]const u8{},
             .allocator = self.allocator,
@@ -417,8 +398,7 @@ pub const ArgParser = struct {
                 .watch_mode = false,
                 .serve_mode = false,
                 .force_rebuild = false,
-                .check_output_format = .human,
-                .min_coverage = null,
+                                .min_coverage = null,
                 .strict = false,
                 .test_patterns = &[_][]const u8{},
                 .allocator = self.allocator,
@@ -450,8 +430,7 @@ pub const ArgParser = struct {
             .watch_mode = false,
             .serve_mode = false,
             .force_rebuild = false,
-            .check_output_format = .human,
-            .min_coverage = null,
+                        .min_coverage = null,
             .strict = false,
             .test_patterns = &[_][]const u8{},
             .allocator = self.allocator,
@@ -473,9 +452,9 @@ pub const ArgParser = struct {
         config_opts.help = "Config file path (default: stig.toml)";
         self.config_ptr = try parser.string("c", "config", &config_opts);
 
-        var format_opts = argonaut.Options{};
-        format_opts.help = "Output format: human, compiler, json (default: human)";
-        self.check_format_ptr = try parser.string("f", "format", &format_opts);
+        var output_opts = argonaut.Options{};
+        output_opts.help = "Output SARIF file (default: stdout)";
+        self.output_ptr = try parser.string("o", "output", &output_opts);
 
         var coverage_opts = argonaut.Options{};
         coverage_opts.help = "Minimum coverage percentage required (0-100)";
@@ -516,26 +495,16 @@ pub const ArgParser = struct {
                 .watch_mode = false,
                 .serve_mode = false,
                 .force_rebuild = false,
-                .check_output_format = .human,
-                .min_coverage = null,
+                                .min_coverage = null,
                 .strict = false,
                 .test_patterns = &[_][]const u8{},
                 .allocator = self.allocator,
             };
         }
 
-        // Parse check format
-        const format_str = if (self.check_format_ptr) |ptr| ptr.* else "";
-        var check_output_format: CheckOutputFormat = .human;
-        if (format_str.len > 0) {
-            if (std.mem.eql(u8, format_str, "compiler") or std.mem.eql(u8, format_str, "gcc")) {
-                check_output_format = .compiler;
-            } else if (std.mem.eql(u8, format_str, "json")) {
-                check_output_format = .json;
-            } else if (std.mem.eql(u8, format_str, "sarif")) {
-                check_output_format = .sarif;
-            }
-        }
+        // Get output file
+        const output_str = self.output_ptr.?.*;
+        const output_file: ?[]const u8 = if (output_str.len > 0) output_str else null;
 
         // Get config file
         const config_str = self.config_ptr.?.*;
@@ -573,7 +542,7 @@ pub const ArgParser = struct {
         return Args{
             .subcommand = .check,
             .input_files = input_files,
-            .output_file = null,
+            .output_file = output_file,
             .output_format = .sarif,
             .format_explicitly_set = false,
             .book_title = null,
@@ -581,7 +550,6 @@ pub const ArgParser = struct {
             .watch_mode = false,
             .serve_mode = false,
             .force_rebuild = false,
-            .check_output_format = check_output_format,
             .min_coverage = min_coverage,
             .strict = strict,
             .test_patterns = &[_][]const u8{},
@@ -639,8 +607,7 @@ pub const ArgParser = struct {
                 .watch_mode = false,
                 .serve_mode = false,
                 .force_rebuild = false,
-                .check_output_format = .human,
-                .min_coverage = null,
+                                .min_coverage = null,
                 .strict = false,
                 .test_patterns = &[_][]const u8{},
                 .allocator = self.allocator,
@@ -665,8 +632,7 @@ pub const ArgParser = struct {
             .watch_mode = false,
             .serve_mode = false,
             .force_rebuild = force_rebuild,
-            .check_output_format = .human,
-            .min_coverage = null,
+                        .min_coverage = null,
             .strict = false,
             .test_patterns = &[_][]const u8{},
             .allocator = self.allocator,
@@ -688,9 +654,9 @@ pub const ArgParser = struct {
         config_opts.help = "Config file path (default: stig.toml)";
         self.config_ptr = try parser.string("c", "config", &config_opts);
 
-        var format_opts = argonaut.Options{};
-        format_opts.help = "Output format: console, json, junit (default: console)";
-        self.check_format_ptr = try parser.string("f", "format", &format_opts);
+        var output_opts = argonaut.Options{};
+        output_opts.help = "Output SARIF file (default: stdout)";
+        self.output_ptr = try parser.string("o", "output", &output_opts);
 
         var help_opts = argonaut.Options{};
         help_opts.help = "Show help for test command";
@@ -723,8 +689,7 @@ pub const ArgParser = struct {
                 .watch_mode = false,
                 .serve_mode = false,
                 .force_rebuild = false,
-                .check_output_format = .human,
-                .min_coverage = null,
+                                .min_coverage = null,
                 .strict = false,
                 .test_patterns = &[_][]const u8{},
                 .allocator = self.allocator,
@@ -735,16 +700,9 @@ pub const ArgParser = struct {
         const config_str = self.config_ptr.?.*;
         const config_file: ?[]const u8 = if (config_str.len > 0) config_str else null;
 
-        // Parse test output format
-        const format_str = if (self.check_format_ptr) |ptr| ptr.* else "";
-        var check_output_format: CheckOutputFormat = .human;
-        if (format_str.len > 0) {
-            if (std.mem.eql(u8, format_str, "json")) {
-                check_output_format = .json;
-            } else if (std.mem.eql(u8, format_str, "junit") or std.mem.eql(u8, format_str, "xml")) {
-                check_output_format = .compiler; // reuse for junit
-            }
-        }
+        // Get output file
+        const output_str = self.output_ptr.?.*;
+        const output_file: ?[]const u8 = if (output_str.len > 0) output_str else null;
 
         // Get input files (test files or binary) from remainder
         const input_files = if (self.remainder) |rem|
@@ -755,7 +713,7 @@ pub const ArgParser = struct {
         return Args{
             .subcommand = .@"test",
             .input_files = input_files,
-            .output_file = null,
+            .output_file = output_file,
             .output_format = .sarif,
             .format_explicitly_set = false,
             .book_title = null,
@@ -763,7 +721,6 @@ pub const ArgParser = struct {
             .watch_mode = false,
             .serve_mode = false,
             .force_rebuild = false,
-            .check_output_format = check_output_format,
             .min_coverage = null,
             .strict = false,
             .test_patterns = &[_][]const u8{},
@@ -783,8 +740,7 @@ pub const ArgParser = struct {
             .watch_mode = false,
             .serve_mode = false,
             .force_rebuild = false,
-            .check_output_format = .human,
-            .min_coverage = null,
+                        .min_coverage = null,
             .strict = false,
             .test_patterns = &[_][]const u8{},
             .allocator = allocator,
@@ -892,18 +848,15 @@ pub const ArgParser = struct {
             \\    <INPUT_FILES>...    C/C++ header files to check
             \\
             \\OPTIONS:
+            \\    -o, --output <FILE>       Output SARIF to file (default: compiler output)
             \\    -c, --config <FILE>       Config file path (default: stig.toml)
-            \\    -f, --format <FMT>        Output format: human, compiler, json, sarif
             \\    --min-coverage <N>        Minimum coverage percentage (0-100)
             \\    --strict                  Treat warnings as errors
             \\    -h, --help                Show this help message
             \\
-            \\OUTPUT FORMATS:
-            \\    human      Human-readable report with summary (default)
-            \\    compiler   Compiler-style output for CI/CD integration:
-            \\               file:line:col: severity: message
-            \\    json       JSON output for tooling integration
-            \\    sarif      SARIF format for GitHub code scanning integration
+            \\OUTPUT:
+            \\    Without -o: Compiler-style output (file:line:col: severity: message)
+            \\    With -o:    SARIF format for GitHub code scanning and CI/CD
             \\
             \\EXIT CODES:
             \\    0    All checks passed
@@ -911,13 +864,14 @@ pub const ArgParser = struct {
             \\    2    Warnings found (with --strict) or coverage below threshold
             \\
             \\EXAMPLES:
-            \\    stig check src/*.h                       # Human-readable report
-            \\    stig check -f compiler src/*.h           # CI/CD friendly output
+            \\    stig check src/*.h                       # Compiler output to terminal
+            \\    stig check -o check.sarif src/*.h        # SARIF to file
             \\    stig check --min-coverage 80 src/*.h     # Fail if < 80% coverage
             \\    stig check --strict src/*.h              # Treat warnings as errors
             \\
             \\SEE ALSO:
-            \\    stig lsp    Run as LSP server for editor integration
+            \\    stig generate    Parse sources to SARIF
+            \\    stig render      Generate mdbook from SARIF
             \\
         ;
         std.debug.print("{s}", .{help});
