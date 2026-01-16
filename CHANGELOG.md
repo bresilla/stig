@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.0.3] - 2026-01-16
+
+### <!-- 0 -->⛰️  Features
+
+- Migrate to SARIF as the intermediate format
+- Add JSON intermediate representation and rendering pipeline
+- Implement comprehensive LSP server and watch mode
+- Implement dependency tracking for incremental builds
+- Add external documentation links
+- Remove HTML output format
+- Introduce executable documentation and testing ideas
+- Enhance test framework with doctest-like features
+- Add test coverage analysis command and LSP integration
+- Add CMake test integration with stig_add_tests and stig_run_tests
+- Add stig test framework with init and test commands
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Handle STIG_ROOT variable properly in FindStig.cmake
+- Update README and cpp parser type handling
+
+### <!-- 2 -->🚜 Refactor
+
+- Remove compiler/flags from stig test - use CMake instead
+- Make each test file standalone with embedded main()
+
+### <!-- 3 -->📚 Documentation
+
+- Update README with comprehensive guide and details
+
 ## [Unreleased]
 
 ### Features
