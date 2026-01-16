@@ -5,21 +5,17 @@ const config_mod = @import("config.zig");
 pub const VERSION = "0.0.2";
 pub const Config = config_mod.Config;
 
-/// Output format for documentation
+/// Output format for generate command (SARIF only after streamlining)
 pub const OutputFormat = enum {
-    /// Single markdown file
-    markdown,
-    /// mdbook directory structure
+    /// SARIF output (default and only option for generate)
+    sarif,
+    /// mdbook directory structure (for render command only)
     mdbook,
-    /// JSON structured output
-    json,
 
     pub fn fromConfig(cfg_format: Config.Format) OutputFormat {
-        return switch (cfg_format) {
-            .markdown => .markdown,
-            .mdbook => .mdbook,
-            .json => .json,
-        };
+        // All formats now map to sarif for generate command
+        _ = cfg_format;
+        return .sarif;
     }
 };
 
@@ -37,22 +33,18 @@ pub const CheckOutputFormat = enum {
 
 /// Subcommand type
 pub const Subcommand = enum {
-    /// Generate documentation (default)
+    /// Generate SARIF from source files (default)
     generate,
-    /// Render documentation from JSON file
+    /// Render mdbook from SARIF file
     render,
     /// Check documentation coverage and quality (linter-style output)
     check,
     /// Run as LSP server for editor integration
     lsp,
-    /// Run as mdbook preprocessor
-    preprocessor,
     /// Initialize test infrastructure
     init,
     /// Run tests
     @"test",
-    /// Analyze test coverage (which API entities are tested)
-    coverage,
     /// Show help
     help,
     /// Show help for generate subcommand
@@ -67,8 +59,6 @@ pub const Subcommand = enum {
     help_init,
     /// Show help for test subcommand
     help_test,
-    /// Show help for coverage subcommand
-    help_coverage,
     /// Show version
     version,
 };
@@ -170,7 +160,7 @@ pub const ArgParser = struct {
                     .subcommand = .help,
                     .input_files = &[_][]const u8{},
                     .output_file = null,
-                    .output_format = .markdown,
+                    .output_format = .sarif,
                     .format_explicitly_set = false,
                     .book_title = null,
                     .config_file = null,
@@ -190,7 +180,7 @@ pub const ArgParser = struct {
                     .subcommand = .version,
                     .input_files = &[_][]const u8{},
                     .output_file = null,
-                    .output_format = .markdown,
+                    .output_format = .sarif,
                     .format_explicitly_set = false,
                     .book_title = null,
                     .config_file = null,
@@ -212,21 +202,11 @@ pub const ArgParser = struct {
             } else if (std.mem.eql(u8, first_arg, "check")) {
                 subcommand = .check;
                 args_start = 2;
-            } else if (std.mem.eql(u8, first_arg, "preprocessor") or std.mem.eql(u8, first_arg, "preprocess")) {
-                subcommand = .preprocessor;
-                args_start = 2;
-            } else if (std.mem.eql(u8, first_arg, "supports")) {
-                // mdbook support check - just return preprocessor mode
-                subcommand = .preprocessor;
-                args_start = 2;
             } else if (std.mem.eql(u8, first_arg, "init")) {
                 subcommand = .init;
                 args_start = 2;
             } else if (std.mem.eql(u8, first_arg, "test")) {
                 subcommand = .@"test";
-                args_start = 2;
-            } else if (std.mem.eql(u8, first_arg, "coverage") or std.mem.eql(u8, first_arg, "cov")) {
-                subcommand = .coverage;
                 args_start = 2;
             } else if (std.mem.eql(u8, first_arg, "lsp")) {
                 subcommand = .lsp;
@@ -244,24 +224,6 @@ pub const ArgParser = struct {
             .check => try self.parseCheckArgs(process_args, args_start),
             .init => try self.parseInitArgs(process_args, args_start),
             .@"test" => try self.parseTestArgs(process_args, args_start),
-            .coverage => try self.parseCoverageArgs(process_args, args_start),
-            .preprocessor => Args{
-                .subcommand = .preprocessor,
-                .input_files = &[_][]const u8{},
-                .output_file = null,
-                .output_format = .markdown,
-                .format_explicitly_set = false,
-                .book_title = null,
-                .config_file = null,
-                .watch_mode = false,
-                .serve_mode = false,
-                .force_rebuild = false,
-                .check_output_format = .human,
-                .min_coverage = null,
-                .strict = false,
-                .test_patterns = &[_][]const u8{},
-                .allocator = self.allocator,
-            },
             .lsp => blk: {
                 // Check for help flag
                 if (process_args.len > args_start) {
@@ -271,7 +233,7 @@ pub const ArgParser = struct {
                             .subcommand = .help_lsp,
                             .input_files = &[_][]const u8{},
                             .output_file = null,
-                            .output_format = .markdown,
+                            .output_format = .sarif,
                             .format_explicitly_set = false,
                             .book_title = null,
                             .config_file = null,
@@ -290,7 +252,7 @@ pub const ArgParser = struct {
                     .subcommand = .lsp,
                     .input_files = &[_][]const u8{},
                     .output_file = null,
-                    .output_format = .markdown,
+                    .output_format = .sarif,
                     .format_explicitly_set = false,
                     .book_title = null,
                     .config_file = null,
@@ -304,7 +266,7 @@ pub const ArgParser = struct {
                     .allocator = self.allocator,
                 };
             },
-            .help, .help_generate, .help_render, .help_check, .help_lsp, .help_init, .help_test, .help_coverage, .version => unreachable, // handled above
+            .help, .help_generate, .help_render, .help_check, .help_lsp, .help_init, .help_test, .version => unreachable, // handled above
         };
     }
 
@@ -313,35 +275,19 @@ pub const ArgParser = struct {
         self.parser = try argonaut.newParser(
             self.allocator,
             "stig generate",
-            "Generate documentation from C/C++ source files",
+            "Generate SARIF from C/C++ source files",
         );
         const parser = self.parser.?;
         parser.command.disableHelp();
 
         // Define arguments
         var output_opts = argonaut.Options{};
-        output_opts.help = "Output file or directory (default: stdout)";
+        output_opts.help = "Output SARIF file (default: stdout)";
         self.output_ptr = try parser.string("o", "output", &output_opts);
-
-        var format_opts = argonaut.Options{};
-        format_opts.help = "Output format: markdown, mdbook, json (default: markdown)";
-        self.format_ptr = try parser.string("f", "format", &format_opts);
-
-        var title_opts = argonaut.Options{};
-        title_opts.help = "Book title (for mdbook format)";
-        self.title_ptr = try parser.string("", "title", &title_opts);
 
         var config_opts = argonaut.Options{};
         config_opts.help = "Config file path (default: stig.toml)";
         self.config_ptr = try parser.string("c", "config", &config_opts);
-
-        var watch_opts = argonaut.Options{};
-        watch_opts.help = "Watch for file changes and regenerate";
-        self.watch_ptr = try parser.flag("w", "watch", &watch_opts);
-
-        var serve_opts = argonaut.Options{};
-        serve_opts.help = "Watch mode + spawn mdbook serve for live preview";
-        self.serve_ptr = try parser.flag("", "serve", &serve_opts);
 
         var force_opts = argonaut.Options{};
         force_opts.help = "Force full rebuild, ignore cache";
@@ -372,7 +318,7 @@ pub const ArgParser = struct {
                 .subcommand = .help_generate,
                 .input_files = &[_][]const u8{},
                 .output_file = null,
-                .output_format = .markdown,
+                .output_format = .sarif,
                 .format_explicitly_set = false,
                 .book_title = null,
                 .config_file = null,
@@ -387,33 +333,13 @@ pub const ArgParser = struct {
             };
         }
 
-        // Parse format
-        const format_str = self.format_ptr.?.*;
-        var output_format: OutputFormat = .markdown;
-        var format_explicitly_set = false;
-        if (format_str.len > 0) {
-            format_explicitly_set = true;
-            if (std.mem.eql(u8, format_str, "mdbook")) {
-                output_format = .mdbook;
-            } else if (std.mem.eql(u8, format_str, "md") or std.mem.eql(u8, format_str, "markdown")) {
-                output_format = .markdown;
-            } else if (std.mem.eql(u8, format_str, "json")) {
-                output_format = .json;
-            }
-        }
-
-        // Get other values
+        // Get values
         const output_str = self.output_ptr.?.*;
         const output_file: ?[]const u8 = if (output_str.len > 0) output_str else null;
-
-        const title_str = self.title_ptr.?.*;
-        const book_title: ?[]const u8 = if (title_str.len > 0) title_str else null;
 
         const config_str = self.config_ptr.?.*;
         const config_file: ?[]const u8 = if (config_str.len > 0) config_str else null;
 
-        const watch_mode = self.watch_ptr.?.* or self.serve_ptr.?.*;
-        const serve_mode = self.serve_ptr.?.*;
         const force_rebuild = self.force_ptr.?.*;
 
         // Get input files from remainder
@@ -426,12 +352,12 @@ pub const ArgParser = struct {
             .subcommand = .generate,
             .input_files = input_files,
             .output_file = output_file,
-            .output_format = output_format,
-            .format_explicitly_set = format_explicitly_set,
-            .book_title = book_title,
+            .output_format = .sarif,
+            .format_explicitly_set = false,
+            .book_title = null,
             .config_file = config_file,
-            .watch_mode = watch_mode,
-            .serve_mode = serve_mode,
+            .watch_mode = false,
+            .serve_mode = false,
             .force_rebuild = force_rebuild,
             .check_output_format = .human,
             .min_coverage = null,
@@ -446,14 +372,14 @@ pub const ArgParser = struct {
         self.parser = try argonaut.newParser(
             self.allocator,
             "stig render",
-            "Render documentation from a JSON file",
+            "Render mdbook documentation from a SARIF file",
         );
         const parser = self.parser.?;
         parser.command.disableHelp();
 
         // Define arguments
         var output_opts = argonaut.Options{};
-        output_opts.help = "Output file or directory";
+        output_opts.help = "Output directory for mdbook (required)";
         self.output_ptr = try parser.string("o", "output", &output_opts);
 
         var title_opts = argonaut.Options{};
@@ -484,7 +410,7 @@ pub const ArgParser = struct {
                 .subcommand = .help_render,
                 .input_files = &[_][]const u8{},
                 .output_file = null,
-                .output_format = .markdown,
+                .output_format = .mdbook,
                 .format_explicitly_set = false,
                 .book_title = null,
                 .config_file = null,
@@ -499,25 +425,15 @@ pub const ArgParser = struct {
             };
         }
 
-        // Get output
+        // Get output directory
         const output_str = self.output_ptr.?.*;
         const output_file: ?[]const u8 = if (output_str.len > 0) output_str else null;
-
-        // Detect output format from extension
-        var output_format: OutputFormat = .markdown;
-        if (output_file) |of| {
-            if (std.mem.endsWith(u8, of, ".json")) {
-                output_format = .json;
-            } else if (std.mem.endsWith(u8, of, "/") or std.mem.indexOfScalar(u8, of, '.') == null) {
-                output_format = .mdbook;
-            }
-        }
 
         // Get book title
         const title_str = self.title_ptr.?.*;
         const book_title: ?[]const u8 = if (title_str.len > 0) title_str else null;
 
-        // Get input files from remainder (should be the JSON file)
+        // Get input files from remainder (should be the SARIF file)
         const input_files = if (self.remainder) |rem|
             try self.allocator.dupe([]const u8, rem)
         else
@@ -527,7 +443,7 @@ pub const ArgParser = struct {
             .subcommand = .render,
             .input_files = input_files,
             .output_file = output_file,
-            .output_format = output_format,
+            .output_format = .mdbook,
             .format_explicitly_set = false,
             .book_title = book_title,
             .config_file = null,
@@ -593,7 +509,7 @@ pub const ArgParser = struct {
                 .subcommand = .help_check,
                 .input_files = &[_][]const u8{},
                 .output_file = null,
-                .output_format = .markdown,
+                .output_format = .sarif,
                 .format_explicitly_set = false,
                 .book_title = null,
                 .config_file = null,
@@ -658,7 +574,7 @@ pub const ArgParser = struct {
             .subcommand = .check,
             .input_files = input_files,
             .output_file = null,
-            .output_format = .markdown,
+            .output_format = .sarif,
             .format_explicitly_set = false,
             .book_title = null,
             .config_file = config_file,
@@ -716,7 +632,7 @@ pub const ArgParser = struct {
                 .subcommand = .help_init,
                 .input_files = &[_][]const u8{},
                 .output_file = null,
-                .output_format = .markdown,
+                .output_format = .sarif,
                 .format_explicitly_set = false,
                 .book_title = null,
                 .config_file = null,
@@ -742,7 +658,7 @@ pub const ArgParser = struct {
             .subcommand = .init,
             .input_files = &[_][]const u8{},
             .output_file = null,
-            .output_format = .markdown,
+            .output_format = .sarif,
             .format_explicitly_set = false,
             .book_title = null,
             .config_file = config_file,
@@ -800,7 +716,7 @@ pub const ArgParser = struct {
                 .subcommand = .help_test,
                 .input_files = &[_][]const u8{},
                 .output_file = null,
-                .output_format = .markdown,
+                .output_format = .sarif,
                 .format_explicitly_set = false,
                 .book_title = null,
                 .config_file = null,
@@ -840,7 +756,7 @@ pub const ArgParser = struct {
             .subcommand = .@"test",
             .input_files = input_files,
             .output_file = null,
-            .output_format = .markdown,
+            .output_format = .sarif,
             .format_explicitly_set = false,
             .book_title = null,
             .config_file = config_file,
@@ -855,130 +771,12 @@ pub const ArgParser = struct {
         };
     }
 
-    fn parseCoverageArgs(self: *Self, process_args: []const [:0]u8, args_start: usize) !Args {
-        // Create argonaut parser for coverage subcommand
-        self.parser = try argonaut.newParser(
-            self.allocator,
-            "stig coverage",
-            "Analyze test coverage - which API entities are tested",
-        );
-        const parser = self.parser.?;
-        parser.command.disableHelp();
-
-        // Define arguments
-        var config_opts = argonaut.Options{};
-        config_opts.help = "Config file path (default: stig.toml)";
-        self.config_ptr = try parser.string("c", "config", &config_opts);
-
-        var format_opts = argonaut.Options{};
-        format_opts.help = "Output format: human, compiler, json (default: human)";
-        self.check_format_ptr = try parser.string("f", "format", &format_opts);
-
-        var coverage_opts = argonaut.Options{};
-        coverage_opts.help = "Minimum test coverage percentage required (0-100)";
-        self.min_coverage_ptr = try parser.int("", "min-coverage", &coverage_opts);
-
-        var help_opts = argonaut.Options{};
-        help_opts.help = "Show help for coverage command";
-        self.help_ptr = try parser.flag("h", "help", &help_opts);
-
-        // Build args slice starting from args_start
-        var args_list: std.ArrayList([]const u8) = .empty;
-        defer args_list.deinit(self.allocator);
-
-        try args_list.append(self.allocator, "stig");
-        for (process_args[args_start..]) |arg| {
-            try args_list.append(self.allocator, arg);
-        }
-
-        // Parse
-        self.remainder = parser.parseWithRemainder(args_list.items) catch |err| {
-            return err;
-        };
-
-        // Check for help
-        if (self.help_ptr.?.*) {
-            return Args{
-                .subcommand = .help_coverage,
-                .input_files = &[_][]const u8{},
-                .output_file = null,
-                .output_format = .markdown,
-                .format_explicitly_set = false,
-                .book_title = null,
-                .config_file = null,
-                .watch_mode = false,
-                .serve_mode = false,
-                .force_rebuild = false,
-                .check_output_format = .human,
-                .min_coverage = null,
-                .strict = false,
-                .test_patterns = &[_][]const u8{},
-                .allocator = self.allocator,
-            };
-        }
-
-        // Get config file
-        const config_str = self.config_ptr.?.*;
-        const config_file: ?[]const u8 = if (config_str.len > 0) config_str else null;
-
-        // Parse output format
-        const format_str = if (self.check_format_ptr) |ptr| ptr.* else "";
-        var check_output_format: CheckOutputFormat = .human;
-        if (format_str.len > 0) {
-            if (std.mem.eql(u8, format_str, "compiler") or std.mem.eql(u8, format_str, "gcc")) {
-                check_output_format = .compiler;
-            } else if (std.mem.eql(u8, format_str, "json")) {
-                check_output_format = .json;
-            } else if (std.mem.eql(u8, format_str, "sarif")) {
-                check_output_format = .sarif;
-            }
-        }
-
-        // Get min coverage (validate range 0-100)
-        const min_coverage_val = self.min_coverage_ptr.?.*;
-        const min_coverage: ?u8 = if (min_coverage_val >= 0 and min_coverage_val <= 100)
-            @intCast(min_coverage_val)
-        else if (min_coverage_val > 100) blk: {
-            std.debug.print("Warning: min-coverage value {d} exceeds 100, capping at 100\n", .{min_coverage_val});
-            break :blk 100;
-        } else blk: {
-            std.debug.print("Warning: min-coverage value {d} is invalid (must be 0-100), ignoring\n", .{min_coverage_val});
-            break :blk null;
-        };
-
-        // Get input files (header files) and test patterns from remainder
-        // Format: stig coverage <headers...> --tests <test_files...>
-        // For now, we'll use config file for test patterns
-        const input_files = if (self.remainder) |rem|
-            try self.allocator.dupe([]const u8, rem)
-        else
-            &[_][]const u8{};
-
-        return Args{
-            .subcommand = .coverage,
-            .input_files = input_files,
-            .output_file = null,
-            .output_format = .markdown,
-            .format_explicitly_set = false,
-            .book_title = null,
-            .config_file = config_file,
-            .watch_mode = false,
-            .serve_mode = false,
-            .force_rebuild = false,
-            .check_output_format = check_output_format,
-            .min_coverage = min_coverage,
-            .strict = false,
-            .test_patterns = &[_][]const u8{},
-            .allocator = self.allocator,
-        };
-    }
-
     fn defaultArgs(allocator: std.mem.Allocator) Args {
         return Args{
             .subcommand = .help,
             .input_files = &[_][]const u8{},
             .output_file = null,
-            .output_format = .markdown,
+            .output_format = .sarif,
             .format_explicitly_set = false,
             .book_title = null,
             .config_file = null,
@@ -1019,7 +817,7 @@ pub const ArgParser = struct {
     /// Prints help for generate subcommand
     pub fn printGenerateHelp() void {
         const help =
-            \\stig generate - Generate documentation from C/C++ source files
+            \\stig generate - Parse C/C++ sources and output SARIF
             \\
             \\USAGE:
             \\    stig generate [OPTIONS] <INPUT_FILES>...
@@ -1029,21 +827,23 @@ pub const ArgParser = struct {
             \\    <INPUT_FILES>...    C/C++ header files to process
             \\
             \\OPTIONS:
-            \\    -o, --output <PATH>    Output file or directory (default: stdout)
-            \\    -f, --format <FMT>     Output format: markdown, mdbook, json
-            \\    --title <TITLE>        Book title (for mdbook format)
+            \\    -o, --output <FILE>    Output SARIF file (default: stdout)
             \\    -c, --config <FILE>    Config file path (default: stig.toml)
-            \\    -w, --watch            Watch for file changes and regenerate
-            \\    --serve                Watch mode + spawn mdbook serve for live preview
-            \\                           (requires -f mdbook and -o <dir>)
             \\    --force                Force full rebuild, ignore cache
             \\    -h, --help             Show this help message
             \\
+            \\DESCRIPTION:
+            \\    Parses C/C++ header files and outputs a SARIF file containing the
+            \\    documentation model. This SARIF file can then be used with 'stig render'
+            \\    to generate mdbook documentation.
+            \\
             \\EXAMPLES:
             \\    stig generate input.h                    # Output to stdout
-            \\    stig input.h -o output.md                # Output to file
-            \\    stig src/*.h -f mdbook -o docs/          # Generate mdbook
-            \\    stig src/*.h -f mdbook --serve           # Watch + live preview
+            \\    stig generate -o docs.sarif src/*.h      # Output to file
+            \\    stig generate -c myconfig.toml *.h       # Use custom config
+            \\
+            \\SEE ALSO:
+            \\    stig render    Generate mdbook from SARIF file
             \\
         ;
         std.debug.print("{s}", .{help});
@@ -1052,32 +852,29 @@ pub const ArgParser = struct {
     /// Prints help for render subcommand
     pub fn printRenderHelp() void {
         const help =
-            \\stig render - Render documentation from a JSON file
+            \\stig render - Generate mdbook documentation from a SARIF file
             \\
             \\USAGE:
-            \\    stig render [OPTIONS] <JSON_FILE>
+            \\    stig render [OPTIONS] <SARIF_FILE>
             \\
             \\ARGS:
-            \\    <JSON_FILE>    JSON documentation file to render
+            \\    <SARIF_FILE>    SARIF file from 'stig generate'
             \\
             \\OPTIONS:
-            \\    -o, --output <PATH>    Output file or directory
+            \\    -o, --output <DIR>     Output directory for mdbook (required)
             \\    --title <TITLE>        Override book title
             \\    -h, --help             Show this help message
             \\
-            \\OUTPUT FORMAT AUTO-DETECTION:
-            \\    Based on output path:
-            \\    -o docs.md           Single markdown file
-            \\    -o docs/             mdbook directory structure
-            \\    -o docs.json         Copy/transform JSON (for filtering)
+            \\DESCRIPTION:
+            \\    Reads a SARIF file produced by 'stig generate' and generates
+            \\    an mdbook directory structure with Markdown documentation.
             \\
             \\EXAMPLES:
-            \\    stig render docs.json -o api.md          # Single markdown file
-            \\    stig render docs.json -o docs/           # mdbook structure
-            \\    stig render docs.json                    # Output to stdout
+            \\    stig render docs.sarif -o docs/          # Generate mdbook
+            \\    stig render docs.sarif -o book/ --title "My API"
             \\
             \\SEE ALSO:
-            \\    stig generate    Generate JSON from C/C++ source files
+            \\    stig generate    Parse C/C++ sources to SARIF
             \\
         ;
         std.debug.print("{s}", .{help});
@@ -1231,56 +1028,6 @@ pub const ArgParser = struct {
         std.debug.print("{s}", .{help});
     }
 
-    /// Prints help for coverage subcommand
-    pub fn printCoverageHelp() void {
-        const help =
-            \\stig coverage - Analyze test coverage (which API entities are tested)
-            \\
-            \\USAGE:
-            \\    stig coverage [OPTIONS]
-            \\    stig cov [OPTIONS]                       (alias)
-            \\
-            \\OPTIONS:
-            \\    -c, --config <FILE>       Config file path (default: stig.toml)
-            \\    -f, --format <FMT>        Output format: human, compiler, json
-            \\    --min-coverage <N>        Minimum test coverage percentage (0-100)
-            \\    -h, --help                Show this help message
-            \\
-            \\DESCRIPTION:
-            \\    Analyzes which documented API entities (functions, classes, methods)
-            \\    are being exercised by your test files. This is NOT line coverage -
-            \\    it's API coverage showing which parts of your public API have tests.
-            \\
-            \\    The command:
-            \\    1. Parses header files to build a symbol table of documented entities
-            \\    2. Parses test files to find which entities are called/used
-            \\    3. Reports which documented entities have tests vs which don't
-            \\
-            \\CONFIG FILE (stig.toml):
-            \\    input_patterns = ["include/**/*.hpp"]  # Header files to analyze
-            \\
-            \\    [test_coverage]
-            \\    test_patterns = ["test/**/*.cpp"]      # Test files to scan
-            \\    min_coverage = 80                      # Minimum coverage threshold
-            \\
-            \\OUTPUT FORMATS:
-            \\    human      Human-readable report with summary (default)
-            \\    compiler   Compiler-style output for CI/CD integration
-            \\    json       JSON output for tooling integration
-            \\
-            \\EXIT CODES:
-            \\    0    Coverage meets threshold
-            \\    1    Coverage below threshold
-            \\
-            \\EXAMPLES:
-            \\    stig coverage                            # Use config file
-            \\    stig coverage --min-coverage 80         # Fail if < 80% tested
-            \\    stig coverage -f json                   # JSON output for CI
-            \\
-        ;
-        std.debug.print("{s}", .{help});
-    }
-
     fn printMainHelp() void {
         const help =
             \\stig - C/C++ documentation generator
@@ -1290,14 +1037,12 @@ pub const ArgParser = struct {
             \\    stig [OPTIONS] <INPUT_FILES>...          (defaults to 'generate')
             \\
             \\COMMANDS:
-            \\    generate      Generate documentation from source files (default)
-            \\    render        Render documentation from a JSON file
+            \\    generate      Parse sources and output SARIF (default)
+            \\    render        Generate mdbook from SARIF file
             \\    check         Check documentation coverage and quality
             \\    lsp           Run as LSP server for editor integration
-            \\    coverage      Analyze test coverage (which API entities are tested)
-            \\    init          Initialize test infrastructure
+            \\    init          Initialize project configuration
             \\    test          Run pre-compiled test binaries
-            \\    preprocessor  Run as mdbook preprocessor
             \\    help          Show this help message
             \\    version       Show version information
             \\
@@ -1305,19 +1050,22 @@ pub const ArgParser = struct {
             \\    -h, --help      Show help (use 'stig <command> --help' for command help)
             \\    -v, --version   Show version information
             \\
+            \\PIPELINE:
+            \\    The recommended workflow is a two-stage pipeline:
+            \\    1. stig generate src/*.h -o docs.sarif    # Parse sources to SARIF
+            \\    2. stig render docs.sarif -o docs/        # Generate mdbook from SARIF
+            \\
             \\CONFIG FILE:
             \\    stig looks for stig.toml in the current directory.
             \\    CLI arguments override config file settings.
             \\
             \\EXAMPLES:
-            \\    stig input.h                             # Generate markdown to stdout
-            \\    stig generate -f mdbook -o docs/ src/*.h # Generate mdbook
-            \\    stig generate -f json -o docs.json *.h   # Generate JSON
-            \\    stig render docs.json -o api.md          # Render JSON to markdown
+            \\    stig input.h                             # Generate SARIF to stdout
+            \\    stig generate -o docs.sarif src/*.h      # Generate SARIF file
+            \\    stig render docs.sarif -o docs/          # Generate mdbook
             \\    stig check src/*.h                       # Check documentation
             \\    stig lsp                                 # Start LSP server
-            \\    stig coverage                            # Analyze test coverage
-            \\    stig init                                # Initialize test infrastructure
+            \\    stig init                                # Initialize project
             \\    stig test ./build/test_*                 # Run tests
             \\
             \\For more information on a command, run:

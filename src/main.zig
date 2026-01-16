@@ -3,27 +3,22 @@ const ts = @import("tree-sitter");
 const ts_c = @import("tree-sitter-c");
 const CParser = @import("parser/c.zig").CParser;
 const CppParser = @import("parser/cpp.zig").CppParser;
-const MarkdownGenerator = @import("output/markdown.zig").MarkdownGenerator;
 const MdbookGenerator = @import("output/mdbook.zig").MdbookGenerator;
 const MdbookConfig = @import("output/mdbook.zig").MdbookConfig;
 const xref = @import("xref.zig");
 const cli = @import("cli.zig");
 const config_mod = @import("config.zig");
 const types = @import("model/types.zig");
-const preprocessor = @import("preprocessor.zig");
-const Watcher = @import("watch.zig").Watcher;
 const coverage = @import("coverage.zig");
-const snippet = @import("snippet.zig");
 const lint = @import("lint.zig");
 const cache_mod = @import("cache.zig");
 const lsp_server = @import("lsp/server.zig");
 const init_cmd = @import("init.zig");
 const testing_cmd = @import("testing.zig");
-const testcov = @import("testcov.zig");
 
-// JSON and rendering pipeline imports
-const json_mod = @import("output/json/mod.zig");
-const write_mod = @import("output/write/mod.zig");
+// SARIF pipeline imports
+const sarif = @import("sarif.zig");
+const sarif_reader = @import("sarif_reader.zig");
 
 pub fn main() !void {
     // Get allocator - disable safety checks to avoid leak warnings
@@ -81,21 +76,8 @@ pub fn main() !void {
             cli.ArgParser.printTestHelp();
             return;
         },
-        .help_coverage => {
-            cli.ArgParser.printCoverageHelp();
-            return;
-        },
         .version => {
             arg_parser.printVersion();
-            return;
-        },
-        .preprocessor => {
-            // Run as mdbook preprocessor
-            preprocessor.runPreprocessor(std.heap.page_allocator) catch |err| {
-                std.debug.print("Preprocessor error: Failed to process mdbook input: {}\n", .{err});
-                std.debug.print("Hint: Ensure this is being called from mdbook as a preprocessor.\n", .{});
-                return;
-            };
             return;
         },
         .check => {
@@ -132,14 +114,6 @@ pub fn main() !void {
             const exit_code = testing_cmd.runTest(allocator, args.input_files, args.config_file, output_format) catch |err| {
                 std.debug.print("Test error: Failed to run tests: {}\n", .{err});
                 std.debug.print("Hint: Provide test executables as arguments or configure in stig.toml.\n", .{});
-                std.process.exit(1);
-            };
-            std.process.exit(exit_code);
-        },
-        .coverage => {
-            const exit_code = runCoverageCommand(allocator, &args) catch |err| {
-                std.debug.print("Coverage error: Failed to analyze coverage: {}\n", .{err});
-                std.debug.print("Hint: Ensure source and test files are specified. Run 'stig coverage --help'.\n", .{});
                 std.process.exit(1);
             };
             std.process.exit(exit_code);
@@ -399,269 +373,71 @@ fn runCheckCommand(allocator: std.mem.Allocator, args: *cli.Args) !void {
     }
 }
 
-/// Runs the 'coverage' subcommand - test coverage analysis
-fn runCoverageCommand(allocator: std.mem.Allocator, args: *cli.Args) !u8 {
-    // Load config file
-    const config_path = args.config_file orelse "stig.toml";
-    var config_loader: ?*config_mod.ConfigLoader = null;
-    var config: config_mod.Config = config_mod.Config{};
-
-    if (config_mod.loadFromFile(allocator, config_path)) |result| {
-        config_loader = result.loader;
-        config = result.config;
-    } else |err| {
-        if (args.config_file != null) {
-            std.debug.print("Error: Cannot load config file '{s}': {}\n", .{ config_path, err });
-            return 1;
-        }
-    }
-
-    defer {
-        if (config_loader) |loader| {
-            loader.deinit();
-            allocator.destroy(loader);
-        }
-    }
-
-    // Get source files (headers to analyze)
-    var source_patterns = args.input_files;
-    if (source_patterns.len == 0 and config.input_patterns.len > 0) {
-        source_patterns = config.input_patterns;
-    }
-
-    // Get test file patterns from config
-    var test_patterns = config.test_coverage.test_patterns;
-    if (test_patterns.len == 0) {
-        // Default test patterns
-        test_patterns = &[_][]const u8{ "test/**/*.cpp", "tests/**/*.cpp" };
-    }
-
-    if (source_patterns.len == 0) {
-        std.debug.print("Error: No source files specified\n", .{});
-        std.debug.print("Specify header files in stig.toml [input] or on command line\n\n", .{});
-        cli.ArgParser.printCoverageHelp();
-        return 1;
-    }
-
-    // Expand source file patterns
-    var expanded_sources: std.ArrayList([]const u8) = .empty;
-    defer {
-        for (expanded_sources.items) |f| {
-            allocator.free(f);
-        }
-        expanded_sources.deinit(allocator);
-    }
-
-    for (source_patterns) |pattern| {
-        if (std.mem.indexOfAny(u8, pattern, "*?[")) |_| {
-            try expandGlob(allocator, pattern, &expanded_sources);
-        } else {
-            const path_copy = try allocator.dupe(u8, pattern);
-            try expanded_sources.append(allocator, path_copy);
-        }
-    }
-
-    // Expand test file patterns
-    var expanded_tests: std.ArrayList([]const u8) = .empty;
-    defer {
-        for (expanded_tests.items) |f| {
-            allocator.free(f);
-        }
-        expanded_tests.deinit(allocator);
-    }
-
-    for (test_patterns) |pattern| {
-        if (std.mem.indexOfAny(u8, pattern, "*?[")) |_| {
-            try expandGlob(allocator, pattern, &expanded_tests);
-        } else {
-            const path_copy = try allocator.dupe(u8, pattern);
-            try expanded_tests.append(allocator, path_copy);
-        }
-    }
-
-    if (expanded_sources.items.len == 0) {
-        std.debug.print("Error: No source files matched the patterns\n", .{});
-        return 1;
-    }
-
-    if (expanded_tests.items.len == 0) {
-        std.debug.print("Warning: No test files found matching patterns\n", .{});
-        std.debug.print("Configure test patterns in stig.toml:\n", .{});
-        std.debug.print("  [test_coverage]\n", .{});
-        std.debug.print("  test_patterns = [\"test/**/*.cpp\"]\n\n", .{});
-    }
-
-    // Initialize parsers
-    var c_parser = try CParser.init(allocator);
-    defer c_parser.deinit();
-
-    var cpp_parser = try CppParser.init(allocator);
-    defer cpp_parser.deinit();
-
-    // Parse source files to build symbol table
-    const FileData = struct {
-        source: []const u8,
-        module: types.Module,
-    };
-
-    var file_data: std.ArrayList(FileData) = .empty;
-    defer {
-        for (file_data.items) |data| {
-            allocator.free(data.source);
-        }
-        file_data.deinit(allocator);
-    }
-
-    for (expanded_sources.items) |input_file| {
-        // Only process header files
-        if (!isHeaderFile(input_file)) continue;
-
-        const file = std.fs.cwd().openFile(input_file, .{}) catch |err| {
-            std.debug.print("Warning: Cannot open file '{s}': {}\n", .{ input_file, err });
-            continue;
-        };
-        defer file.close();
-
-        const source = file.readToEndAlloc(allocator, config.limits.max_file_size) catch |err| {
-            if (err == error.StreamTooLong) {
-                std.debug.print("Warning: File '{s}' exceeds size limit ({d} MB). Increase [limits].max_file_size in config.\n", .{ input_file, config.limits.max_file_size / (1024 * 1024) });
-            } else {
-                std.debug.print("Warning: Cannot read file '{s}': {}\n", .{ input_file, err });
-            }
-            continue;
-        };
-
-        const base_path = std.fs.path.dirname(input_file) orelse ".";
-        c_parser.setBasePath(base_path);
-        cpp_parser.setBasePath(base_path);
-
-        const is_cpp = isCppFile(input_file);
-        const module = if (is_cpp)
-            try cpp_parser.parse(source, input_file)
-        else
-            try c_parser.parse(source, input_file);
-
-        try file_data.append(allocator, .{ .source = source, .module = module });
-    }
-
-    // Collect modules and build symbol table
-    var modules: std.ArrayList(types.Module) = .empty;
-    defer modules.deinit(allocator);
-
-    for (file_data.items) |data| {
-        try modules.append(allocator, data.module);
-    }
-
-    var symbol_table = xref.SymbolTable.init(allocator);
-    defer symbol_table.deinit();
-    try symbol_table.buildFromModules(modules.items);
-
-    // Run test coverage analysis
-    var analyzer = testcov.TestCoverageAnalyzer.init(allocator, &symbol_table);
-    defer analyzer.deinit();
-
-    var report = try analyzer.analyzeTestFiles(expanded_tests.items);
-    defer report.deinit();
-
-    // Output based on format
-    switch (args.check_output_format) {
-        .human => testcov.printHumanReport(report),
-        .compiler => testcov.printCompilerReport(report),
-        .json => try testcov.printJsonReport(allocator, report),
-        .sarif => try testcov.printSarifReport(allocator, report),
-    }
-
-    // Check coverage threshold
-    const min_coverage = args.min_coverage orelse config.test_coverage.min_coverage;
-    if (report.stats.percentage() < @as(f64, @floatFromInt(min_coverage))) {
-        if (args.check_output_format == .human) {
-            std.debug.print("Test coverage ({d:.0}%) is below minimum threshold ({d}%)\n", .{
-                report.stats.percentage(),
-                min_coverage,
-            });
-        }
-        return 1;
-    }
-
-    return 0;
-}
-
-/// Runs the 'render' subcommand - renders documentation from a JSON file
+/// Runs the 'render' subcommand - generates mdbook from SARIF file
 fn runRenderCommand(allocator: std.mem.Allocator, args: *cli.Args) !void {
-    // Get input JSON file
+    // Get input SARIF file
     if (args.input_files.len == 0) {
-        std.debug.print("Error: No input JSON file specified\n", .{});
-        std.debug.print("Usage: stig render <JSON_FILE> -o <OUTPUT>\n", .{});
+        std.debug.print("Error: No input SARIF file specified\n", .{});
+        std.debug.print("Usage: stig render <SARIF_FILE> -o <OUTPUT_DIR>\n", .{});
         return;
     }
 
-    const json_file = args.input_files[0];
+    const sarif_file_path = args.input_files[0];
 
-    // Parse the JSON file
-    var result = json_mod.parseFile(json_file, allocator) catch |err| {
-        std.debug.print("Error: Failed to parse JSON file '{s}': {}\n", .{ json_file, err });
+    // Read the SARIF file
+    const file = std.fs.cwd().openFile(sarif_file_path, .{}) catch |err| {
+        std.debug.print("Error: Cannot open SARIF file '{s}': {}\n", .{ sarif_file_path, err });
         return;
     };
-    defer result.deinit();
+    defer file.close();
 
-    const model = result.model;
+    const content = file.readToEndAlloc(allocator, 100 * 1024 * 1024) catch |err| {
+        std.debug.print("Error: Cannot read SARIF file '{s}': {}\n", .{ sarif_file_path, err });
+        return;
+    };
+    defer allocator.free(content);
 
-    // Determine output format based on output path
-    const output_path = args.output_file;
+    // Parse the SARIF file
+    var reader = sarif_reader.SarifReader.init(allocator);
+    var doc = reader.parse(content) catch |err| {
+        std.debug.print("Error: Failed to parse SARIF file '{s}': {s}\n", .{ sarif_file_path, @errorName(err) });
+        return;
+    };
+    defer doc.deinit();
 
-    if (output_path) |path| {
-        // Check if output is a directory (mdbook) or file (single markdown)
-        if (std.mem.endsWith(u8, path, "/") or args.output_format == .mdbook) {
-            // Multi-file mdbook output
-            const options = write_mod.MultiFileOptions{
-                .title = args.book_title orelse model.project.title,
-                .generate_intro = true,
-                .generate_index = true,
-                .generate_appendix = true,
-            };
+    // Get output directory
+    const output_dir = args.output_file orelse "docs/";
 
-            var writer = write_mod.MultiFileWriter.initWithOptions(allocator, options);
-            defer writer.deinit();
+    // Generate mdbook using the modules from SARIF
+    const grouping_strategy: MdbookConfig.GroupingStrategy = switch (doc.config.grouping) {
+        .by_header => .by_header,
+        .by_prefix => .by_prefix,
+        .flat => .flat,
+        .by_module => .by_module,
+    };
 
-            writer.write(model, path) catch |err| {
-                std.debug.print("Error: Failed to write mdbook output: {}\n", .{err});
-                return;
-            };
+    const mdbook_config = MdbookConfig{
+        .title = args.book_title orelse doc.config.title,
+        .output_dir = output_dir,
+        .generate_intro = true,
+        .grouping = grouping_strategy,
+        .module_configs = &[_]config_mod.ModuleConfig{},
+        .external_docs = &[_]config_mod.ExternalDocLink{},
+    };
 
-            std.debug.print("Generated mdbook structure in: {s}\n", .{path});
-            std.debug.print("Run 'mdbook build {s}' to build the book\n", .{path});
-        } else {
-            // Single file markdown output
-            const options = write_mod.SingleFileOptions{
-                .title = args.book_title,
-                .include_toc = true,
-                .include_index = true,
-                .include_appendix = true,
-            };
+    var mdbook_gen = MdbookGenerator.initWithConfig(allocator, mdbook_config);
+    defer mdbook_gen.deinit();
 
-            var writer = write_mod.SingleFileWriter.initWithOptions(allocator, options);
-            defer writer.deinit();
+    mdbook_gen.generate(doc.modules) catch |err| {
+        std.debug.print("Error generating mdbook: {}\n", .{err});
+        return;
+    };
 
-            writer.write(model, path) catch |err| {
-                std.debug.print("Error: Failed to write output file: {}\n", .{err});
-                return;
-            };
-
-            std.debug.print("Generated documentation: {s}\n", .{path});
-        }
-    } else {
-        // Output to stdout
-        var writer = write_mod.SingleFileWriter.init(allocator);
-        defer writer.deinit();
-
-        writer.writeToStdout(model) catch |err| {
-            std.debug.print("Error: Failed to write to stdout: {}\n", .{err});
-            return;
-        };
-    }
+    std.debug.print("Generated mdbook structure in: {s}\n", .{output_dir});
+    std.debug.print("Run 'mdbook build {s}' to build the book\n", .{output_dir});
 }
 
-/// Runs the 'generate' subcommand - documentation generation
+/// Runs the 'generate' subcommand - parse sources and output SARIF
 fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser: *cli.ArgParser) !void {
     // Load config file
     const config_path = args.config_file orelse "stig.toml";
@@ -684,9 +460,6 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
             allocator.destroy(loader);
         }
     }
-
-    // Merge CLI args with config
-    cli.ArgParser.mergeWithConfig(args, config);
 
     // Get input files
     var input_patterns = args.input_files;
@@ -726,33 +499,6 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
         return;
     }
 
-    // Watch mode
-    if (args.watch_mode) {
-        if (args.output_format != .mdbook) {
-            std.debug.print("Error: Watch mode requires mdbook format (-f mdbook)\n", .{});
-            return;
-        }
-        const output_dir = args.output_file orelse config.output_dir;
-        if (output_dir.len == 0) {
-            std.debug.print("Error: Watch mode requires output directory (-o <dir>)\n", .{});
-            return;
-        }
-
-        var watcher = Watcher.init(
-            allocator,
-            input_files,
-            output_dir,
-            args.book_title orelse config.title,
-            args.serve_mode,
-        );
-        defer watcher.deinit();
-
-        watcher.run() catch |err| {
-            std.debug.print("Watch error: {}\n", .{err});
-        };
-        return;
-    }
-
     // Initialize parsers
     var c_parser = try CParser.init(allocator);
     defer c_parser.deinit();
@@ -764,7 +510,6 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
     const FileData = struct {
         source: []const u8,
         module: types.Module,
-        path: []const u8,
     };
 
     var file_data: std.ArrayList(FileData) = .empty;
@@ -775,46 +520,7 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
         file_data.deinit(allocator);
     }
 
-    // Initialize incremental cache for mdbook format
-    var incr_cache: ?cache_mod.IncrementalCache = null;
-    defer if (incr_cache) |*c| c.deinit();
-
-    const cache_output_dir = args.output_file orelse config.output_dir;
-    if (args.output_format == .mdbook and !args.force_rebuild and cache_output_dir.len > 0) {
-        incr_cache = cache_mod.IncrementalCache.init(allocator, cache_output_dir) catch |err| blk: {
-            std.debug.print("Warning: Could not initialize incremental cache: {}\n", .{err});
-            break :blk null;
-        };
-        if (incr_cache) |*c| {
-            c.load() catch |err| {
-                std.debug.print("Warning: Could not load cache: {}\n", .{err});
-            };
-        }
-    }
-
-    var files_skipped: usize = 0;
-    var files_rebuilt: usize = 0;
-
-    // Pre-scan: read all files and determine which need rebuilding
-    // This is needed to correctly handle dependency chains
-    const PreScanData = struct {
-        path: []const u8,
-        source: []const u8,
-        needs_rebuild: bool,
-    };
-
-    var prescan_data: std.ArrayList(PreScanData) = .empty;
-    defer {
-        for (prescan_data.items) |data| {
-            if (!data.needs_rebuild) {
-                // Only free sources for skipped files; rebuilt files are freed later
-                allocator.free(data.source);
-            }
-        }
-        prescan_data.deinit(allocator);
-    }
-
-    // First pass: read all files
+    // Parse all header files
     for (input_files) |input_file| {
         // Skip implementation files - only check headers for documentation
         if (!isHeaderFile(input_file)) {
@@ -837,74 +543,17 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
             continue;
         };
 
-        try prescan_data.append(allocator, .{
-            .path = input_file,
-            .source = source,
-            .needs_rebuild = true, // Default to true, will be updated below
-        });
-    }
-
-    // Second pass: determine which files need rebuilding (considering dependencies)
-    if (incr_cache) |*cache| {
-        // Collect paths and contents for pre-scan
-        var paths: std.ArrayList([]const u8) = .empty;
-        defer paths.deinit(allocator);
-        var contents: std.ArrayList([]const u8) = .empty;
-        defer contents.deinit(allocator);
-
-        for (prescan_data.items) |data| {
-            try paths.append(allocator, data.path);
-            try contents.append(allocator, data.source);
-        }
-
-        // Get set of files that need rebuilding
-        var files_to_rebuild = cache.getFilesToRebuild(paths.items, contents.items) catch |err| blk: {
-            // On error, rebuild everything (already defaulted to true)
-            std.debug.print("Warning: Cache pre-scan failed: {}, rebuilding all\n", .{err});
-            break :blk null;
-        };
-
-        if (files_to_rebuild) |*rebuild_set| {
-            defer rebuild_set.deinit();
-            // Update prescan data with rebuild decisions
-            for (prescan_data.items) |*data| {
-                data.needs_rebuild = rebuild_set.contains(data.path);
-            }
-        }
-    }
-
-    // Third pass: process files that need rebuilding
-    for (prescan_data.items) |*data| {
-        if (!data.needs_rebuild) {
-            std.debug.print("Skipping unchanged: {s}\n", .{data.path});
-            files_skipped += 1;
-            continue;
-        }
-
-        files_rebuilt += 1;
-
-        const base_path = std.fs.path.dirname(data.path) orelse ".";
+        const base_path = std.fs.path.dirname(input_file) orelse ".";
         c_parser.setBasePath(base_path);
         cpp_parser.setBasePath(base_path);
 
-        const is_cpp = isCppFile(data.path);
+        const is_cpp = isCppFile(input_file);
         const module = if (is_cpp)
-            try cpp_parser.parse(data.source, data.path)
+            try cpp_parser.parse(source, input_file)
         else
-            try c_parser.parse(data.source, data.path);
+            try c_parser.parse(source, input_file);
 
-        try file_data.append(allocator, .{ .source = data.source, .module = module, .path = data.path });
-
-        // Update cache entry and dependencies
-        if (incr_cache) |*cache| {
-            cache.updateEntry(data.path, data.source) catch |err| {
-                std.debug.print("Warning: Failed to update cache for '{s}': {}\n", .{ data.path, err });
-            };
-            // Record include dependencies for incremental rebuilds
-            cache.setDependencies(data.path, module.includes) catch |err| {
-                std.debug.print("Warning: Failed to set dependencies for '{s}': {}\n", .{ data.path, err });
-            };
-        }
+        try file_data.append(allocator, .{ .source = source, .module = module });
     }
 
     // Collect modules
@@ -915,141 +564,37 @@ fn runGenerateCommand(allocator: std.mem.Allocator, args: *cli.Args, arg_parser:
         try modules.append(allocator, data.module);
     }
 
-    // Generate output based on format
-    switch (args.output_format) {
-        .mdbook => {
-            const output_dir = args.output_file orelse config.output_dir;
+    // Generate SARIF output
+    var sarif_gen = sarif.SarifGenerator.init(allocator);
+    defer sarif_gen.deinit();
 
-            if (modules.items.len == 0 and files_skipped > 0) {
-                std.debug.print("All {d} files unchanged (cached)\n", .{files_skipped});
-                std.debug.print("Use --force to rebuild all files\n", .{});
-                return;
-            }
+    const sarif_output = sarif_gen.generate(modules.items, config, &[_]sarif.LintResult{}) catch |err| {
+        std.debug.print("Error generating SARIF: {}\n", .{err});
+        return;
+    };
 
-            const grouping_strategy: MdbookConfig.GroupingStrategy = switch (config.grouping) {
-                .by_header => .by_header,
-                .by_prefix => .by_prefix,
-                .flat => .flat,
-                .by_module => .by_module,
-            };
+    if (args.output_file) |output_path| {
+        const file = std.fs.cwd().createFile(output_path, .{}) catch |err| {
+            std.debug.print("Error: Cannot create output file '{s}': {}\n", .{ output_path, err });
+            return;
+        };
+        defer file.close();
 
-            const mdbook_config = MdbookConfig{
-                .title = args.book_title orelse config.title,
-                .output_dir = output_dir,
-                .generate_intro = config.generate_intro,
-                .grouping = grouping_strategy,
-                .module_configs = config.modules,
-                .external_docs = config.external_docs,
-            };
+        file.writeAll(sarif_output) catch |err| {
+            std.debug.print("Error: Cannot write to file '{s}': {}\n", .{ output_path, err });
+            return;
+        };
 
-            var mdbook_gen = MdbookGenerator.initWithConfig(allocator, mdbook_config);
-            defer mdbook_gen.deinit();
+        std.debug.print("Generated SARIF documentation: {s}\n", .{output_path});
+    } else {
+        var buf: [8192]u8 = undefined;
+        var file_writer = std.fs.File.stdout().writer(&buf);
+        const stdout = &file_writer.interface;
+        defer stdout.flush() catch |err| {
+            std.debug.print("Warning: Failed to flush stdout: {}\n", .{err});
+        };
 
-            mdbook_gen.generate(modules.items) catch |err| {
-                std.debug.print("Error generating mdbook: {}\n", .{err});
-                return;
-            };
-
-            // Save cache
-            if (incr_cache) |*cache| {
-                cache.save() catch |err| {
-                    std.debug.print("Warning: Could not save cache: {}\n", .{err});
-                };
-            }
-
-            if (files_skipped > 0) {
-                std.debug.print("Rebuilt {d} file(s), skipped {d} unchanged\n", .{ files_rebuilt, files_skipped });
-            }
-            std.debug.print("Generated mdbook structure in: {s}/\n", .{output_dir});
-            std.debug.print("Run 'mdbook build {s}' to build the book\n", .{output_dir});
-        },
-        .markdown => {
-            var symbol_table = xref.SymbolTable.initWithConfig(allocator, config);
-            defer symbol_table.deinit();
-            try symbol_table.buildFromModules(modules.items);
-
-            var snippet_extractor = snippet.SnippetExtractor.init(allocator);
-            defer snippet_extractor.deinit();
-
-            var output_buffer: std.ArrayList(u8) = .empty;
-            defer output_buffer.deinit(allocator);
-
-            for (modules.items) |module| {
-                var gen = MarkdownGenerator.init(allocator);
-                defer gen.deinit();
-
-                gen.setSymbolTable(&symbol_table);
-                gen.setOutputFormat(.markdown);
-                gen.setSnippetExtractor(&snippet_extractor);
-
-                const markdown = try gen.generate(module);
-                try output_buffer.appendSlice(allocator, markdown);
-            }
-
-            if (args.output_file) |output_path| {
-                const file = std.fs.cwd().createFile(output_path, .{}) catch |err| {
-                    std.debug.print("Error: Cannot create output file '{s}': {}\n", .{ output_path, err });
-                    return;
-                };
-                defer file.close();
-
-                file.writeAll(output_buffer.items) catch |err| {
-                    std.debug.print("Error: Cannot write to file '{s}': {}\n", .{ output_path, err });
-                    return;
-                };
-
-                std.debug.print("Generated documentation: {s}\n", .{output_path});
-            } else {
-                var buf: [8192]u8 = undefined;
-                var file_writer = std.fs.File.stdout().writer(&buf);
-                const stdout = &file_writer.interface;
-                defer stdout.flush() catch |err| {
-                    std.debug.print("Warning: Failed to flush stdout: {}\n", .{err});
-                };
-
-                try stdout.writeAll(output_buffer.items);
-            }
-        },
-        .json => {
-            // Use JSON v2 generator with full DocumentModel schema
-            var gen_config = config;
-            if (args.book_title) |title| {
-                gen_config.title = title;
-            }
-
-            var json_gen = json_mod.Generator.init(allocator);
-            defer json_gen.deinit();
-            json_gen.setConfig(gen_config);
-
-            const json_output = json_gen.generate(modules.items) catch |err| {
-                std.debug.print("Error generating JSON: {}\n", .{err});
-                return;
-            };
-
-            if (args.output_file) |output_path| {
-                const file = std.fs.cwd().createFile(output_path, .{}) catch |err| {
-                    std.debug.print("Error: Cannot create output file '{s}': {}\n", .{ output_path, err });
-                    return;
-                };
-                defer file.close();
-
-                file.writeAll(json_output) catch |err| {
-                    std.debug.print("Error: Cannot write to file '{s}': {}\n", .{ output_path, err });
-                    return;
-                };
-
-                std.debug.print("Generated JSON v2 documentation: {s}\n", .{output_path});
-            } else {
-                var buf: [8192]u8 = undefined;
-                var file_writer = std.fs.File.stdout().writer(&buf);
-                const stdout = &file_writer.interface;
-                defer stdout.flush() catch |err| {
-                    std.debug.print("Warning: Failed to flush stdout: {}\n", .{err});
-                };
-
-                try stdout.writeAll(json_output);
-            }
-        },
+        try stdout.writeAll(sarif_output);
     }
 }
 
