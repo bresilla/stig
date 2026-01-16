@@ -3,6 +3,7 @@ const ts = @import("tree-sitter");
 const ts_cpp = @import("tree-sitter-cpp");
 const types = @import("../model/types.zig");
 const DocstringExtractor = @import("../docstring/extractor.zig").DocstringExtractor;
+const common = @import("common.zig");
 
 /// C++ language parser using tree-sitter
 pub const CppParser = struct {
@@ -45,6 +46,7 @@ pub const CppParser = struct {
 
         const tree = self.parser.parseString(source, null);
         if (tree == null) {
+            std.debug.print("Warning: Failed to parse C++ file '{s}', skipping\n", .{filename});
             return types.Module{
                 .name = filename,
                 .functions = &[_]types.Function{},
@@ -58,35 +60,71 @@ pub const CppParser = struct {
 
         var functions: std.ArrayList(types.Function) = .empty;
         var structs: std.ArrayList(types.Struct) = .empty;
+        var unions: std.ArrayList(types.Union) = .empty;
         var enums: std.ArrayList(types.Enum) = .empty;
         var typedefs: std.ArrayList(types.Typedef) = .empty;
         var macros: std.ArrayList(types.Macro) = .empty;
         var classes: std.ArrayList(types.Class) = .empty;
         var namespaces: std.ArrayList(types.Namespace) = .empty;
+        var concepts: std.ArrayList(types.Concept) = .empty;
+        var type_aliases: std.ArrayList(types.TypeAlias) = .empty;
+        var pages: std.ArrayList(types.Page) = .empty;
+        var groups: std.ArrayList(types.Group) = .empty;
+        var includes: std.ArrayList(types.IncludeInfo) = .empty;
 
         const root = tree.?.rootNode();
-        try self.walkNode(root, &functions, &structs, &enums, &typedefs, &macros, &classes, &namespaces, filename, null);
+        try self.walkNode(root, &functions, &structs, &unions, &enums, &typedefs, &macros, &classes, &namespaces, &concepts, &type_aliases, &includes, filename, null);
+
+        // Extract custom pages (@page, @mainpage) from standalone doc comments
+        try self.extractPages(root, &pages);
+
+        // Extract group definitions (@defgroup, @addtogroup) from standalone doc comments
+        try self.extractGroups(root, &groups);
 
         return types.Module{
             .name = filename,
             .functions = try functions.toOwnedSlice(self.allocator),
             .structs = try structs.toOwnedSlice(self.allocator),
+            .unions = try unions.toOwnedSlice(self.allocator),
             .enums = try enums.toOwnedSlice(self.allocator),
             .typedefs = try typedefs.toOwnedSlice(self.allocator),
             .macros = try macros.toOwnedSlice(self.allocator),
             .classes = try classes.toOwnedSlice(self.allocator),
             .namespaces = try namespaces.toOwnedSlice(self.allocator),
+            .concepts = try concepts.toOwnedSlice(self.allocator),
+            .type_aliases = try type_aliases.toOwnedSlice(self.allocator),
+            .pages = try pages.toOwnedSlice(self.allocator),
+            .groups = try groups.toOwnedSlice(self.allocator),
+            .includes = try includes.toOwnedSlice(self.allocator),
         };
     }
 
     /// Gets text for a node from source
     fn getNodeText(self: *Self, node: ts.Node) []const u8 {
-        const start = node.startByte();
-        const end = node.endByte();
-        if (start < self.source.len and end <= self.source.len and start < end) {
-            return self.source[start..end];
+        return common.getNodeText(self.source, node);
+    }
+
+    /// Checks if a node has a child of the specified kind
+    fn hasChildOfKind(self: *Self, node: ts.Node, kind: []const u8) bool {
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                if (std.mem.eql(u8, child_kind, kind)) {
+                    return true;
+                }
+                // For reference/pointer declarators, check inside them too
+                // (e.g., "int& operator[]()" has function_declarator inside reference_declarator)
+                if (std.mem.eql(u8, child_kind, "reference_declarator") or
+                    std.mem.eql(u8, child_kind, "pointer_declarator"))
+                {
+                    if (self.hasChildOfKind(child, kind)) {
+                        return true;
+                    }
+                }
+            }
         }
-        return "";
+        return false;
     }
 
     /// Walks the AST and extracts declarations
@@ -95,17 +133,26 @@ pub const CppParser = struct {
         node: ts.Node,
         functions: *std.ArrayList(types.Function),
         structs: *std.ArrayList(types.Struct),
+        unions: *std.ArrayList(types.Union),
         enums: *std.ArrayList(types.Enum),
         typedefs: *std.ArrayList(types.Typedef),
         macros: *std.ArrayList(types.Macro),
         classes: *std.ArrayList(types.Class),
         namespaces: *std.ArrayList(types.Namespace),
+        concepts: *std.ArrayList(types.Concept),
+        type_aliases: *std.ArrayList(types.TypeAlias),
+        includes: *std.ArrayList(types.IncludeInfo),
         filename: []const u8,
         current_namespace: ?[]const u8,
     ) !void {
         const node_kind = node.kind();
 
-        if (std.mem.eql(u8, node_kind, "function_definition") or
+        if (std.mem.eql(u8, node_kind, "template_declaration")) {
+            // Template declaration - extract docstring at this level and pass to child
+            const template_doc = self.findPrecedingDocstring(node);
+            try self.extractTemplateContents(node, functions, structs, enums, classes, concepts, type_aliases, filename, current_namespace, template_doc);
+            return; // Don't recurse normally for template nodes
+        } else if (std.mem.eql(u8, node_kind, "function_definition") or
             std.mem.eql(u8, node_kind, "declaration"))
         {
             if (try self.extractFunctionPrototype(node, filename, current_namespace)) |func| {
@@ -115,9 +162,14 @@ pub const CppParser = struct {
             if (try self.extractClass(node, filename, current_namespace)) |class| {
                 try classes.append(self.allocator, class);
             }
+            return; // Don't recurse into class body - nested classes are handled by extractClassBody
         } else if (std.mem.eql(u8, node_kind, "struct_specifier")) {
             if (try self.extractStruct(node, filename, current_namespace)) |s| {
                 try structs.append(self.allocator, s);
+            }
+        } else if (std.mem.eql(u8, node_kind, "union_specifier")) {
+            if (try self.extractUnion(node, filename, current_namespace)) |u| {
+                try unions.append(self.allocator, u);
             }
         } else if (std.mem.eql(u8, node_kind, "enum_specifier")) {
             if (try self.extractEnum(node, filename, current_namespace)) |e| {
@@ -138,7 +190,7 @@ pub const CppParser = struct {
                         var j: u32 = 0;
                         while (j < child.childCount()) : (j += 1) {
                             if (child.child(j)) |body_child| {
-                                try self.walkNode(body_child, functions, structs, enums, typedefs, macros, classes, namespaces, filename, ns_info.full_name);
+                                try self.walkNode(body_child, functions, structs, unions, enums, typedefs, macros, classes, namespaces, concepts, type_aliases, includes, filename, ns_info.full_name);
                             }
                         }
                     }
@@ -155,13 +207,17 @@ pub const CppParser = struct {
             if (try self.extractMacro(node, filename)) |m| {
                 try macros.append(self.allocator, m);
             }
+        } else if (std.mem.eql(u8, node_kind, "preproc_include")) {
+            if (self.extractInclude(node)) |inc| {
+                try includes.append(self.allocator, inc);
+            }
         }
 
         // Recurse into children
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {
-                try self.walkNode(child, functions, structs, enums, typedefs, macros, classes, namespaces, filename, current_namespace);
+                try self.walkNode(child, functions, structs, unions, enums, typedefs, macros, classes, namespaces, concepts, type_aliases, includes, filename, current_namespace);
             }
         }
     }
@@ -201,22 +257,435 @@ pub const CppParser = struct {
         };
     }
 
-    /// Extracts a class definition
-    fn extractClass(self: *Self, node: ts.Node, filename: []const u8, namespace: ?[]const u8) !?types.Class {
-        var name: ?[]const u8 = null;
-        var methods: std.ArrayList(types.Method) = .empty;
-        var fields: std.ArrayList(types.ClassField) = .empty;
-        var current_access: types.AccessSpecifier = .private;
+    /// Extracts contents from a template_declaration node
+    /// The docstring is found at the template level and passed down
+    fn extractTemplateContents(
+        self: *Self,
+        node: ts.Node,
+        functions: *std.ArrayList(types.Function),
+        structs: *std.ArrayList(types.Struct),
+        enums: *std.ArrayList(types.Enum),
+        classes: *std.ArrayList(types.Class),
+        concepts: *std.ArrayList(types.Concept),
+        type_aliases: *std.ArrayList(types.TypeAlias),
+        filename: []const u8,
+        namespace: ?[]const u8,
+        template_doc: ?types.DocString,
+    ) !void {
+        // First, extract template parameters and requires clause from this template_declaration
+        const template_params = try self.extractTemplateParams(node);
+        const requires_clause = self.extractRequiresClause(node);
 
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {
                 const child_kind = child.kind();
 
+                if (std.mem.eql(u8, child_kind, "function_definition") or
+                    std.mem.eql(u8, child_kind, "declaration"))
+                {
+                    // Extract function and add template params and requires clause
+                    if (try self.extractFunctionPrototypeWithDoc(child, filename, namespace, template_doc)) |func| {
+                        var template_func = func;
+                        template_func.template_params = template_params;
+                        template_func.requires_clause = requires_clause;
+                        try functions.append(self.allocator, template_func);
+                    }
+                } else if (std.mem.eql(u8, child_kind, "class_specifier")) {
+                    // Extract class and add template params and requires clause
+                    if (try self.extractClassWithDoc(child, filename, namespace, template_doc)) |class| {
+                        var template_class = class;
+                        template_class.template_params = template_params;
+                        template_class.requires_clause = requires_clause;
+                        try classes.append(self.allocator, template_class);
+                    }
+                } else if (std.mem.eql(u8, child_kind, "struct_specifier")) {
+                    if (try self.extractStructWithDoc(child, filename, namespace, template_doc)) |s| {
+                        try structs.append(self.allocator, s);
+                    }
+                } else if (std.mem.eql(u8, child_kind, "concept_definition")) {
+                    // C++20 concept definition
+                    if (try self.extractConcept(child, namespace, template_doc, template_params)) |concept| {
+                        try concepts.append(self.allocator, concept);
+                    }
+                } else if (std.mem.eql(u8, child_kind, "alias_declaration")) {
+                    // Template type alias: template<typename T> using Vec = std::vector<T>;
+                    if (self.extractTypeAlias(child, namespace)) |alias| {
+                        var template_alias = alias;
+                        template_alias.template_params = template_params;
+                        if (template_alias.docstring == null and template_doc != null) {
+                            template_alias.docstring = template_doc;
+                        }
+                        try type_aliases.append(self.allocator, template_alias);
+                    }
+                } else if (std.mem.eql(u8, child_kind, "template_declaration")) {
+                    // Nested template - recurse with the outer docstring if inner has none
+                    const inner_doc = self.findPrecedingDocstring(child) orelse template_doc;
+                    try self.extractTemplateContents(child, functions, structs, enums, classes, concepts, type_aliases, filename, namespace, inner_doc);
+                }
+            }
+        }
+    }
+
+    /// Extracts template parameters from a template_declaration node
+    /// Returns a slice of TemplateParam for parameters like "typename T", "class U", "size_t N"
+    fn extractTemplateParams(self: *Self, node: ts.Node) ![]const types.TemplateParam {
+        var params: std.ArrayList(types.TemplateParam) = .empty;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "template_parameter_list")) {
+                    // Iterate through template parameters
+                    var j: u32 = 0;
+                    while (j < child.childCount()) : (j += 1) {
+                        if (child.child(j)) |param_node| {
+                            const param_kind = param_node.kind();
+
+                            if (std.mem.eql(u8, param_kind, "type_parameter_declaration")) {
+                                // typename T or class T
+                                if (self.extractTypeParameter(param_node, false)) |param| {
+                                    try params.append(self.allocator, param);
+                                }
+                            } else if (std.mem.eql(u8, param_kind, "optional_type_parameter_declaration")) {
+                                // typename T = DefaultType (with default value)
+                                if (self.extractTypeParameterWithDefault(param_node)) |param| {
+                                    try params.append(self.allocator, param);
+                                }
+                            } else if (std.mem.eql(u8, param_kind, "variadic_type_parameter_declaration")) {
+                                // typename... Args (variadic type parameter)
+                                if (self.extractTypeParameter(param_node, true)) |param| {
+                                    try params.append(self.allocator, param);
+                                }
+                            } else if (std.mem.eql(u8, param_kind, "parameter_declaration") or
+                                std.mem.eql(u8, param_kind, "optional_parameter_declaration"))
+                            {
+                                // Non-type template parameter like "size_t N" or "size_t N = 10"
+                                if (self.extractNonTypeTemplateParam(param_node, false)) |param| {
+                                    try params.append(self.allocator, param);
+                                }
+                            } else if (std.mem.eql(u8, param_kind, "variadic_parameter_declaration")) {
+                                // auto... Values (variadic non-type parameter)
+                                if (self.extractNonTypeTemplateParam(param_node, true)) |param| {
+                                    try params.append(self.allocator, param);
+                                }
+                            } else if (std.mem.eql(u8, param_kind, "template_template_parameter_declaration")) {
+                                // template<typename> class Container
+                                if (self.extractTemplateTemplateParam(param_node)) |param| {
+                                    try params.append(self.allocator, param);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return try params.toOwnedSlice(self.allocator);
+    }
+
+    /// Extracts the requires clause from a template_declaration node
+    /// Returns the constraint expression text (e.g., "std::integral<T>")
+    fn extractRequiresClause(self: *Self, node: ts.Node) ?[]const u8 {
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "requires_clause")) {
+                    // The requires_clause contains the constraint expression
+                    // Skip the "requires" keyword and get the constraint
+                    var j: u32 = 0;
+                    while (j < child.childCount()) : (j += 1) {
+                        if (child.child(j)) |constraint_child| {
+                            const constraint_kind = constraint_child.kind();
+                            // Skip the "requires" keyword itself
+                            if (!std.mem.eql(u8, constraint_kind, "requires")) {
+                                return self.getNodeText(constraint_child);
+                            }
+                        }
+                    }
+                    // Fallback: get the full text minus "requires "
+                    const full_text = self.getNodeText(child);
+                    if (std.mem.startsWith(u8, full_text, "requires ")) {
+                        return full_text[9..];
+                    }
+                    return full_text;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// Extracts a type template parameter (typename T or class T)
+    fn extractTypeParameter(self: *Self, node: ts.Node, is_variadic: bool) ?types.TemplateParam {
+        var name: ?[]const u8 = null;
+        var kind: []const u8 = "typename";
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                const child_text = self.getNodeText(child);
+
+                if (std.mem.eql(u8, child_kind, "typename") or std.mem.eql(u8, child_text, "typename")) {
+                    kind = "typename";
+                } else if (std.mem.eql(u8, child_kind, "class") or std.mem.eql(u8, child_text, "class")) {
+                    kind = "class";
+                } else if (std.mem.eql(u8, child_kind, "type_identifier") or
+                    std.mem.eql(u8, child_kind, "identifier"))
+                {
+                    name = child_text;
+                }
+            }
+        }
+
+        if (name == null) return null;
+
+        return types.TemplateParam{
+            .name = name.?,
+            .kind = kind,
+            .is_variadic = is_variadic,
+        };
+    }
+
+    /// Extracts a type template parameter with default value (typename T = int)
+    fn extractTypeParameterWithDefault(self: *Self, node: ts.Node) ?types.TemplateParam {
+        var name: ?[]const u8 = null;
+        var kind: []const u8 = "typename";
+        var default_value: ?[]const u8 = null;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                const child_text = self.getNodeText(child);
+
+                if (std.mem.eql(u8, child_kind, "typename") or std.mem.eql(u8, child_text, "typename")) {
+                    kind = "typename";
+                } else if (std.mem.eql(u8, child_kind, "class") or std.mem.eql(u8, child_text, "class")) {
+                    kind = "class";
+                } else if (std.mem.eql(u8, child_kind, "type_identifier") or
+                    std.mem.eql(u8, child_kind, "identifier"))
+                {
+                    if (name == null) {
+                        name = child_text;
+                    } else {
+                        // Second type_identifier is the default value
+                        default_value = child_text;
+                    }
+                } else if (std.mem.eql(u8, child_kind, "type_descriptor") or
+                    std.mem.eql(u8, child_kind, "primitive_type") or
+                    std.mem.eql(u8, child_kind, "template_type"))
+                {
+                    // Default value can be a complex type
+                    default_value = child_text;
+                }
+            }
+        }
+
+        if (name == null) return null;
+
+        return types.TemplateParam{
+            .name = name.?,
+            .kind = kind,
+            .default_value = default_value,
+        };
+    }
+
+    /// Extracts a non-type template parameter (e.g., size_t N, int Value)
+    fn extractNonTypeTemplateParam(self: *Self, node: ts.Node, is_variadic: bool) ?types.TemplateParam {
+        var name: ?[]const u8 = null;
+        var param_type: ?[]const u8 = null;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "type_identifier") or
+                    std.mem.eql(u8, child_kind, "primitive_type") or
+                    std.mem.eql(u8, child_kind, "sized_type_specifier") or
+                    std.mem.eql(u8, child_kind, "placeholder_type_specifier"))
+                {
+                    if (param_type == null) {
+                        param_type = self.getNodeText(child);
+                    }
+                } else if (std.mem.eql(u8, child_kind, "identifier")) {
+                    name = self.getNodeText(child);
+                } else if (std.mem.eql(u8, child_kind, "variadic_declarator")) {
+                    // For variadic non-type params like "int... Values"
+                    // The name is inside the variadic_declarator
+                    var j: u32 = 0;
+                    while (j < child.childCount()) : (j += 1) {
+                        if (child.child(j)) |inner| {
+                            if (std.mem.eql(u8, inner.kind(), "identifier")) {
+                                name = self.getNodeText(inner);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (name == null) return null;
+
+        return types.TemplateParam{
+            .name = name.?,
+            .kind = param_type orelse "auto",
+            .is_variadic = is_variadic,
+        };
+    }
+
+    /// Extracts a template template parameter (e.g., template<typename> class Container)
+    fn extractTemplateTemplateParam(self: *Self, node: ts.Node) ?types.TemplateParam {
+        var name: ?[]const u8 = null;
+
+        // The structure is:
+        // template_template_parameter_declaration
+        //   - template (keyword)
+        //   - template_parameter_list (<typename>)
+        //   - type_parameter_declaration (class Container)
+        //       - class (keyword)
+        //       - type_identifier (Container)
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "type_parameter_declaration")) {
+                    // Look inside type_parameter_declaration for the name
+                    var j: u32 = 0;
+                    while (j < child.childCount()) : (j += 1) {
+                        if (child.child(j)) |inner_child| {
+                            const inner_kind = inner_child.kind();
+                            if (std.mem.eql(u8, inner_kind, "type_identifier") or
+                                std.mem.eql(u8, inner_kind, "identifier"))
+                            {
+                                name = self.getNodeText(inner_child);
+                            }
+                        }
+                    }
+                } else if (std.mem.eql(u8, child_kind, "type_identifier") or
+                    std.mem.eql(u8, child_kind, "identifier"))
+                {
+                    // Direct child (fallback)
+                    name = self.getNodeText(child);
+                }
+            }
+        }
+
+        if (name == null) return null;
+
+        return types.TemplateParam{
+            .name = name.?,
+            .kind = "template",
+        };
+    }
+
+    /// Extracts a C++20 concept definition
+    fn extractConcept(self: *Self, node: ts.Node, namespace: ?[]const u8, doc_override: ?types.DocString, template_params: []const types.TemplateParam) !?types.Concept {
+        var name: ?[]const u8 = null;
+        var constraint: ?[]const u8 = null;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                if (std.mem.eql(u8, child_kind, "identifier") or
+                    std.mem.eql(u8, child_kind, "type_identifier"))
+                {
+                    if (name == null) {
+                        name = self.getNodeText(child);
+                    }
+                }
+            }
+        }
+
+        if (name == null) return null;
+
+        // Extract constraint expression - everything after the '='
+        // The constraint is typically the last significant child
+        const full_text = self.getNodeText(node);
+        if (std.mem.indexOf(u8, full_text, "=")) |eq_pos| {
+            const after_eq = std.mem.trim(u8, full_text[eq_pos + 1 ..], " \t\n\r");
+            // Remove trailing semicolon if present
+            constraint = if (std.mem.endsWith(u8, after_eq, ";"))
+                std.mem.trimRight(u8, after_eq[0 .. after_eq.len - 1], " \t\n\r")
+            else
+                after_eq;
+        }
+
+        const full_name = if (namespace) |ns|
+            try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ ns, name.? })
+        else
+            name.?;
+
+        return types.Concept{
+            .name = full_name,
+            .constraint = constraint orelse "",
+            .template_params = template_params,
+            .docstring = doc_override orelse self.findPrecedingDocstring(node),
+            .namespace = namespace,
+        };
+    }
+
+    /// Checks if a class/struct specifier has a field_declaration_list (body)
+    /// Forward declarations like `class Foo;` do not have a body and should be skipped
+    fn hasFieldDeclarationList(_: *Self, node: ts.Node) bool {
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                if (std.mem.eql(u8, child.kind(), "field_declaration_list")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// Extracts a class definition
+    fn extractClass(self: *Self, node: ts.Node, filename: []const u8, namespace: ?[]const u8) std.mem.Allocator.Error!?types.Class {
+        // Skip forward declarations (no body)
+        if (!self.hasFieldDeclarationList(node)) return null;
+
+        var name: ?[]const u8 = null;
+        var methods: std.ArrayList(types.Method) = .empty;
+        var fields: std.ArrayList(types.ClassField) = .empty;
+        var nested_classes: std.ArrayList(types.Class) = .empty;
+        var nested_enums: std.ArrayList(types.Enum) = .empty;
+        var base_classes: std.ArrayList(types.BaseClass) = .empty;
+        var attributes: std.ArrayList(types.Attribute) = .empty;
+        var friends: std.ArrayList(types.Friend) = .empty;
+        var current_access: types.AccessSpecifier = .private;
+
+        // First pass: find the class name, base classes, and attributes
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
                 if (std.mem.eql(u8, child_kind, "type_identifier")) {
                     name = self.getNodeText(child);
-                } else if (std.mem.eql(u8, child_kind, "field_declaration_list")) {
-                    try self.extractClassBody(child, &methods, &fields, &current_access);
+                } else if (std.mem.eql(u8, child_kind, "base_class_clause")) {
+                    // Extract base classes from the base_class_clause
+                    try self.extractBaseClasses(child, &base_classes);
+                } else if (std.mem.eql(u8, child_kind, "attribute_declaration")) {
+                    // Parse C++ attributes like [[nodiscard]], [[deprecated("msg")]]
+                    try self.parseAttributeDeclaration(child, &attributes);
+                }
+            }
+        }
+
+        // Second pass: extract body with class name context
+        i = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                if (std.mem.eql(u8, child.kind(), "field_declaration_list")) {
+                    try self.extractClassBody(child, &methods, &fields, &nested_classes, &nested_enums, &friends, &current_access, name, filename, namespace);
                 }
             }
         }
@@ -236,13 +705,88 @@ pub const CppParser = struct {
             .doc = doc,
             .methods = try methods.toOwnedSlice(self.allocator),
             .fields = try fields.toOwnedSlice(self.allocator),
+            .nested_classes = try nested_classes.toOwnedSlice(self.allocator),
+            .nested_enums = try nested_enums.toOwnedSlice(self.allocator),
+            .base_classes = try base_classes.toOwnedSlice(self.allocator),
             .namespace = namespace,
             .location = types.SourceLocation{
                 .file = filename,
                 .line = start.row + 1,
                 .column = start.column + 1,
             },
+            .attributes = try attributes.toOwnedSlice(self.allocator),
+            .friends = try friends.toOwnedSlice(self.allocator),
         };
+    }
+
+    /// Extracts base classes from a base_class_clause node
+    /// Handles: class Derived : public Base, protected Other, private virtual Third { }
+    fn extractBaseClasses(self: *Self, node: ts.Node, base_classes: *std.ArrayList(types.BaseClass)) !void {
+        // The base_class_clause structure:
+        // - ":" punctuation
+        // - access_specifier (text: "public", "protected", "private")
+        // - optional "virtual" keyword
+        // - type_identifier/qualified_identifier/template_type
+        // - "," for additional base classes
+
+        var i: u32 = 0;
+        var current_access: types.AccessSpecifier = .private;
+        var current_virtual: bool = false;
+
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                const child_text = self.getNodeText(child);
+
+                // Skip punctuation
+                if (std.mem.eql(u8, child_kind, ":") or std.mem.eql(u8, child_kind, ",")) {
+                    // Reset for next base class after comma
+                    if (std.mem.eql(u8, child_kind, ",")) {
+                        current_access = .private;
+                        current_virtual = false;
+                    }
+                    continue;
+                }
+
+                // Check for access specifier (node kind is "access_specifier", text is the actual specifier)
+                if (std.mem.eql(u8, child_kind, "access_specifier")) {
+                    if (std.mem.eql(u8, child_text, "public")) {
+                        current_access = .public;
+                    } else if (std.mem.eql(u8, child_text, "protected")) {
+                        current_access = .protected;
+                    } else if (std.mem.eql(u8, child_text, "private")) {
+                        current_access = .private;
+                    }
+                } else if (std.mem.eql(u8, child_kind, "virtual")) {
+                    current_virtual = true;
+                } else if (std.mem.eql(u8, child_kind, "type_identifier") or
+                    std.mem.eql(u8, child_kind, "qualified_identifier") or
+                    std.mem.eql(u8, child_kind, "template_type"))
+                {
+                    // Found a base class type
+                    try base_classes.append(self.allocator, types.BaseClass{
+                        .name = child_text,
+                        .access = current_access,
+                        .is_virtual = current_virtual,
+                    });
+                    // Reset for next base class
+                    current_access = .private;
+                    current_virtual = false;
+                }
+            }
+        }
+    }
+
+    /// Extracts a class definition with an optional docstring override (for templates)
+    fn extractClassWithDoc(self: *Self, node: ts.Node, filename: []const u8, namespace: ?[]const u8, doc_override: ?types.DocString) !?types.Class {
+        if (try self.extractClass(node, filename, namespace)) |class| {
+            var result = class;
+            if (result.doc == null and doc_override != null) {
+                result.doc = doc_override;
+            }
+            return result;
+        }
+        return null;
     }
 
     /// Extracts class body
@@ -251,8 +795,24 @@ pub const CppParser = struct {
         node: ts.Node,
         methods: *std.ArrayList(types.Method),
         fields: *std.ArrayList(types.ClassField),
+        nested_classes: *std.ArrayList(types.Class),
+        nested_enums: *std.ArrayList(types.Enum),
+        friends: *std.ArrayList(types.Friend),
         current_access: *types.AccessSpecifier,
-    ) !void {
+        class_name: ?[]const u8,
+        filename: []const u8,
+        parent_namespace: ?[]const u8,
+    ) std.mem.Allocator.Error!void {
+        // Debug: print class body children
+        if (false) {
+            std.debug.print("\nextractClassBody: class_name={s}\n", .{class_name orelse "null"});
+            var dbg_i: u32 = 0;
+            while (dbg_i < node.childCount()) : (dbg_i += 1) {
+                if (node.child(dbg_i)) |dbg_child| {
+                    std.debug.print("  class_child[{d}]: {s} = '{s}'\n", .{ dbg_i, dbg_child.kind(), self.getNodeText(dbg_child) });
+                }
+            }
+        }
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {
@@ -267,29 +827,205 @@ pub const CppParser = struct {
                     } else if (std.mem.indexOf(u8, spec_text, "private") != null) {
                         current_access.* = .private;
                     }
+                } else if (std.mem.eql(u8, child_kind, "friend_declaration")) {
+                    // Friend class or function declaration
+                    if (self.extractFriend(child)) |friend| {
+                        try friends.append(self.allocator, friend);
+                    }
                 } else if (std.mem.eql(u8, child_kind, "function_definition") or
                     std.mem.eql(u8, child_kind, "declaration"))
                 {
-                    if (try self.extractMethod(child, current_access.*)) |method| {
+                    if (try self.extractMethod(child, current_access.*, class_name)) |method| {
                         try methods.append(self.allocator, method);
                     }
                 } else if (std.mem.eql(u8, child_kind, "field_declaration")) {
-                    if (self.extractClassField(child, current_access.*)) |field| {
-                        try fields.append(self.allocator, field);
+                    // Debug: print field_declaration children
+                    if (false) {
+                        std.debug.print("  field_declaration children:\n", .{});
+                        var dbg_j: u32 = 0;
+                        while (dbg_j < child.childCount()) : (dbg_j += 1) {
+                            if (child.child(dbg_j)) |dbg_grandchild| {
+                                std.debug.print("    field_child[{d}]: {s} = '{s}'\n", .{ dbg_j, dbg_grandchild.kind(), self.getNodeText(dbg_grandchild) });
+                            }
+                        }
+                    }
+                    // Check if this is a method declaration (has function_declarator)
+                    // or a field declaration
+                    if (self.hasChildOfKind(child, "function_declarator")) {
+                        // This is a method declaration
+                        if (try self.extractMethod(child, current_access.*, class_name)) |method| {
+                            try methods.append(self.allocator, method);
+                        }
+                    } else {
+                        // This is a field declaration
+                        if (self.extractClassField(child, current_access.*)) |field| {
+                            try fields.append(self.allocator, field);
+                        }
+                    }
+                } else if (std.mem.eql(u8, child_kind, "class_specifier")) {
+                    // Nested class definition
+                    // Build namespace for nested class: parent_namespace::class_name or just class_name
+                    const nested_namespace = if (parent_namespace) |ns|
+                        if (class_name) |cn|
+                            std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ ns, cn }) catch |err| blk: {
+                                std.debug.print("Warning: Failed to format nested class namespace: {}\n", .{err});
+                                break :blk null;
+                            }
+                        else
+                            ns
+                    else
+                        class_name;
+
+                    if (try self.extractClass(child, filename, nested_namespace)) |nested_class| {
+                        try nested_classes.append(self.allocator, nested_class);
+                    }
+                } else if (std.mem.eql(u8, child_kind, "enum_specifier")) {
+                    // Nested enum definition
+                    // Build namespace for nested enum: parent_namespace::class_name or just class_name
+                    const nested_namespace = if (parent_namespace) |ns|
+                        if (class_name) |cn|
+                            std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ ns, cn }) catch |err| blk: {
+                                std.debug.print("Warning: Failed to format nested enum namespace: {}\n", .{err});
+                                break :blk null;
+                            }
+                        else
+                            ns
+                    else
+                        class_name;
+
+                    if (try self.extractEnum(child, filename, nested_namespace)) |nested_enum| {
+                        try nested_enums.append(self.allocator, nested_enum);
                     }
                 }
             }
         }
     }
 
+    /// Extracts a friend declaration (friend class or friend function)
+    fn extractFriend(self: *Self, node: ts.Node) ?types.Friend {
+        const full_text = self.getNodeText(node);
+
+        // Check if it's a friend class or friend function
+        var is_class = false;
+        var friend_name: ?[]const u8 = null;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "class") or std.mem.eql(u8, child_kind, "struct")) {
+                    is_class = true;
+                } else if (std.mem.eql(u8, child_kind, "type_identifier")) {
+                    // Friend class name (only if we've seen "class" or "struct")
+                    if (is_class and friend_name == null) {
+                        friend_name = self.getNodeText(child);
+                    }
+                } else if (std.mem.eql(u8, child_kind, "function_declarator")) {
+                    // Friend function - extract the function name
+                    friend_name = self.extractFunctionNameFromDeclarator(child);
+                } else if (std.mem.eql(u8, child_kind, "declaration")) {
+                    // Friend function might be wrapped in a declaration node
+                    friend_name = self.extractFunctionNameFromDeclaration(child);
+                }
+            }
+        }
+
+        if (friend_name == null) return null;
+
+        // Extract signature for friend functions (everything after "friend ")
+        var signature: ?[]const u8 = null;
+        if (!is_class) {
+            if (std.mem.indexOf(u8, full_text, "friend ")) |friend_pos| {
+                var sig = full_text[friend_pos + 7 ..];
+                // Remove trailing semicolon
+                if (std.mem.endsWith(u8, sig, ";")) {
+                    sig = sig[0 .. sig.len - 1];
+                }
+                sig = std.mem.trim(u8, sig, " \t\n\r");
+                if (sig.len > 0) {
+                    signature = sig;
+                }
+            }
+        }
+
+        return types.Friend{
+            .kind = if (is_class) .class else .function,
+            .name = friend_name.?,
+            .signature = signature,
+        };
+    }
+
+    /// Extracts function name from a function_declarator node
+    fn extractFunctionNameFromDeclarator(self: *Self, node: ts.Node) ?[]const u8 {
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                if (std.mem.eql(u8, child_kind, "identifier") or
+                    std.mem.eql(u8, child_kind, "operator_name") or
+                    std.mem.eql(u8, child_kind, "qualified_identifier"))
+                {
+                    return self.getNodeText(child);
+                }
+            }
+        }
+        return null;
+    }
+
+    /// Extracts function name from a declaration node (for friend functions)
+    fn extractFunctionNameFromDeclaration(self: *Self, node: ts.Node) ?[]const u8 {
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                if (std.mem.eql(u8, child_kind, "function_declarator")) {
+                    return self.extractFunctionNameFromDeclarator(child);
+                }
+            }
+        }
+        return null;
+    }
+
     /// Extracts a method
-    fn extractMethod(self: *Self, node: ts.Node, access: types.AccessSpecifier) !?types.Method {
+    fn extractMethod(self: *Self, node: ts.Node, access: types.AccessSpecifier, class_name: ?[]const u8) !?types.Method {
         var name: ?[]const u8 = null;
         var return_type: ?[]const u8 = null;
         var params: std.ArrayList(types.Parameter) = .empty;
+        var attributes: std.ArrayList(types.Attribute) = .empty;
         var is_virtual = false;
         var is_static = false;
         var is_const = false;
+        var is_override = false;
+        var is_final = false;
+        var is_pure_virtual = false;
+        var is_defaulted = false;
+        var is_deleted = false;
+        var is_constexpr = false;
+        var is_consteval = false;
+        var is_explicit = false;
+        var is_noexcept = false;
+        var is_conversion_operator = false;
+        var is_operator_overload = false;
+        var operator_symbol: ?[]const u8 = null;
+
+        // Debug: print all child nodes
+        if (true) { // Set to true for debugging
+            std.debug.print("\nextractMethod node kind: {s}\n", .{node.kind()});
+            var dbg_i: u32 = 0;
+            while (dbg_i < node.childCount()) : (dbg_i += 1) {
+                if (node.child(dbg_i)) |dbg_child| {
+                    std.debug.print("  child[{d}]: {s} = '{s}'\n", .{ dbg_i, dbg_child.kind(), self.getNodeText(dbg_child) });
+                    // Also print grandchildren
+                    var dbg_k: u32 = 0;
+                    while (dbg_k < dbg_child.childCount()) : (dbg_k += 1) {
+                        if (dbg_child.child(dbg_k)) |grandchild| {
+                            std.debug.print("    child[{d}][{d}]: {s} = '{s}'\n", .{ dbg_i, dbg_k, grandchild.kind(), self.getNodeText(grandchild) });
+                        }
+                    }
+                }
+            }
+        }
 
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
@@ -298,13 +1034,32 @@ pub const CppParser = struct {
 
                 if (std.mem.eql(u8, child_kind, "virtual")) {
                     is_virtual = true;
+                } else if (std.mem.eql(u8, child_kind, "explicit_function_specifier")) {
+                    is_explicit = true;
+                } else if (std.mem.eql(u8, child_kind, "attribute_declaration")) {
+                    // Parse C++ attributes like [[nodiscard]], [[deprecated("msg")]]
+                    try self.parseAttributeDeclaration(child, &attributes);
                 } else if (std.mem.eql(u8, child_kind, "storage_class_specifier")) {
-                    if (std.mem.eql(u8, self.getNodeText(child), "static")) {
+                    const spec_text = self.getNodeText(child);
+                    if (std.mem.eql(u8, spec_text, "static")) {
                         is_static = true;
+                    } else if (std.mem.eql(u8, spec_text, "constexpr")) {
+                        is_constexpr = true;
+                    } else if (std.mem.eql(u8, spec_text, "consteval")) {
+                        is_consteval = true;
                     }
+                } else if (std.mem.eql(u8, child_kind, "default")) {
+                    is_defaulted = true;
+                } else if (std.mem.eql(u8, child_kind, "delete")) {
+                    is_deleted = true;
                 } else if (std.mem.eql(u8, child_kind, "type_identifier") or
-                    std.mem.eql(u8, child_kind, "primitive_type"))
+                    std.mem.eql(u8, child_kind, "primitive_type") or
+                    std.mem.eql(u8, child_kind, "placeholder_type_specifier") or
+                    std.mem.eql(u8, child_kind, "qualified_identifier") or
+                    std.mem.eql(u8, child_kind, "template_type"))
                 {
+                    // Handle regular types, 'auto' (placeholder_type_specifier for C++20),
+                    // qualified types like datapod::Pose, and template types like std::vector<int>
                     if (return_type == null) {
                         return_type = self.getNodeText(child);
                     }
@@ -317,11 +1072,137 @@ pub const CppParser = struct {
                                 std.mem.eql(u8, fd_kind, "field_identifier"))
                             {
                                 name = self.getNodeText(fd_child);
+                            } else if (std.mem.eql(u8, fd_kind, "destructor_name")) {
+                                // Destructor: ~ClassName
+                                name = self.getNodeText(fd_child);
+                            } else if (std.mem.eql(u8, fd_kind, "operator_name")) {
+                                // Regular operator overload: operator+, operator==, operator<=>, etc.
+                                is_operator_overload = true;
+                                const op_text = self.getNodeText(fd_child);
+                                name = op_text;
+                                // Extract the operator symbol from "operator X"
+                                if (std.mem.indexOf(u8, op_text, "operator")) |_| {
+                                    const after_op = std.mem.trimLeft(u8, op_text[8..], " ");
+                                    if (after_op.len > 0) {
+                                        operator_symbol = after_op;
+                                    }
+                                }
+                            } else if (std.mem.eql(u8, fd_kind, "operator_cast")) {
+                                // Conversion operator: operator Type()
+                                is_conversion_operator = true;
+                                const conv_result = self.extractConversionOperator(fd_child);
+                                name = conv_result.name;
+                                operator_symbol = conv_result.target_type;
                             } else if (std.mem.eql(u8, fd_kind, "parameter_list")) {
                                 params = try self.extractParameters(fd_child);
                             } else if (std.mem.eql(u8, fd_kind, "type_qualifier")) {
                                 if (std.mem.eql(u8, self.getNodeText(fd_child), "const")) {
                                     is_const = true;
+                                }
+                            } else if (std.mem.eql(u8, fd_kind, "noexcept")) {
+                                // noexcept specifier (handles both noexcept and noexcept(expr))
+                                is_noexcept = true;
+                            } else if (std.mem.eql(u8, fd_kind, "virtual_specifier")) {
+                                // override or final specifier
+                                const spec_text = self.getNodeText(fd_child);
+                                if (std.mem.eql(u8, spec_text, "override")) {
+                                    is_override = true;
+                                } else if (std.mem.eql(u8, spec_text, "final")) {
+                                    is_final = true;
+                                }
+                            } else if (std.mem.eql(u8, fd_kind, "pure_virtual_clause")) {
+                                // = 0 for pure virtual methods
+                                is_pure_virtual = true;
+                            }
+                        }
+                    }
+                } else if (std.mem.eql(u8, child_kind, "reference_declarator") or
+                    std.mem.eql(u8, child_kind, "pointer_declarator"))
+                {
+                    // For reference/pointer return types like "int& operator[]()"
+                    // the function_declarator is nested inside the reference/pointer declarator
+                    // Append & or * to return type
+                    if (return_type) |rt| {
+                        if (std.mem.eql(u8, child_kind, "reference_declarator")) {
+                            return_type = std.fmt.allocPrint(self.allocator, "{s}&", .{rt}) catch rt;
+                        } else {
+                            return_type = std.fmt.allocPrint(self.allocator, "{s}*", .{rt}) catch rt;
+                        }
+                    }
+                    // Now look for function_declarator inside
+                    var k: u32 = 0;
+                    while (k < child.childCount()) : (k += 1) {
+                        if (child.child(k)) |ref_child| {
+                            if (std.mem.eql(u8, ref_child.kind(), "function_declarator")) {
+                                // Process the function_declarator
+                                var j: u32 = 0;
+                                while (j < ref_child.childCount()) : (j += 1) {
+                                    if (ref_child.child(j)) |fd_child| {
+                                        const fd_kind = fd_child.kind();
+                                        if (std.mem.eql(u8, fd_kind, "identifier") or
+                                            std.mem.eql(u8, fd_kind, "field_identifier"))
+                                        {
+                                            name = self.getNodeText(fd_child);
+                                        } else if (std.mem.eql(u8, fd_kind, "destructor_name")) {
+                                            name = self.getNodeText(fd_child);
+                                        } else if (std.mem.eql(u8, fd_kind, "operator_name")) {
+                                            is_operator_overload = true;
+                                            const op_text = self.getNodeText(fd_child);
+                                            name = op_text;
+                                            if (std.mem.indexOf(u8, op_text, "operator")) |_| {
+                                                const after_op = std.mem.trimLeft(u8, op_text[8..], " ");
+                                                if (after_op.len > 0) {
+                                                    operator_symbol = after_op;
+                                                }
+                                            }
+                                        } else if (std.mem.eql(u8, fd_kind, "operator_cast")) {
+                                            is_conversion_operator = true;
+                                            const conv_result = self.extractConversionOperator(fd_child);
+                                            name = conv_result.name;
+                                            operator_symbol = conv_result.target_type;
+                                        } else if (std.mem.eql(u8, fd_kind, "parameter_list")) {
+                                            params = try self.extractParameters(fd_child);
+                                        } else if (std.mem.eql(u8, fd_kind, "type_qualifier")) {
+                                            if (std.mem.eql(u8, self.getNodeText(fd_child), "const")) {
+                                                is_const = true;
+                                            }
+                                        } else if (std.mem.eql(u8, fd_kind, "noexcept")) {
+                                            is_noexcept = true;
+                                        } else if (std.mem.eql(u8, fd_kind, "virtual_specifier")) {
+                                            const spec_text = self.getNodeText(fd_child);
+                                            if (std.mem.eql(u8, spec_text, "override")) {
+                                                is_override = true;
+                                            } else if (std.mem.eql(u8, spec_text, "final")) {
+                                                is_final = true;
+                                            }
+                                        } else if (std.mem.eql(u8, fd_kind, "pure_virtual_clause")) {
+                                            is_pure_virtual = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if (std.mem.eql(u8, child_kind, "virtual_specifier")) {
+                    // override or final specifier at top level
+                    const spec_text = self.getNodeText(child);
+                    if (std.mem.eql(u8, spec_text, "override")) {
+                        is_override = true;
+                    } else if (std.mem.eql(u8, spec_text, "final")) {
+                        is_final = true;
+                    }
+                } else if (std.mem.eql(u8, child_kind, "pure_virtual_clause")) {
+                    // = 0 for pure virtual methods at top level
+                    is_pure_virtual = true;
+                } else if (std.mem.eql(u8, child_kind, "=")) {
+                    // Check for = 0 pattern (pure virtual)
+                    // Look at the next sibling for number_literal with value 0
+                    if (i + 1 < node.childCount()) {
+                        if (node.child(i + 1)) |next_child| {
+                            if (std.mem.eql(u8, next_child.kind(), "number_literal")) {
+                                const num_text = self.getNodeText(next_child);
+                                if (std.mem.eql(u8, num_text, "0")) {
+                                    is_pure_virtual = true;
                                 }
                             }
                         }
@@ -332,16 +1213,194 @@ pub const CppParser = struct {
 
         if (name == null) return null;
 
+        const params_slice = try params.toOwnedSlice(self.allocator);
+
+        // Determine method kind - conversion operators and operator overloads take precedence
+        const kind: types.MethodKind = if (is_conversion_operator)
+            .conversion_operator
+        else if (is_operator_overload)
+            .operator_overload
+        else
+            self.categorizeMethodKind(name.?, return_type, params_slice, class_name);
+
+        const start = node.startPoint();
         return types.Method{
             .name = name.?,
             .return_type = return_type orelse "void",
-            .params = try params.toOwnedSlice(self.allocator),
+            .params = params_slice,
             .doc = self.findPrecedingDocstring(node),
             .access = access,
+            .kind = kind,
+            .operator_symbol = operator_symbol,
             .is_virtual = is_virtual,
             .is_static = is_static,
             .is_const = is_const,
+            .is_override = is_override,
+            .is_final = is_final,
+            .is_pure_virtual = is_pure_virtual,
+            .is_defaulted = is_defaulted,
+            .is_deleted = is_deleted,
+            .is_constexpr = is_constexpr,
+            .is_consteval = is_consteval,
+            .is_explicit = is_explicit,
+            .is_noexcept = is_noexcept,
+            .attributes = try attributes.toOwnedSlice(self.allocator),
+            .location = types.SourceLocation{
+                .file = "", // Will be set by caller if needed
+                .line = start.row + 1,
+                .column = start.column + 1,
+            },
         };
+    }
+
+    /// Extracts conversion operator information (e.g., operator bool(), operator int())
+    /// Returns the method name and the target type for the conversion
+    const ConversionOperatorInfo = struct {
+        name: []const u8,
+        target_type: []const u8,
+    };
+
+    fn extractConversionOperator(self: *Self, node: ts.Node) ConversionOperatorInfo {
+        // The operator_cast node contains the full "operator Type" text
+        const full_text = self.getNodeText(node);
+
+        // Look for child nodes to extract the type
+        var target_type: []const u8 = "";
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                // The type can be primitive_type, type_identifier, qualified_identifier, or template_type
+                if (std.mem.eql(u8, child_kind, "primitive_type") or
+                    std.mem.eql(u8, child_kind, "type_identifier") or
+                    std.mem.eql(u8, child_kind, "qualified_identifier") or
+                    std.mem.eql(u8, child_kind, "template_type"))
+                {
+                    target_type = self.getNodeText(child);
+                    break;
+                }
+            }
+        }
+
+        // If we couldn't find the type from children, extract from full text
+        if (target_type.len == 0) {
+            if (std.mem.indexOf(u8, full_text, "operator ")) |op_start| {
+                target_type = std.mem.trim(u8, full_text[op_start + 9 ..], " \t");
+            }
+        }
+
+        return ConversionOperatorInfo{
+            .name = full_text, // Keep full "operator bool" as the name
+            .target_type = target_type,
+        };
+    }
+
+    /// Categorizes method kind (regular, constructor, copy_constructor, move_constructor, destructor)
+    fn categorizeMethodKind(
+        _: *Self,
+        method_name: []const u8,
+        return_type: ?[]const u8,
+        params: []const types.Parameter,
+        class_name: ?[]const u8,
+    ) types.MethodKind {
+        const cn = class_name orelse return .regular;
+
+        // Check for destructor: ~ClassName
+        if (method_name.len > 1 and method_name[0] == '~') {
+            if (std.mem.eql(u8, method_name[1..], cn)) {
+                return .destructor;
+            }
+        }
+
+        // Check for constructor: method name matches class name and no return type
+        // (or return type is the class name itself in some cases)
+        if (!std.mem.eql(u8, method_name, cn)) {
+            return .regular;
+        }
+
+        // Constructor detected - return type should be null/void for constructors
+        // (tree-sitter may or may not capture return type for constructors)
+        if (return_type != null and !std.mem.eql(u8, return_type.?, cn)) {
+            // Has a return type that's not the class name - might be a method with same name
+            // (unusual but possible in some parsing scenarios)
+            return .regular;
+        }
+
+        // Now categorize the constructor type based on parameters
+        if (params.len == 0) {
+            // Default constructor: no parameters
+            return .constructor;
+        }
+
+        if (params.len == 1) {
+            const param_type = params[0].type_str;
+
+            // Check for copy constructor: const ClassName& or ClassName const&
+            if (isCopyConstructorType(param_type, cn)) {
+                return .copy_constructor;
+            }
+
+            // Check for move constructor: ClassName&&
+            if (isMoveConstructorType(param_type, cn)) {
+                return .move_constructor;
+            }
+
+            // Single parameter of other type - converting constructor (keep as .constructor)
+            return .constructor;
+        }
+
+        // Multiple parameters - regular constructor
+        return .constructor;
+    }
+
+    /// Checks if a parameter type represents a copy constructor parameter (const ClassName&)
+    fn isCopyConstructorType(param_type: []const u8, class_name: []const u8) bool {
+        // Trim whitespace
+        const trimmed = std.mem.trim(u8, param_type, " \t");
+
+        // Pattern: "const ClassName&" or "ClassName const&" or "const ClassName &"
+        // Also handle with extra spaces
+
+        // Check for "const" at start
+        if (std.mem.startsWith(u8, trimmed, "const ") or std.mem.startsWith(u8, trimmed, "const\t")) {
+            // After "const ", should have "ClassName" followed by "&"
+            const after_const = std.mem.trimLeft(u8, trimmed[5..], " \t");
+            if (std.mem.startsWith(u8, after_const, class_name)) {
+                const after_name = std.mem.trimLeft(u8, after_const[class_name.len..], " \t");
+                if (std.mem.startsWith(u8, after_name, "&") and !std.mem.startsWith(u8, after_name, "&&")) {
+                    return true;
+                }
+            }
+        }
+
+        // Check for "ClassName const&" pattern
+        if (std.mem.startsWith(u8, trimmed, class_name)) {
+            const after_name = std.mem.trimLeft(u8, trimmed[class_name.len..], " \t");
+            if (std.mem.startsWith(u8, after_name, "const")) {
+                const after_const = std.mem.trimLeft(u8, after_name[5..], " \t");
+                if (std.mem.startsWith(u8, after_const, "&") and !std.mem.startsWith(u8, after_const, "&&")) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// Checks if a parameter type represents a move constructor parameter (ClassName&&)
+    fn isMoveConstructorType(param_type: []const u8, class_name: []const u8) bool {
+        // Trim whitespace
+        const trimmed = std.mem.trim(u8, param_type, " \t");
+
+        // Pattern: "ClassName&&" or "ClassName &&"
+        if (std.mem.startsWith(u8, trimmed, class_name)) {
+            const after_name = std.mem.trimLeft(u8, trimmed[class_name.len..], " \t");
+            if (std.mem.startsWith(u8, after_name, "&&")) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// Extracts a class field
@@ -379,14 +1438,32 @@ pub const CppParser = struct {
         var name: ?[]const u8 = null;
         var return_type: ?[]const u8 = null;
         var params: std.ArrayList(types.Parameter) = .empty;
+        var is_constexpr = false;
+        var is_consteval = false;
+        var is_noexcept = false;
+        var attributes: std.ArrayList(types.Attribute) = .empty;
 
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {
                 const child_kind = child.kind();
-                if (std.mem.eql(u8, child_kind, "type_identifier") or
-                    std.mem.eql(u8, child_kind, "primitive_type"))
+                if (std.mem.eql(u8, child_kind, "storage_class_specifier")) {
+                    const spec_text = self.getNodeText(child);
+                    if (std.mem.eql(u8, spec_text, "constexpr")) {
+                        is_constexpr = true;
+                    } else if (std.mem.eql(u8, spec_text, "consteval")) {
+                        is_consteval = true;
+                    }
+                } else if (std.mem.eql(u8, child_kind, "attribute_declaration")) {
+                    // Parse C++ attributes like [[nodiscard]], [[deprecated("msg")]]
+                    try self.parseAttributeDeclaration(child, &attributes);
+                } else if (std.mem.eql(u8, child_kind, "type_identifier") or
+                    std.mem.eql(u8, child_kind, "primitive_type") or
+                    std.mem.eql(u8, child_kind, "qualified_identifier") or
+                    std.mem.eql(u8, child_kind, "template_type"))
                 {
+                    // Handle regular types, qualified types like datapod::Pose,
+                    // and template types like std::vector<int>
                     if (return_type == null) {
                         return_type = self.getNodeText(child);
                     }
@@ -399,6 +1476,9 @@ pub const CppParser = struct {
                                 name = self.getNodeText(fd_child);
                             } else if (std.mem.eql(u8, fd_kind, "parameter_list")) {
                                 params = try self.extractParameters(fd_child);
+                            } else if (std.mem.eql(u8, fd_kind, "noexcept")) {
+                                // noexcept specifier (handles both noexcept and noexcept(expr))
+                                is_noexcept = true;
                             }
                         }
                     }
@@ -424,7 +1504,24 @@ pub const CppParser = struct {
                 .line = start.row + 1,
                 .column = start.column + 1,
             },
+            .is_constexpr = is_constexpr,
+            .is_consteval = is_consteval,
+            .is_noexcept = is_noexcept,
+            .attributes = try attributes.toOwnedSlice(self.allocator),
         };
+    }
+
+    /// Extracts function prototype with an optional docstring override (for templates)
+    fn extractFunctionPrototypeWithDoc(self: *Self, node: ts.Node, filename: []const u8, namespace: ?[]const u8, doc_override: ?types.DocString) !?types.Function {
+        if (try self.extractFunctionPrototype(node, filename, namespace)) |func| {
+            // Use override doc if provided and function has no doc of its own
+            var result = func;
+            if (result.doc == null and doc_override != null) {
+                result.doc = doc_override;
+            }
+            return result;
+        }
+        return null;
     }
 
     /// Extracts parameters
@@ -445,32 +1542,74 @@ pub const CppParser = struct {
 
     /// Extracts a single parameter
     fn extractParameter(self: *Self, node: ts.Node) ?types.Parameter {
-        var name: ?[]const u8 = null;
-        var param_type: ?[]const u8 = null;
+        // Get the full text of the parameter declaration
+        const full_text = self.getNodeText(node);
 
+        // Try to find the parameter name - it's usually the last identifier
+        // For "const Point2<T>& a" we want name="a", type="const Point2<T>&"
+        var name: ?[]const u8 = null;
+        var last_identifier_end: usize = 0;
+
+        // Walk children to find identifiers (skip type_identifier which is part of type)
         var i: u32 = 0;
         while (i < node.childCount()) : (i += 1) {
             if (node.child(i)) |child| {
                 const child_kind = child.kind();
-                if (std.mem.eql(u8, child_kind, "type_identifier") or
-                    std.mem.eql(u8, child_kind, "primitive_type"))
-                {
-                    param_type = self.getNodeText(child);
-                } else if (std.mem.eql(u8, child_kind, "identifier")) {
+                // Look for the parameter name in various declarator types
+                if (std.mem.eql(u8, child_kind, "identifier")) {
                     name = self.getNodeText(child);
+                    last_identifier_end = child.endByte();
+                } else if (std.mem.eql(u8, child_kind, "reference_declarator") or
+                    std.mem.eql(u8, child_kind, "pointer_declarator"))
+                {
+                    // The name is inside the declarator
+                    if (self.findIdentifierInNode(child)) |id| {
+                        name = id;
+                        last_identifier_end = child.endByte();
+                    }
                 }
+            }
+        }
+
+        // Extract type by removing the parameter name from the end
+        var param_type: []const u8 = full_text;
+        if (name) |n| {
+            // Find where the name starts in the full text and take everything before it
+            if (std.mem.lastIndexOf(u8, full_text, n)) |name_start| {
+                // Only trim whitespace, preserve & and * as they're part of the type
+                param_type = std.mem.trimRight(u8, full_text[0..name_start], " \t");
             }
         }
 
         return types.Parameter{
             .name = name orelse "unnamed",
-            .type_str = param_type orelse "unknown",
+            .type_str = if (param_type.len > 0) param_type else "unknown",
             .doc = null,
         };
     }
 
+    /// Recursively finds an identifier node within a node
+    fn findIdentifierInNode(self: *Self, node: ts.Node) ?[]const u8 {
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                if (std.mem.eql(u8, child.kind(), "identifier")) {
+                    return self.getNodeText(child);
+                }
+                // Recurse into child nodes
+                if (self.findIdentifierInNode(child)) |id| {
+                    return id;
+                }
+            }
+        }
+        return null;
+    }
+
     /// Extracts struct
     fn extractStruct(self: *Self, node: ts.Node, filename: []const u8, namespace: ?[]const u8) !?types.Struct {
+        // Skip forward declarations (no body)
+        if (!self.hasFieldDeclarationList(node)) return null;
+
         var name: ?[]const u8 = null;
         var fields: std.ArrayList(types.StructField) = .empty;
 
@@ -504,6 +1643,67 @@ pub const CppParser = struct {
             name.?;
 
         return types.Struct{
+            .name = full_name,
+            .fields = try fields.toOwnedSlice(self.allocator),
+            .doc = self.findPrecedingDocstring(node),
+            .location = types.SourceLocation{
+                .file = filename,
+                .line = start.row + 1,
+                .column = start.column + 1,
+            },
+        };
+    }
+
+    /// Extracts a struct with an optional docstring override (for templates)
+    fn extractStructWithDoc(self: *Self, node: ts.Node, filename: []const u8, namespace: ?[]const u8, doc_override: ?types.DocString) !?types.Struct {
+        if (try self.extractStruct(node, filename, namespace)) |s| {
+            var result = s;
+            if (result.doc == null and doc_override != null) {
+                result.doc = doc_override;
+            }
+            return result;
+        }
+        return null;
+    }
+
+    /// Extracts union
+    fn extractUnion(self: *Self, node: ts.Node, filename: []const u8, namespace: ?[]const u8) !?types.Union {
+        // Skip forward declarations (no body)
+        if (!self.hasFieldDeclarationList(node)) return null;
+
+        var name: ?[]const u8 = null;
+        var fields: std.ArrayList(types.StructField) = .empty;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                if (std.mem.eql(u8, child_kind, "type_identifier")) {
+                    name = self.getNodeText(child);
+                } else if (std.mem.eql(u8, child_kind, "field_declaration_list")) {
+                    var j: u32 = 0;
+                    while (j < child.childCount()) : (j += 1) {
+                        if (child.child(j)) |body_child| {
+                            if (std.mem.eql(u8, body_child.kind(), "field_declaration")) {
+                                if (self.extractStructField(body_child)) |field| {
+                                    try fields.append(self.allocator, field);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (name == null) return null;
+
+        const start = node.startPoint();
+        const full_name = if (namespace) |ns|
+            try std.fmt.allocPrint(self.allocator, "{s}::{s}", .{ ns, name.? })
+        else
+            name.?;
+
+        return types.Union{
             .name = full_name,
             .fields = try fields.toOwnedSlice(self.allocator),
             .doc = self.findPrecedingDocstring(node),
@@ -602,7 +1802,11 @@ pub const CppParser = struct {
                 if (std.mem.eql(u8, child_kind, "identifier")) {
                     name = self.getNodeText(child);
                 } else if (std.mem.eql(u8, child_kind, "number_literal")) {
-                    value = std.fmt.parseInt(i64, self.getNodeText(child), 0) catch null;
+                    const num_text = self.getNodeText(child);
+                    value = std.fmt.parseInt(i64, num_text, 0) catch |err| blk: {
+                        std.debug.print("Warning: Could not parse enum value '{s}': {}\n", .{ num_text, err });
+                        break :blk null;
+                    };
                 }
             }
         }
@@ -683,18 +1887,168 @@ pub const CppParser = struct {
         };
     }
 
+    /// Extracts include directive information
+    /// Handles both #include <...> and #include "..."
+    fn extractInclude(self: *Self, node: ts.Node) ?types.IncludeInfo {
+        return common.extractInclude(self.source, node);
+    }
+
+    /// Extracts C++ attributes from attribute_declaration nodes
+    /// Handles [[nodiscard]], [[deprecated("reason")]], [[maybe_unused]], etc.
+    fn extractAttributes(self: *Self, node: ts.Node) ![]const types.Attribute {
+        var attrs: std.ArrayList(types.Attribute) = .empty;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "attribute_declaration")) {
+                    // Parse the attribute_declaration node
+                    try self.parseAttributeDeclaration(child, &attrs);
+                }
+            }
+        }
+
+        return try attrs.toOwnedSlice(self.allocator);
+    }
+
+    /// Parses a single attribute_declaration node (e.g., [[nodiscard]] or [[deprecated("msg")]])
+    fn parseAttributeDeclaration(self: *Self, node: ts.Node, attrs: *std.ArrayList(types.Attribute)) !void {
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "attribute")) {
+                    // Parse individual attribute
+                    if (self.parseAttribute(child)) |attr| {
+                        try attrs.append(self.allocator, attr);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Parses a single attribute node (e.g., nodiscard or deprecated("msg"))
+    fn parseAttribute(self: *Self, node: ts.Node) ?types.Attribute {
+        var name: ?[]const u8 = null;
+        var argument: ?[]const u8 = null;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "identifier")) {
+                    if (name == null) {
+                        name = self.getNodeText(child);
+                    }
+                } else if (std.mem.eql(u8, child_kind, "argument_list")) {
+                    // Extract the argument from the argument list
+                    argument = self.extractAttributeArgument(child);
+                }
+            }
+        }
+
+        // If no children found, the attribute text might be directly in the node
+        if (name == null) {
+            const text = self.getNodeText(node);
+            if (text.len > 0) {
+                name = text;
+            }
+        }
+
+        if (name == null) return null;
+
+        return types.Attribute{
+            .name = name.?,
+            .argument = argument,
+        };
+    }
+
+    /// Extracts the argument from an attribute argument list
+    fn extractAttributeArgument(self: *Self, node: ts.Node) ?[]const u8 {
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+
+                if (std.mem.eql(u8, child_kind, "string_literal")) {
+                    // Get the string content without quotes
+                    const text = self.getNodeText(child);
+                    if (text.len >= 2 and text[0] == '"' and text[text.len - 1] == '"') {
+                        return text[1 .. text.len - 1];
+                    }
+                    return text;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// Extracts a type alias (using Name = Type)
+    fn extractTypeAlias(self: *Self, node: ts.Node, namespace: ?[]const u8) ?types.TypeAlias {
+        var name: ?[]const u8 = null;
+        var underlying_type: ?[]const u8 = null;
+
+        var i: u32 = 0;
+        while (i < node.childCount()) : (i += 1) {
+            if (node.child(i)) |child| {
+                const child_kind = child.kind();
+                if (std.mem.eql(u8, child_kind, "type_identifier")) {
+                    // First type_identifier is the alias name
+                    if (name == null) {
+                        name = self.getNodeText(child);
+                    }
+                } else if (std.mem.eql(u8, child_kind, "type_descriptor")) {
+                    // type_descriptor contains the underlying type
+                    underlying_type = self.getNodeText(child);
+                }
+            }
+        }
+
+        if (name == null) return null;
+
+        return types.TypeAlias{
+            .name = name.?,
+            .underlying_type = underlying_type orelse "unknown",
+            .docstring = self.findPrecedingDocstring(node),
+            .namespace = namespace,
+        };
+    }
+
     /// Finds preceding docstring
+    /// Handles both /** */ block comments and consecutive /// line comments
     fn findPrecedingDocstring(self: *Self, node: ts.Node) ?types.DocString {
         var prev = node.prevSibling();
+
+        // Collect consecutive /// comments (they appear in reverse order)
+        var triple_slash_comments: std.ArrayList([]const u8) = .empty;
+        defer triple_slash_comments.deinit(self.allocator);
+
         while (prev != null) {
             const prev_kind = prev.?.kind();
             if (std.mem.eql(u8, prev_kind, "comment")) {
                 const text = self.getNodeText(prev.?);
-                if (std.mem.startsWith(u8, text, "/**") or
-                    std.mem.startsWith(u8, text, "///"))
-                {
+
+                // Block comment - return immediately
+                if (std.mem.startsWith(u8, text, "/**")) {
                     return self.parseDocComment(text);
                 }
+
+                // Triple-slash comment - collect it
+                if (std.mem.startsWith(u8, text, "///")) {
+                    triple_slash_comments.append(self.allocator, text) catch |err| {
+                        std.debug.print("Warning: Failed to collect /// comment: {}\n", .{err});
+                        break;
+                    };
+                    prev = prev.?.prevSibling();
+                    continue;
+                }
+
+                // Regular comment (// or /*) - stop collecting
+                break;
             } else if (!std.mem.eql(u8, prev_kind, "preproc_ifdef") and
                 !std.mem.eql(u8, prev_kind, "preproc_ifndef"))
             {
@@ -702,6 +2056,44 @@ pub const CppParser = struct {
             }
             prev = prev.?.prevSibling();
         }
+
+        // If we collected /// comments, merge them (they're in reverse order)
+        if (triple_slash_comments.items.len > 0) {
+            var merged: std.ArrayList(u8) = .empty;
+            defer merged.deinit(self.allocator);
+
+            // Reverse iterate to get correct order
+            var i = triple_slash_comments.items.len;
+            while (i > 0) {
+                i -= 1;
+                const comment = triple_slash_comments.items[i];
+                // Strip /// prefix
+                var content = comment;
+                if (std.mem.startsWith(u8, content, "/// ")) {
+                    content = content[4..];
+                } else if (std.mem.startsWith(u8, content, "///")) {
+                    content = content[3..];
+                }
+                merged.appendSlice(self.allocator, content) catch |err| {
+                    std.debug.print("Warning: Failed to merge /// comments: {}\n", .{err});
+                    break;
+                };
+                if (i > 0) {
+                    merged.append(self.allocator, '\n') catch |err| {
+                        std.debug.print("Warning: Failed to merge /// comments: {}\n", .{err});
+                        break;
+                    };
+                }
+            }
+
+            if (merged.items.len > 0) {
+                return self.docstring_extractor.parse(merged.items) catch |err| {
+                    std.debug.print("Warning: Failed to parse /// docstring: {}\n", .{err});
+                    return null;
+                };
+            }
+        }
+
         return null;
     }
 
@@ -723,11 +2115,718 @@ pub const CppParser = struct {
         if (std.mem.startsWith(u8, result, "/**<")) result = result[4..] else if (std.mem.startsWith(u8, result, "/**")) result = result[3..] else if (std.mem.startsWith(u8, result, "///<")) result = result[4..] else if (std.mem.startsWith(u8, result, "///")) result = result[3..];
         if (std.mem.endsWith(u8, result, "*/")) result = result[0 .. result.len - 2];
         result = std.mem.trim(u8, result, " \t\n\r");
-        return self.docstring_extractor.parse(result) catch null;
+        return self.docstring_extractor.parse(result) catch |err| {
+            std.debug.print("Warning: Failed to parse doc comment: {}\n", .{err});
+            return null;
+        };
+    }
+
+    /// Extracts custom pages from standalone doc comments containing @page or @mainpage
+    fn extractPages(self: *Self, root: ts.Node, pages: *std.ArrayList(types.Page)) !void {
+        try common.extractPages(self.allocator, self.source, root, pages, &self.docstring_extractor);
+    }
+
+    /// Extracts group definitions from standalone doc comments containing @defgroup or @addtogroup
+    fn extractGroups(self: *Self, root: ts.Node, groups: *std.ArrayList(types.Group)) !void {
+        try common.extractGroups(self.allocator, self.source, root, groups, &self.docstring_extractor);
     }
 };
 
 test "cpp parser init" {
     var parser = try CppParser.init(std.testing.allocator);
     defer parser.deinit();
+}
+
+// =============================================================================
+// Class Parsing Tests
+// =============================================================================
+
+test "parse simple class" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Point {
+        \\public:
+        \\    int x;
+        \\    int y;
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    try std.testing.expectEqualStrings("Point", module.classes[0].name);
+}
+
+test "parse class with methods" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Calculator {
+        \\public:
+        \\    int add(int a, int b);
+        \\    int subtract(int a, int b);
+        \\private:
+        \\    int result;
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+    try std.testing.expectEqualStrings("Calculator", class.name);
+    try std.testing.expect(class.methods.len >= 2);
+}
+
+test "parse class with access specifiers" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class MyClass {
+        \\public:
+        \\    void public_method();
+        \\protected:
+        \\    void protected_method();
+        \\private:
+        \\    void private_method();
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+
+    // Check that methods have correct access specifiers
+    var found_public = false;
+    var found_protected = false;
+    var found_private = false;
+
+    for (class.methods) |method| {
+        if (std.mem.eql(u8, method.name, "public_method")) {
+            try std.testing.expectEqual(types.AccessSpecifier.public, method.access);
+            found_public = true;
+        } else if (std.mem.eql(u8, method.name, "protected_method")) {
+            try std.testing.expectEqual(types.AccessSpecifier.protected, method.access);
+            found_protected = true;
+        } else if (std.mem.eql(u8, method.name, "private_method")) {
+            try std.testing.expectEqual(types.AccessSpecifier.private, method.access);
+            found_private = true;
+        }
+    }
+
+    try std.testing.expect(found_public);
+    try std.testing.expect(found_protected);
+    try std.testing.expect(found_private);
+}
+
+// =============================================================================
+// Constructor/Destructor Tests
+// =============================================================================
+
+test "parse constructor and destructor" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Resource {
+        \\public:
+        \\    Resource();
+        \\    ~Resource();
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+
+    var found_ctor = false;
+    var found_dtor = false;
+
+    for (class.methods) |method| {
+        if (method.kind == .constructor) {
+            found_ctor = true;
+        } else if (method.kind == .destructor) {
+            found_dtor = true;
+        }
+    }
+
+    try std.testing.expect(found_ctor);
+    try std.testing.expect(found_dtor);
+}
+
+test "parse copy and move constructors" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Buffer {
+        \\public:
+        \\    Buffer(const Buffer& other);
+        \\    Buffer(Buffer&& other);
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+
+    var found_copy = false;
+    var found_move = false;
+
+    for (class.methods) |method| {
+        if (method.kind == .copy_constructor) {
+            found_copy = true;
+        } else if (method.kind == .move_constructor) {
+            found_move = true;
+        }
+    }
+
+    try std.testing.expect(found_copy);
+    try std.testing.expect(found_move);
+}
+
+// =============================================================================
+// Inheritance Tests
+// =============================================================================
+
+test "parse single inheritance" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Base {
+        \\public:
+        \\    virtual void method();
+        \\};
+        \\
+        \\class Derived : public Base {
+        \\public:
+        \\    void method() override;
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 2), module.classes.len);
+
+    // Find Derived class
+    var derived: ?types.Class = null;
+    for (module.classes) |class| {
+        if (std.mem.eql(u8, class.name, "Derived")) {
+            derived = class;
+            break;
+        }
+    }
+
+    try std.testing.expect(derived != null);
+    try std.testing.expectEqual(@as(usize, 1), derived.?.base_classes.len);
+    try std.testing.expectEqualStrings("Base", derived.?.base_classes[0].name);
+    try std.testing.expectEqual(types.AccessSpecifier.public, derived.?.base_classes[0].access);
+}
+
+test "parse multiple inheritance" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class A { };
+        \\class B { };
+        \\class C : public A, protected B { };
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 3), module.classes.len);
+
+    // Find C class
+    var c_class: ?types.Class = null;
+    for (module.classes) |class| {
+        if (std.mem.eql(u8, class.name, "C")) {
+            c_class = class;
+            break;
+        }
+    }
+
+    try std.testing.expect(c_class != null);
+    try std.testing.expectEqual(@as(usize, 2), c_class.?.base_classes.len);
+}
+
+// =============================================================================
+// Namespace Tests
+// =============================================================================
+
+test "parse simple namespace" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\namespace math {
+        \\    int add(int a, int b);
+        \\}
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.namespaces);
+    defer std.testing.allocator.free(module.functions);
+
+    try std.testing.expectEqual(@as(usize, 1), module.namespaces.len);
+    try std.testing.expectEqualStrings("math", module.namespaces[0].name);
+
+    // Function should have namespace prefix
+    try std.testing.expectEqual(@as(usize, 1), module.functions.len);
+    try std.testing.expectEqualStrings("math::add", module.functions[0].name);
+}
+
+test "parse nested namespace" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\namespace outer {
+        \\    namespace inner {
+        \\        void func();
+        \\    }
+        \\}
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.namespaces);
+    defer std.testing.allocator.free(module.functions);
+
+    // Should have both namespaces
+    try std.testing.expect(module.namespaces.len >= 1);
+
+    // Function should have full namespace path
+    try std.testing.expectEqual(@as(usize, 1), module.functions.len);
+    try std.testing.expectEqualStrings("outer::inner::func", module.functions[0].name);
+}
+
+// =============================================================================
+// Template Tests
+// =============================================================================
+
+test "parse template class" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\template<typename T>
+        \\class Container {
+        \\public:
+        \\    void add(T item);
+        \\    T get(int index);
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+    try std.testing.expectEqualStrings("Container", class.name);
+    try std.testing.expect(class.template_params.len > 0);
+}
+
+test "parse template function" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\template<typename T>
+        \\T max(T a, T b) {
+        \\    return a > b ? a : b;
+        \\}
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.functions);
+
+    try std.testing.expectEqual(@as(usize, 1), module.functions.len);
+    try std.testing.expectEqualStrings("max", module.functions[0].name);
+    try std.testing.expect(module.functions[0].template_params.len > 0);
+}
+
+test "parse template with multiple parameters" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\template<typename K, typename V>
+        \\class Map {
+        \\public:
+        \\    void insert(K key, V value);
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    try std.testing.expect(module.classes[0].template_params.len >= 2);
+}
+
+// =============================================================================
+// Operator Overload Tests
+// =============================================================================
+
+test "parse operator overloads" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Vector {
+        \\public:
+        \\    Vector operator+(const Vector& other);
+        \\    bool operator==(const Vector& other);
+        \\    int& operator[](int index);
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+
+    var operator_count: usize = 0;
+    for (class.methods) |method| {
+        if (method.kind == .operator_overload) {
+            operator_count += 1;
+        }
+    }
+
+    try std.testing.expect(operator_count >= 3);
+}
+
+// =============================================================================
+// Type Alias Tests
+// =============================================================================
+
+test "parse using type alias" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\using StringList = std::vector<std::string>;
+        \\using IntPtr = int*;
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.type_aliases);
+
+    try std.testing.expectEqual(@as(usize, 2), module.type_aliases.len);
+}
+
+// =============================================================================
+// Struct Tests (C++ style)
+// =============================================================================
+
+test "parse cpp struct with methods" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\struct Point {
+        \\    int x;
+        \\    int y;
+        \\    int distance();
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.structs);
+
+    try std.testing.expectEqual(@as(usize, 1), module.structs.len);
+    try std.testing.expectEqualStrings("Point", module.structs[0].name);
+}
+
+// =============================================================================
+// Edge Cases
+// =============================================================================
+
+test "parse empty class" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source = "class Empty { };";
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    try std.testing.expectEqualStrings("Empty", module.classes[0].name);
+}
+
+test "parse forward declaration" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source = "class ForwardDeclared;";
+    const module = try parser.parse(source, "test.hpp");
+
+    // Forward declarations should not create class entries
+    try std.testing.expectEqual(@as(usize, 0), module.classes.len);
+}
+
+test "parse virtual methods" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Interface {
+        \\public:
+        \\    virtual void method() = 0;
+        \\    virtual ~Interface() = default;
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+
+    var found_pure_virtual = false;
+    for (class.methods) |method| {
+        if (method.is_pure_virtual) {
+            found_pure_virtual = true;
+            break;
+        }
+    }
+
+    try std.testing.expect(found_pure_virtual);
+}
+
+test "parse const methods" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Getter {
+        \\public:
+        \\    int getValue() const;
+        \\    void setValue(int v);
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+
+    var found_const = false;
+    var found_non_const = false;
+
+    for (class.methods) |method| {
+        if (std.mem.eql(u8, method.name, "getValue")) {
+            try std.testing.expect(method.is_const);
+            found_const = true;
+        } else if (std.mem.eql(u8, method.name, "setValue")) {
+            try std.testing.expect(!method.is_const);
+            found_non_const = true;
+        }
+    }
+
+    try std.testing.expect(found_const);
+    try std.testing.expect(found_non_const);
+}
+
+test "parse static methods" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Factory {
+        \\public:
+        \\    static Factory* create();
+        \\    void destroy();
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+
+    var found_static = false;
+    for (class.methods) |method| {
+        if (std.mem.eql(u8, method.name, "create")) {
+            try std.testing.expect(method.is_static);
+            found_static = true;
+            break;
+        }
+    }
+
+    try std.testing.expect(found_static);
+}
+
+test "parse enum class" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\enum class Color {
+        \\    Red,
+        \\    Green,
+        \\    Blue
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.enums);
+
+    try std.testing.expectEqual(@as(usize, 1), module.enums.len);
+    try std.testing.expectEqualStrings("Color", module.enums[0].name);
+    try std.testing.expectEqual(@as(usize, 3), module.enums[0].values.len);
+}
+
+test "parse class with docstring" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\/// A simple point class
+        \\class Point {
+        \\public:
+        \\    int x;
+        \\    int y;
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    try std.testing.expect(module.classes[0].doc != null);
+    try std.testing.expectEqualStrings("A simple point class", module.classes[0].doc.?.brief.?);
+}
+
+// =============================================================================
+// Requires Clause Tests
+// =============================================================================
+
+test "parse template function with requires clause" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\template<typename T>
+        \\requires std::integral<T>
+        \\void process(T value);
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.functions);
+
+    try std.testing.expectEqual(@as(usize, 1), module.functions.len);
+    try std.testing.expectEqualStrings("process", module.functions[0].name);
+    try std.testing.expect(module.functions[0].template_params.len > 0);
+    // Check requires clause is extracted
+    try std.testing.expect(module.functions[0].requires_clause != null);
+    try std.testing.expectEqualStrings("std::integral<T>", module.functions[0].requires_clause.?);
+}
+
+test "parse template class with requires clause" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\template<typename T>
+        \\requires std::copyable<T>
+        \\class Container {
+        \\public:
+        \\    void add(T item);
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    try std.testing.expectEqualStrings("Container", module.classes[0].name);
+    try std.testing.expect(module.classes[0].template_params.len > 0);
+    // Check requires clause is extracted
+    try std.testing.expect(module.classes[0].requires_clause != null);
+    try std.testing.expectEqualStrings("std::copyable<T>", module.classes[0].requires_clause.?);
+}
+
+// =============================================================================
+// Override/Final/Pure Virtual Tests
+// =============================================================================
+
+test "parse method with override specifier" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Derived {
+        \\public:
+        \\    void foo() override;
+        \\    int bar() const override;
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+    try std.testing.expect(class.methods.len >= 2);
+
+    // Check override is detected
+    var override_count: usize = 0;
+    for (class.methods) |method| {
+        if (method.is_override) {
+            override_count += 1;
+        }
+    }
+    try std.testing.expect(override_count >= 2);
+}
+
+test "parse method with final specifier" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Derived {
+        \\public:
+        \\    void foo() final;
+        \\    int bar() const final;
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+    try std.testing.expect(class.methods.len >= 2);
+
+    // Check final is detected
+    var final_count: usize = 0;
+    for (class.methods) |method| {
+        if (method.is_final) {
+            final_count += 1;
+        }
+    }
+    try std.testing.expect(final_count >= 2);
+}
+
+test "parse pure virtual method" {
+    var parser = try CppParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    const source =
+        \\class Interface {
+        \\public:
+        \\    virtual void foo() = 0;
+        \\    virtual int bar() const = 0;
+        \\};
+    ;
+    const module = try parser.parse(source, "test.hpp");
+    defer std.testing.allocator.free(module.classes);
+
+    try std.testing.expectEqual(@as(usize, 1), module.classes.len);
+    const class = module.classes[0];
+    try std.testing.expect(class.methods.len >= 2);
+
+    // Check pure virtual is detected
+    var pure_virtual_count: usize = 0;
+    for (class.methods) |method| {
+        if (method.is_pure_virtual) {
+            pure_virtual_count += 1;
+        }
+    }
+    try std.testing.expect(pure_virtual_count >= 2);
 }

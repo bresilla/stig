@@ -1,0 +1,110 @@
+name: 'Stig Documentation Generator'
+description: 'Generate C/C++ documentation using Stig'
+author: 'bresilla'
+
+branding:
+  icon: 'book-open'
+  color: 'blue'
+
+inputs:
+  input:
+    description: 'Input files or glob pattern (e.g., "include/*.hpp")'
+    required: true
+  output:
+    description: 'Output directory or file'
+    required: true
+    default: 'docs'
+  format:
+    description: 'Output format: markdown, mdbook, json, html'
+    required: false
+    default: 'mdbook'
+  title:
+    description: 'Documentation title'
+    required: false
+    default: 'API Documentation'
+  config:
+    description: 'Path to stig.toml config file'
+    required: false
+  zig-version:
+    description: 'Zig version to use for building Stig (empty = auto-detect from build.zig.zon)'
+    required: false
+    default: ''
+  stig-version:
+    description: 'Stig version (git ref, tag, or "latest")'
+    required: false
+    default: 'latest'
+  coverage:
+    description: 'Run coverage check (true/false)'
+    required: false
+    default: 'false'
+  coverage-threshold:
+    description: 'Minimum coverage percentage (0-100)'
+    required: false
+    default: '80'
+
+outputs:
+  output-path:
+    description: 'Path to generated documentation'
+    value: ${{ steps.generate.outputs.path }}
+  coverage:
+    description: 'Documentation coverage percentage'
+    value: ${{ steps.coverage.outputs.percentage }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v2
+      with:
+        version: ${{ inputs.zig-version }}
+    
+    - name: Checkout Stig
+      uses: actions/checkout@v4
+      with:
+        repository: 'bresilla/stig'
+        ref: ${{ inputs.stig-version == 'latest' && 'main' || inputs.stig-version }}
+        path: '.stig-build'
+    
+    - name: Build Stig
+      shell: bash
+      run: |
+        cd .stig-build
+        zig build -Doptimize=ReleaseFast
+        cp zig-out/bin/stig /usr/local/bin/stig
+        chmod +x /usr/local/bin/stig
+        stig --version
+    
+    - name: Generate Documentation
+      id: generate
+      shell: bash
+      run: |
+        CONFIG_ARG=""
+        if [ -n "${{ inputs.config }}" ]; then
+          CONFIG_ARG="-c ${{ inputs.config }}"
+        fi
+        
+        stig ${{ inputs.input }} \
+          -f ${{ inputs.format }} \
+          -o ${{ inputs.output }} \
+          --title "${{ inputs.title }}" \
+          $CONFIG_ARG
+        
+        echo "path=${{ inputs.output }}" >> $GITHUB_OUTPUT
+    
+    - name: Check Coverage
+      id: coverage
+      if: inputs.coverage == 'true'
+      shell: bash
+      run: |
+        COVERAGE_OUTPUT=$(stig --coverage ${{ inputs.input }} 2>&1 || true)
+        echo "$COVERAGE_OUTPUT"
+        
+        # Extract coverage percentage
+        PERCENTAGE=$(echo "$COVERAGE_OUTPUT" | grep -oP 'Overall: \K\d+' || echo "0")
+        echo "percentage=$PERCENTAGE" >> $GITHUB_OUTPUT
+        
+        # Check threshold
+        if [ "$PERCENTAGE" -lt "${{ inputs.coverage-threshold }}" ]; then
+          echo "::error::Coverage ($PERCENTAGE%) is below threshold (${{ inputs.coverage-threshold }}%)"
+          exit 1
+        fi

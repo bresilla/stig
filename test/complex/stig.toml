@@ -1,0 +1,16 @@
+# Stig configuration file
+# See: https://github.com/bresilla/stig
+
+# Documentation settings
+title = "API Reference"
+output_dir = "docs"
+format = "mdbook"
+input_patterns = ["include/**/*.hpp", "include/**/*.h"]
+
+# Test settings
+[test]
+dir = "test"
+compiler = "g++"
+flags = ["-std=c++17", "-Wall", "-Wextra"]
+include_paths = ["include/"]
+pattern = "test_*.cpp"

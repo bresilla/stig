@@ -1,12 +1,12 @@
 .{
-    .name = .stinger,
-    .version = "0.1.0",
-    .fingerprint = 0x749d9d446176df3b,
-    .minimum_zig_version = "0.14.0",
+    .name = .stig,
+    .version = "0.0.3",
+    .fingerprint = 0x6cdf34f781a98a97,
+    .minimum_zig_version = "0.15.0",
     .dependencies = .{
         .tree_sitter = .{
             .url = "git+https://github.com/tree-sitter/zig-tree-sitter#03733bad4b6bfd1c642f61ff13bedb2ae4ff8b29",
-            .hash = "tree_sitter-0.25.0-8heIf7iZAQDu5oiKLKffYhdvWpEuxc5OhsySDlkFLxFT",
+            .hash = "tree_sitter-0.25.0-8heIf4xwAQCcM_rEJFSvWcc0Y6TaXQPw1kFZRWoea4Ne",
         },
         .tree_sitter_c = .{
             .url = "git+https://github.com/tree-sitter/tree-sitter-c#586dd62ad4d3532895ea80a8382d21307b4733bd",
@@ -14,6 +14,14 @@
         },
         .tree_sitter_cpp = .{
             .path = "vendor/tree-sitter-cpp",
+        },
+
+        .argonaut = .{
+            .path = "vendor/argonaut",
+        },
+        .zig_toml = .{
+            .url = "git+https://github.com/sam701/zig-toml#7e94b0a6fa1c846779304a1b8d7493091d793095",
+            .hash = "toml-0.3.0-bV14BVyFAQDTlzyP2Tw_GGoF7Q3QqP94nLAvB1djeE8S",
         },
     },
     .paths = .{
